@@ -1,4 +1,4 @@
-# 🚀 WPI Moderno v1.0.0 — First public release
+# 🚀 Winzard v1.0.0 — First public release
 
 > Paste this into the GitHub Release description when publishing the `v1.0.0` tag.
 
@@ -6,7 +6,7 @@
 
 ## 🪟 Set up your ideal Windows in an afternoon — install, optimize, clean, repair, and even build your own ISO. All from one app.
 
-**WPI Moderno** is an all-in-one command center for Windows 10/11 (PowerShell + WPF). It brings together **everything you do after a fresh install** — and a lot you didn't know you could — with **no command line, no loose scripts, and nothing shady**: under the hood it uses **Microsoft's official winget**.
+**Winzard** is an all-in-one command center for Windows 10/11 (PowerShell + WPF). It brings together **everything you do after a fresh install** — and a lot you didn't know you could — with **no command line, no loose scripts, and nothing shady**: under the hood it uses **Microsoft's official winget**.
 
 Bilingual **English/Spanish**, three themes, **no telemetry, no accounts**, open source (MIT). And most importantly: **you're in control** — WPI marks and proposes, but only applies when *you* click.
 
@@ -45,7 +45,7 @@ Light, Dark, and **Blue (Chris Titus)**. The whole UI, tooltips, dialogs and the
 
 ## 📥 Getting started
 
-1. Download **`WPI-Moderno-v1.0.0.zip`** from the Assets below.
+1. Download **`Winzard-v1.0.0.zip`** from the Assets below.
 2. Extract it to a local folder (e.g. `C:\WPI`).
 3. Run **`Iniciar_WPI.bat`** and accept the UAC prompt.
 4. Pick your language and theme, mark what you want, review, and click. Done.
@@ -66,4 +66,4 @@ See the full [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
-*If WPI Moderno saves you time, drop a ⭐ on the repo. Thanks for trying it!* 💜
+*If Winzard saves you time, drop a ⭐ on the repo. Thanks for trying it!* 💜

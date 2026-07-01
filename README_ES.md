@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🪟 WPI Moderno
+# 🧙 Winzard
 
 ### El centro de mando todo-en-uno para post-instalación, mantenimiento y personalización de Windows 10/11
 
@@ -18,7 +18,7 @@
 </div>
 
 <p align="center">
-  <img src="docs/img/wpi-hero.png" alt="WPI Moderno — vista principal" width="860">
+  <img src="docs/img/wpi-hero.png" alt="Winzard — vista principal" width="860">
 </p>
 
 <p align="center">
@@ -27,13 +27,13 @@
 
 ---
 
-> **TL;DR** — WPI Moderno es una sola aplicación con interfaz gráfica que te deja **montar tu Windows ideal** en minutos: instala cientos de programas legales con winget, aplica ajustes de privacidad y rendimiento, quita el bloatware, repara el sistema con una suite profesional de 17 fases y, lo más potente, **fabrica una ISO de Windows personalizada** con tus apps, tus tweaks y tu cuenta local ya configurados. Todo en español o inglés, con tres temas visuales.
+> **TL;DR** — Winzard es una sola aplicación con interfaz gráfica que te deja **montar tu Windows ideal** en minutos: instala cientos de programas legales con winget, aplica ajustes de privacidad y rendimiento, quita el bloatware, repara el sistema con una suite profesional de 17 fases y, lo más potente, **fabrica una ISO de Windows personalizada** con tus apps, tus tweaks y tu cuenta local ya configurados. Todo en español o inglés, con tres temas visuales.
 
 ---
 
 ## 📑 Tabla de contenidos
 
-- [¿Qué es WPI Moderno?](#-qué-es-wpi-moderno)
+- [¿Qué es Winzard?](#-qué-es-wpi-moderno)
 - [¿Por qué usarlo?](#-por-qué-usarlo)
 - [Requisitos](#requisitos)
 - [Instalación y primer uso](#-instalación-y-primer-uso)
@@ -50,7 +50,7 @@
 
 ---
 
-## 🎯 ¿Qué es WPI Moderno?
+## 🎯 ¿Qué es Winzard?
 
 **WPI** significa *Windows Post-Installer*: una herramienta para hacer todo lo que normalmente harías "a mano" después de instalar Windows, pero de forma **rápida, ordenada y reproducible**.
 
@@ -61,7 +61,7 @@ Imagina que acabas de formatear tu PC. Normalmente tendrías que:
 - Desinstalar el bloatware que viene de fábrica.
 - Cruzar los dedos para que Windows no se rompa.
 
-WPI Moderno hace **todo eso desde una sola ventana**, y va mucho más allá: puede **reparar** un Windows dañado y puede **crear una ISO de instalación a tu medida** para que el próximo formateo ya venga con todo hecho.
+Winzard hace **todo eso desde una sola ventana**, y va mucho más allá: puede **reparar** un Windows dañado y puede **crear una ISO de instalación a tu medida** para que el próximo formateo ya venga con todo hecho.
 
 Está construido en **PowerShell + WPF** (la interfaz gráfica nativa de Windows), no necesita instalación: se ejecuta directamente.
 
@@ -94,7 +94,7 @@ Está construido en **PowerShell + WPF** (la interfaz gráfica nativa de Windows
 
 ## 🚀 Instalación y primer uso
 
-WPI Moderno es *portable*: **no se instala**, se ejecuta.
+Winzard es *portable*: **no se instala**, se ejecuta.
 
 ```text
 1. Descarga el ZIP del último release.
@@ -107,6 +107,8 @@ WPI Moderno es *portable*: **no se instala**, se ejecuta.
 > 💡 **Consejo:** extrae la carpeta en una ruta **sin tildes ni espacios raros** (`C:\WPI` es ideal). El creador de ISO trabaja mejor así.
 
 El lanzador `Iniciar_WPI.bat` se encarga de configurar la codificación UTF-8, pedir permisos de administrador y abrir la interfaz gráfica.
+
+> ℹ️ **Nota:** la app se abre con `Iniciar_WPI.bat` y su ventana muestra **WPI Moderno** — es el nombre del motor interno detrás de **Winzard**.
 
 ---
 
@@ -385,7 +387,7 @@ Suite_Reparacion_EN\Repair_Suite_AllInOne.bat           (inglés)
 
 ## 🌍 Dos idiomas y tres temas
 
-WPI Moderno está pensado para todo el mundo:
+Winzard está pensado para todo el mundo:
 
 ### 🗣️ Idiomas
 - **Español** 🇪🇸
@@ -430,16 +432,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Verificar_Proyecto.ps1 -Co
   </tr>
 </table>
 
-> 🌍 WPI Moderno es bilingüe: <img src="docs/img/wpi-es.png" alt="Versión en español" width="49%"> <img src="docs/img/wpi-en.png" alt="English version" width="49%">
+> 🌍 Winzard es bilingüe: <img src="docs/img/wpi-es.png" alt="Versión en español" width="49%"> <img src="docs/img/wpi-en.png" alt="English version" width="49%">
 
 ## 🙏 Inspiración y créditos
 
-WPI Moderno nace, **con respeto y admiración**, del ecosistema de herramientas profesionales de post-instalación de Windows. En especial, rinde homenaje al trabajo de:
+Winzard nace, **con respeto y admiración**, del ecosistema de herramientas profesionales de post-instalación de Windows. En especial, rinde homenaje al trabajo de:
 
 - **[Chris Titus Tech](https://github.com/ChrisTitusTech/winutil)** y su **WinUtil** — referencia absoluta del género (de ahí el tema "Azul" como guiño).
 - La comunidad de scripts de *debloat*, *tweaks* y automatización de Windows que lleva años compartiendo conocimiento.
 
-Sobre esa inspiración, WPI Moderno aporta su **propia visión**: interfaz **bilingüe**, **creador de ISO integrado**, catálogo **curado** de +360 apps, **perfiles** portables y una **suite de reparación por fases** con filosofía anti falsos OK.
+Sobre esa inspiración, Winzard aporta su **propia visión**: interfaz **bilingüe**, **creador de ISO integrado**, catálogo **curado** de +360 apps, **perfiles** portables y una **suite de reparación por fases** con filosofía anti falsos OK.
 
 ---
 
@@ -464,7 +466,7 @@ Distribuido bajo licencia **MIT**. Consulta **[LICENSE](LICENSE)**. Eres libre d
 
 <div align="center">
 
-**Si WPI Moderno te ahorra tiempo, regálale una ⭐ — ayuda a que más gente lo encuentre.**
+**Si Winzard te ahorra tiempo, regálale una ⭐ — ayuda a que más gente lo encuentre.**
 
 Hecho con ❤️ para la comunidad de Windows.
 

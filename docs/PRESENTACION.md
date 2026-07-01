@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ WPI Moderno
+# ⚡ Winzard
 
 ### Set up your Windows 10/11 in an afternoon. Install, optimize, clean, repair — and even build your own ISO. All from a single app.
 
@@ -10,11 +10,11 @@
 
 ---
 
-## 🎯 What is WPI Moderno?
+## 🎯 What is Winzard?
 
 You just installed Windows (or want to tune up the one you have) and the usual ritual begins: download the browser, the media player, the archiver, remove bloatware, tweak a thousand privacy settings, update everything, fight with drivers… hours.
 
-**WPI Moderno turns all of that into clicks.** It's a single command center, with a modern dashboard-style interface, that gathers **everything you'd do after formatting** — and plenty you didn't know you could — with no command line, no loose scripts and **nothing shady installed**: under the hood it uses **Microsoft's official winget**.
+**Winzard turns all of that into clicks.** It's a single command center, with a modern dashboard-style interface, that gathers **everything you'd do after formatting** — and plenty you didn't know you could — with no command line, no loose scripts and **nothing shady installed**: under the hood it uses **Microsoft's official winget**.
 
 It's not just another installer. It's **an installer + optimizer + cleaner + repair tool + ISO builder**, all integrated, in English and Spanish, and designed so **you stay in control** (mark, review, apply — it never makes changes behind your back).
 
@@ -124,7 +124,7 @@ The expert level, now **guided step by step** so you never get lost:
 
 <div align="center">
 
-**WPI Moderno** — because tuning up Windows shouldn't cost you an afternoon.
+**Winzard** — because tuning up Windows shouldn't cost you an afternoon.
 
 ⭐ If it saves you time, leave a star on the repo.
 

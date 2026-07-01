@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🪟 WPI Moderno
+# 🧙 Winzard
 
 ### The all-in-one command center for Windows 10/11 post-install, maintenance and customization
 
@@ -18,7 +18,7 @@
 </div>
 
 <p align="center">
-  <img src="docs/img/wpi-hero.png" alt="WPI Moderno - main view" width="860">
+  <img src="docs/img/wpi-hero.png" alt="Winzard - main view" width="860">
 </p>
 
 <p align="center">
@@ -27,13 +27,13 @@
 
 ---
 
-> **TL;DR** — WPI Moderno is a single GUI app that lets you **build your ideal Windows** in minutes: install hundreds of legal programs with winget, apply privacy and performance tweaks, remove bloatware, repair the system with a professional 17-phase suite and — the real killer feature — **craft a custom Windows ISO** with your apps, your tweaks and your local account already baked in. All in Spanish or English, with three visual themes.
+> **TL;DR** — Winzard is a single GUI app that lets you **build your ideal Windows** in minutes: install hundreds of legal programs with winget, apply privacy and performance tweaks, remove bloatware, repair the system with a professional 17-phase suite and — the real killer feature — **craft a custom Windows ISO** with your apps, your tweaks and your local account already baked in. All in Spanish or English, with three visual themes.
 
 ---
 
 ## 📑 Table of contents
 
-- [What is WPI Moderno?](#-what-is-wpi-moderno)
+- [What is Winzard?](#-what-is-wpi-moderno)
 - [Why use it?](#-why-use-it)
 - [Requirements](#requirements)
 - [Installation & first run](#-installation--first-run)
@@ -50,7 +50,7 @@
 
 ---
 
-## 🎯 What is WPI Moderno?
+## 🎯 What is Winzard?
 
 **WPI** stands for *Windows Post-Installer*: a tool that does everything you'd normally do "by hand" after installing Windows, but in a **fast, organized and reproducible** way.
 
@@ -61,7 +61,7 @@ Picture this: you just reinstalled Windows. Normally you'd have to:
 - Uninstall the bloatware that ships from the factory.
 - Hope Windows doesn't break.
 
-WPI Moderno does **all of that from a single window** — and goes much further: it can **repair** a broken Windows and **build a tailor-made installation ISO** so your next reinstall already comes fully set up.
+Winzard does **all of that from a single window** — and goes much further: it can **repair** a broken Windows and **build a tailor-made installation ISO** so your next reinstall already comes fully set up.
 
 It's built on **PowerShell + WPF** (Windows' native GUI framework). No installation required: it just runs.
 
@@ -94,7 +94,7 @@ It's built on **PowerShell + WPF** (Windows' native GUI framework). No installat
 
 ## 🚀 Installation & first run
 
-WPI Moderno is *portable*: **no install**, just run it.
+Winzard is *portable*: **no install**, just run it.
 
 ```text
 1. Download the latest release ZIP.
@@ -107,6 +107,8 @@ WPI Moderno is *portable*: **no install**, just run it.
 > 💡 **Tip:** extract to a path **without accents or odd spaces** (`C:\WPI` is ideal). The ISO creator works best that way.
 
 The `Iniciar_WPI.bat` launcher sets up UTF-8 encoding, requests administrator rights and opens the GUI.
+
+> ℹ️ **Note:** the app is launched via `Iniciar_WPI.bat` and its window shows **WPI Moderno** — that's the internal engine name behind **Winzard**.
 
 ---
 
@@ -384,7 +386,7 @@ Suite_Reparacion_EN\Repair_Suite_AllInOne.bat           (English)
 
 ## 🌍 Two languages and three themes
 
-WPI Moderno is built for everyone:
+Winzard is built for everyone:
 
 ### 🗣️ Languages
 - **Spanish** 🇪🇸
@@ -429,16 +431,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Verificar_Proyecto.ps1 -Co
   </tr>
 </table>
 
-> 🌍 WPI Moderno is bilingual: <img src="docs/img/wpi-es.png" alt="Spanish version" width="49%"> <img src="docs/img/wpi-en.png" alt="English version" width="49%">
+> 🌍 Winzard is bilingual: <img src="docs/img/wpi-es.png" alt="Spanish version" width="49%"> <img src="docs/img/wpi-en.png" alt="English version" width="49%">
 
 ## 🙏 Inspiration & credits
 
-WPI Moderno was born, **with respect and admiration**, from the ecosystem of professional Windows post-install tools. It especially pays tribute to:
+Winzard was born, **with respect and admiration**, from the ecosystem of professional Windows post-install tools. It especially pays tribute to:
 
 - **[Chris Titus Tech](https://github.com/ChrisTitusTech/winutil)** and his **WinUtil** — the absolute reference of the genre (hence the "Blue" theme as a nod).
 - The community of Windows *debloat*, *tweak* and automation scripts that has shared knowledge for years.
 
-On top of that inspiration, WPI Moderno brings its **own vision**: a **bilingual** interface, an **integrated ISO creator**, a **curated** catalog of 360+ apps, portable **profiles** and a **phase-based repair suite** with an anti false-OK philosophy.
+On top of that inspiration, Winzard brings its **own vision**: a **bilingual** interface, an **integrated ISO creator**, a **curated** catalog of 360+ apps, portable **profiles** and a **phase-based repair suite** with an anti false-OK philosophy.
 
 ---
 
@@ -463,7 +465,7 @@ Released under the **MIT** license. See **[LICENSE](LICENSE)**. You're free to u
 
 <div align="center">
 
-**If WPI Moderno saves you time, drop it a ⭐ — it helps more people find it.**
+**If Winzard saves you time, drop it a ⭐ — it helps more people find it.**
 
 Made with ❤️ for the Windows community.
 

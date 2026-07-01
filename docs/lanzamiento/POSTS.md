@@ -1,7 +1,7 @@
 # 📣 Posts para redes — listos para copiar y pegar
 
 > Reemplaza `Rebel1487` si cambias de usuario. Enlace del repo:
-> **https://github.com/Rebel1487/WPI-Moderno**
+> **https://github.com/Rebel1487/Winzard**
 
 ---
 
@@ -11,7 +11,7 @@
 > I built a free, open-source all-in-one for Windows 10/11: install 360+ apps with winget, tweak, debloat, repair, and build your own custom ISO — bilingual, no telemetry
 
 **Body:**
-> After every fresh install I got tired of the same ritual (download browser, media player, remove bloatware, 100 privacy tweaks, update everything, fight drivers…), so I built **WPI Moderno** — a single WPF app that does all of it. It runs on **Microsoft's official winget**, so nothing shady.
+> After every fresh install I got tired of the same ritual (download browser, media player, remove bloatware, 100 privacy tweaks, update everything, fight drivers…), so I built **Winzard** — a single WPF app that does all of it. It runs on **Microsoft's official winget**, so nothing shady.
 >
 > What it does:
 > - 🛒 **360+ app catalog** (winget) with one-click presets, and it **auto-detects what you already have** (marked green + version).
@@ -24,7 +24,7 @@
 >
 > It's a solo project and I'd love feedback (and issues/PRs). You provide your own Windows ISO for the ISO feature — WPI never bundles Windows.
 >
-> Repo: https://github.com/Rebel1487/WPI-Moderno
+> Repo: https://github.com/Rebel1487/Winzard
 
 *(Consejo: publica sin acortar el enlace, responde a los comentarios y no lo repostees en 10 subs a la vez — 1-2 relevantes por día.)*
 
@@ -36,7 +36,7 @@
 > Hice gratis y de código abierto un todo-en-uno para Windows 10/11: instala +360 apps con winget, tweaks, debloat, reparación y crea tu propia ISO a medida — bilingüe, sin telemetría
 
 **Cuerpo:**
-> Cansado del ritual de cada formateo, me hice **WPI Moderno**: una sola app (WPF) que instala programas con el **winget oficial**, optimiza, limpia, repara y hasta **crea tu ISO de Windows personalizada**.
+> Cansado del ritual de cada formateo, me hice **Winzard**: una sola app (WPF) que instala programas con el **winget oficial**, optimiza, limpia, repara y hasta **crea tu ISO de Windows personalizada**.
 >
 > - 🛒 **Catálogo de +360 apps** con presets de un clic; **detecta lo que ya tienes** (en verde + versión).
 > - 🔄 **Centro de actualizaciones** que **comprueba la versión real** tras actualizar y avisa si no cambió.
@@ -46,15 +46,15 @@
 >
 > Proyecto personal; se agradecen ideas, issues y estrellas. Para la ISO tú pones la de Microsoft; WPI nunca incluye Windows.
 >
-> Repo: https://github.com/Rebel1487/WPI-Moderno
+> Repo: https://github.com/Rebel1487/Winzard
 
 ---
 
 ## 🐦 X / Twitter — hilo (English)
 
 **1/**
-> Tired of the post-format ritual on Windows? I built **WPI Moderno** — a free, open-source all-in-one (PowerShell + WPF) that installs 360+ apps with winget, tweaks, debloats, repairs, and builds a custom ISO. No telemetry. 🧵👇
-> https://github.com/Rebel1487/WPI-Moderno
+> Tired of the post-format ritual on Windows? I built **Winzard** — a free, open-source all-in-one (PowerShell + WPF) that installs 360+ apps with winget, tweaks, debloats, repairs, and builds a custom ISO. No telemetry. 🧵👇
+> https://github.com/Rebel1487/Winzard
 
 **2/**
 > 🛒 360+ app catalog with 1-click presets — and it auto-detects what you already have (green + version).
@@ -67,15 +67,15 @@
 **4/**
 > 💿 The star feature: a guided wizard that turns an official Windows ISO into YOUR ISO — your apps, tweaks, drivers and an unattended install baked in.
 > 🎨 3 themes · 🌍 EN/ES · MIT.
-> ⭐ https://github.com/Rebel1487/WPI-Moderno
+> ⭐ https://github.com/Rebel1487/Winzard
 
 ---
 
 ## 🐦 X / Twitter — hilo (Español)
 
 **1/**
-> ¿Cansado del ritual tras formatear Windows? Hice **WPI Moderno**: todo-en-uno gratis y open source (PowerShell + WPF) que instala +360 apps con winget, tweaks, debloat, repara y crea tu ISO a medida. Sin telemetría. 🧵👇
-> https://github.com/Rebel1487/WPI-Moderno
+> ¿Cansado del ritual tras formatear Windows? Hice **Winzard**: todo-en-uno gratis y open source (PowerShell + WPF) que instala +360 apps con winget, tweaks, debloat, repara y crea tu ISO a medida. Sin telemetría. 🧵👇
+> https://github.com/Rebel1487/Winzard
 
 **2/**
 > 🛒 Catálogo de +360 apps con presets de un clic — y detecta lo que ya tienes (verde + versión).
@@ -88,20 +88,20 @@
 **4/**
 > 💿 La joya: un asistente guiado que convierte una ISO oficial de Windows en la TUYA — con tus apps, tweaks, drivers e instalación desatendida.
 > 🎨 3 temas · 🌍 ES/EN · MIT.
-> ⭐ https://github.com/Rebel1487/WPI-Moderno
+> ⭐ https://github.com/Rebel1487/Winzard
 
 ---
 
 ## ✍️ Dev.to / Hashnode (English, intro corto)
 
-**Title:** `WPI Moderno: a free, open-source all-in-one to set up Windows 10/11 (winget, tweaks, repair, custom ISO)`
+**Title:** `Winzard: a free, open-source all-in-one to set up Windows 10/11 (winget, tweaks, repair, custom ISO)`
 
 **Tags:** `windows`, `powershell`, `opensource`, `automation`
 
 **Body (intro):**
 > I built an all-in-one WPF app to end the post-format ritual on Windows. It runs on Microsoft's official winget and bundles an app catalog (360+), tweaks with per-item state detection, debloat, a proper Windows Update control panel, a 17-phase repair suite, and — the highlight — a guided wizard to build your own custom Windows ISO with your apps/tweaks/drivers baked in. Bilingual EN/ES, 3 themes, no telemetry, MIT.
 >
-> Repo + full docs: https://github.com/Rebel1487/WPI-Moderno
+> Repo + full docs: https://github.com/Rebel1487/Winzard
 >
 > *(Continúa con capturas y una sección "how it works".)*
 

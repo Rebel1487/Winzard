@@ -1,4 +1,4 @@
-# ✅ Steps to publish WPI Moderno on GitHub (step by step)
+# ✅ Steps to publish Winzard on GitHub (step by step)
 
 Everything you need is already in this repo. Follow the order.
 
@@ -7,7 +7,7 @@ Everything you need is already in this repo. Follow the order.
 ## 1) Create the repository on GitHub
 
 1. Go to **github.com → New repository**.
-2. Name: **`WPI-Moderno`**. Visibility: **Public**.
+2. Name: **`Winzard`**. Visibility: **Public**.
 3. ⚠️ **Do NOT check** "Add a README", ".gitignore" or "license" (yours are already in the repo; if GitHub creates its own, they clash with the first `push`).
 4. **Create repository**.
 
@@ -17,8 +17,8 @@ Everything you need is already in this repo. Follow the order.
 
 Open PowerShell:
 ```powershell
-cd C:\Users\alex\Desktop\github\WPI-Moderno
-git remote add origin https://github.com/Rebel1487/WPI-Moderno.git
+cd C:\Users\alex\Desktop\github\Winzard
+git remote add origin https://github.com/Rebel1487/Winzard.git
 git push -u origin main
 ```
 > If you already created the repo WITH a README/license, use: `git push -u origin main --force` (safe: it only overwrites the auto-generated README/license).
@@ -45,7 +45,7 @@ On the repo page, top-right in **About** (⚙️):
 - Save them in `docs/img/` with the exact names (`wpi-hero.png`, `wpi-apps.png`, etc.).
 - Push them:
 ```powershell
-cd C:\Users\alex\Desktop\github\WPI-Moderno
+cd C:\Users\alex\Desktop\github\Winzard
 git add docs/img
 git commit -m "docs: screenshots"
 git push
@@ -58,18 +58,18 @@ The READMEs will show them automatically.
 
 **a) Build the ZIP** (exact bytes, already verified):
 ```powershell
-cd C:\Users\alex\Desktop\github\WPI-Moderno
-git archive --format=zip -o ..\WPI-Moderno-v1.0.0.zip HEAD
+cd C:\Users\alex\Desktop\github\Winzard
+git archive --format=zip -o ..\Winzard-v1.0.0.zip HEAD
 ```
-It lands in `C:\Users\alex\Desktop\github\WPI-Moderno-v1.0.0.zip`.
+It lands in `C:\Users\alex\Desktop\github\Winzard-v1.0.0.zip`.
 > *(One is already built there; regenerate it with the command above if you make more commits.)*
 
 **b) Publish the Release:**
 1. In the repo → **Releases → Draft a new release**.
 2. **Choose a tag →** type `v1.0.0` → **Create new tag on publish**.
-3. **Release title:** `WPI Moderno v1.0.0`
+3. **Release title:** `Winzard v1.0.0`
 4. **Description:** copy and paste the contents of **`RELEASE_NOTES_v1.0.0.md`** (repo root).
-5. **Attach binaries:** drag **`WPI-Moderno-v1.0.0.zip`** into the *Assets* area.
+5. **Attach binaries:** drag **`Winzard-v1.0.0.zip`** into the *Assets* area.
 6. Check **"Set as the latest release"** and **Publish release**.
 
 ---
@@ -85,7 +85,7 @@ It lands in `C:\Users\alex\Desktop\github\WPI-Moderno-v1.0.0.zip`.
 ## 🔁 When you make more changes later
 
 ```powershell
-cd C:\Users\alex\Desktop\github\WPI-Moderno
+cd C:\Users\alex\Desktop\github\Winzard
 git add -A
 git commit -m "describe the change"
 git push

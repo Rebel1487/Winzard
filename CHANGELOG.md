@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to **WPI Moderno** are documented in this file.
+All notable changes to **Winzard** are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
@@ -46,4 +46,4 @@ First stable public release.
 - **MINOR** (x.1.x): new backward-compatible features.
 - **PATCH** (x.x.1): fixes and minor improvements.
 
-[1.0.0]: https://github.com/Rebel1487/WPI-Moderno/releases/tag/v1.0.0
+[1.0.0]: https://github.com/Rebel1487/Winzard/releases/tag/v1.0.0

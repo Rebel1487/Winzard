@@ -2,9 +2,9 @@
 
 > 🇪🇸 *¿Prefieres español?* La app es bilingüe; el manual está en [README_ES.md](README_ES.md).
 
-## WPI Moderno security philosophy
+## Winzard security philosophy
 
-WPI Moderno performs system operations (installing software, applying tweaks, repairing Windows, creating ISOs). That's why transparency is a core pillar:
+Winzard performs system operations (installing software, applying tweaks, repairing Windows, creating ISOs). That's why transparency is a core pillar:
 
 - ✅ **No pirated software.** All apps are installed via **winget** from official Microsoft and developer manifests.
 - ✅ **Open and auditable code.** All behavior lives in the repository's PowerShell scripts; you can read exactly what each action does.

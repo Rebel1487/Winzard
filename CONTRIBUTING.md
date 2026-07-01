@@ -1,6 +1,6 @@
-# Contributing to WPI Moderno
+# Contributing to Winzard
 
-Thanks for your interest in improving **WPI Moderno**! This project grows with the community. Here's how to contribute effectively.
+Thanks for your interest in improving **Winzard**! This project grows with the community. Here's how to contribute effectively.
 
 > 🇪🇸 *¿Prefieres español?* La app es bilingüe y el manual está en [README_ES.md](README_ES.md).
 
