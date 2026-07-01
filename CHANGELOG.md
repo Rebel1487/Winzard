@@ -47,4 +47,4 @@ Primera versión pública estable. · *First stable public release.*
 - **MINOR** (x.1.x): nuevas funcionalidades compatibles.
 - **PATCH** (x.x.1): correcciones y mejoras menores.
 
-[1.0.0]: https://github.com/USUARIO/WPI-Moderno/releases/tag/v1.0.0
+[1.0.0]: https://github.com/Rebel1487/WPI-Moderno/releases/tag/v1.0.0
