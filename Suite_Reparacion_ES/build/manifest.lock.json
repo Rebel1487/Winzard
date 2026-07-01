@@ -1,0 +1,102 @@
+{
+    "version":  "3.1",
+    "generatedAtUtc":  "2026-07-01T00:54:10Z",
+    "hlpLineLength":  200,
+    "canonical":  {
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "brainSha256":  "5606b818b83388dfcd536b2566d76ee56562ea812da690a939a504ce4a4375c2",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+    "files":  [
+                  {
+                      "name":  "Suite_Reparacion_TodoEnUno.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_00_Diagnostico_y_triage.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_01_Punto_de_restauracion.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_02_Limpieza_inicial.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_03_CHKDSK.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_04_Optimizacion_de_disco.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_05_DISM.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_06_SFC_y_verificacion.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_07_Reparar_WMI.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_08_Apps_de_Store_e_Inicio.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_09_Busqueda_y_caches.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_10_Certificados_y_hora.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_11_Red.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_12_Directivas_GPO.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_13_Windows_Update.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_14_Winget.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_15_Dispositivos.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  },
+                  {
+                      "name":  "Fase_16_Limpieza_final_e_informe.bat",
+                      "librarySha256":  "70e34a7445a3ed48fa76563a21a14a7494c2d6d6f77826c3cbed3fa3b90a6d30",
+                      "hlpBlockSha256":  "a48778a2caab5b15fa66eb0b9b14008fcfa23c6a71d51735b7cfe2f88698b090"
+                  }
+              ]
+}

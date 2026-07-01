@@ -1,0 +1,67 @@
+# ==========================================================================
+#  WPI Moderno — .gitignore
+#  Mantiene el repositorio limpio: solo fuente y documentación, nunca
+#  artefactos de ejecución, ISOs, logs personales ni binarios pesados.
+# ==========================================================================
+
+# --- Artefactos de ejecución de la Suite de Reparación ---
+WPI_Suite/
+**/WPI_Suite/
+estado.json
+**/estado.json
+
+# --- Estado y ajustes runtime de WPI (se regeneran solos) ---
+wpi_settings.json
+wpi_baseline.json
+*.corrupt.bak
+
+# --- Logs ---
+logs/
+**/logs/
+*.log
+
+# --- Perfiles exportados por el usuario (datos personales) ---
+perfil_*.json
+perfil_debloat_*.json
+preset_*.txt
+
+# --- ISOs y kits de imagen (NUNCA al repositorio: pesados y con base de Windows) ---
+*.iso
+*.wim
+*.esd
+WPI_ISO_Kit/
+**/WPI_ISO_Kit/
+ISO/*.iso
+Drivers/*
+
+# --- Informes generados ---
+*.html
+informe_*.txt
+reporte_*.txt
+
+# --- Empaquetado / release local ---
+*.zip
+*.7z
+*.exe
+*.msi
+release/
+dist/
+build/out/**/*.tmp
+
+# --- Temporales del sistema y editores ---
+*.tmp
+*.temp
+~$*
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# --- IDE / editores ---
+.vs/
+.vscode/
+*.user
+*.suo
+
+# --- Backups de seguridad ---
+*_backup_*/
+*.bak

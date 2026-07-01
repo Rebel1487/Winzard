@@ -1,0 +1,56 @@
+====================================================================
+  SUITE DE REPARACION WPI  v3.1  -  VERSION ESPANOLA
+  Windows 10/11  -  sin dependencias externas
+====================================================================
+
+QUE ES
+  Conjunto de 18 archivos .bat autonomos para diagnosticar y reparar
+  Windows 10/11. Puedes usar el TODO EN UNO o cada fase por separado.
+
+COMO SE USA
+  - TODO EN UNO:  clic derecho en  Suite_Reparacion_TodoEnUno.bat
+                  -> "Ejecutar como administrador".
+                  Veras un MENU con los modos (completo, inteligente,
+                  rapido, manual, plan, elegir fases, simulacion, guia).
+  - FASE SUELTA:  clic derecho en cualquier  Fase_NN_*.bat  ->
+                  "Ejecutar como administrador".
+  - Experto:      anade  /cmd  para ver el comando exacto de cada opcion.
+                  Ej:  Suite_Reparacion_TodoEnUno.bat /cmd /manual
+
+NOVEDADES DE ESTA REVISION (importante)
+  1) ARRANQUE ROBUSTO: la deteccion de la version de Windows ya no
+     depende solo de WMI. Si el repositorio WMI esta danado (algo que
+     la propia suite repara), ahora se usa el Registro como respaldo y,
+     si aun asi no se puede determinar, la herramienta AVISA y CONTINUA
+     en lugar de detenerse. Antes podia bloquearse con "(build )".
+  2) VUELTA AL MENU: al terminar un modo o una fase -y aunque
+     respondas NO a "Quieres reiniciar ahora?"- la aplicacion ya NO se
+     cierra: te lleva de vuelta al MENU. Solo se cierra cuando TU
+     eliges "Salir" en el menu (o si decides reiniciar el equipo).
+     En las fases sueltas, tras cada opcion vuelves al menu de la fase;
+     eliges 0 para cerrar.
+
+USABILIDAD (esta version)
+  - El menu sugiere que elegir si no lo tienes claro (1 o 2).
+  - Cada modo y cada fase muestran duracion aproximada e impacto
+    (seguro / hace cambios).
+  - Antes de una reparacion real se pide CONFIRMACION (salvo en
+    /auto, simulacion o modo manual).
+  - Las fases sueltas indican [rapido]=ligero/escaneo y
+    [profundo]=reparacion, y vuelven a su menu tras cada opcion.
+
+SEGURIDAD
+  - Crea un punto de restauracion (Fase 01) antes de cambios fuertes.
+  - Modo Simulacion (/dry) para ver que haria sin tocar nada.
+  - Revertir.cmd ayuda a abrir Restaurar Sistema si hiciera falta.
+  - Pruebalo primero en una maquina virtual: realiza cambios reales.
+
+ARREGLOS FINALES (tras validacion en Windows real)
+  - El diagnostico calcula el tiempo encendido aunque WMI este roto
+    (usa TickCount64 como respaldo).
+  - Ayuda y textos 100%% en su idioma.
+
+INTEGRIDAD
+  HASHES.sha256 contiene el hash de cada .bat. Las carpetas src/ y
+  build/ permiten regenerar identicamente los .bat con Python.
+====================================================================

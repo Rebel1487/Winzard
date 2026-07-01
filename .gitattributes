@@ -1,0 +1,32 @@
+# Scripts de la Suite con HASHES.sha256: preservar bytes EXACTOS (sin conversion
+# de fin de linea) para que la verificacion de hash siga siendo valida en
+# cualquier plataforma o configuracion de git.
+*.bat   -text
+*.cmd   -text
+
+# PowerShell y texto: fin de linea de Windows (CRLF).
+*.ps1   text eol=crlf
+*.psd1  text eol=crlf
+*.psm1  text eol=crlf
+*.txt   text
+*.md    text
+*.json  text
+*.yml   text
+*.xml   text
+
+# Suites de Reparacion: bytes EXACTOS (sin conversion de fin de linea). Los .bat
+# llevan embebido (base64) el "cerebro" src/suite_helper.ps1 y se verifican por
+# HASHES.sha256; cualquier normalizacion de git (p.ej. eol=crlf en .ps1) romperia
+# la verificacion en un checkout/clon limpio o en CI. Debe ir DESPUES de las reglas
+# generales para que gane la ultima coincidencia.
+Suite_Reparacion_ES/** -text
+Suite_Reparacion_EN/** -text
+
+# Activos binarios: nunca convertir.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.gif   binary
+*.zip   binary
+*.7z    binary
