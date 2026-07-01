@@ -1,18 +1,18 @@
-# Codigo De Conducta
+# Code of Conduct
 
-Este proyecto busca una comunidad tecnica, directa y respetuosa.
+This project aims for a technical, direct and respectful community.
 
-Se espera:
+Expected:
 
-- Respeto en discusiones tecnicas.
-- Critica enfocada en codigo, pruebas y comportamiento observable.
-- Reportes claros y reproducibles.
-- Paciencia con usuarios nuevos.
+- Respect in technical discussions.
+- Criticism focused on code, tests and observable behavior.
+- Clear, reproducible reports.
+- Patience with new users.
 
-No se acepta:
+Not accepted:
 
-- Acoso, insultos o ataques personales.
-- Peticiones o aportes relacionados con pirateria o evasion de licencias.
-- Publicacion de datos privados en issues.
+- Harassment, insults or personal attacks.
+- Requests or contributions related to piracy or license circumvention.
+- Publishing private data in issues.
 
-El mantenedor puede cerrar discusiones, editar referencias sensibles o bloquear participantes si es necesario para proteger el proyecto.
+The maintainer may close discussions, edit sensitive references, or block participants if necessary to protect the project.

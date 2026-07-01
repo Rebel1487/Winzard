@@ -1,108 +1,108 @@
-# ✅ Pasos para publicar WPI Moderno en GitHub (paso a paso)
+# ✅ Steps to publish WPI Moderno on GitHub (step by step)
 
-Todo lo que necesitas ya está en este repo. Sigue el orden.
+Everything you need is already in this repo. Follow the order.
 
 ---
 
-## 1) Crear el repositorio en GitHub
+## 1) Create the repository on GitHub
 
-1. Ve a **github.com → New repository**.
-2. Nombre: **`WPI-Moderno`**. Visibilidad: **Public**.
-3. ⚠️ **NO marques** "Add a README", ni ".gitignore", ni "license" (los tuyos ya están en el repo; si GitHub crea unos, chocan con el primer `push`).
+1. Go to **github.com → New repository**.
+2. Name: **`WPI-Moderno`**. Visibility: **Public**.
+3. ⚠️ **Do NOT check** "Add a README", ".gitignore" or "license" (yours are already in the repo; if GitHub creates its own, they clash with the first `push`).
 4. **Create repository**.
 
 ---
 
-## 2) Subir el repo (push)
+## 2) Push the repo
 
-Abre PowerShell:
+Open PowerShell:
 ```powershell
 cd C:\Users\alex\Desktop\github\WPI-Moderno
 git remote add origin https://github.com/Rebel1487/WPI-Moderno.git
 git push -u origin main
 ```
-> Si ya habías creado el repo CON README/license, usa: `git push -u origin main --force` (es seguro: solo sobrescribe el README/license autogenerados).
+> If you already created the repo WITH a README/license, use: `git push -u origin main --force` (safe: it only overwrites the auto-generated README/license).
 
 ---
 
-## 3) Configurar la ficha del repo (2 min, mucho impacto)
+## 3) Configure the repo "About" (2 min, big impact)
 
-En la página del repo, arriba a la derecha en **About** (⚙️):
+On the repo page, top-right in **About** (⚙️):
 
-- **Description** (en inglés, para más alcance):
+- **Description:**
   > All-in-one installer, optimizer, cleaner and repair tool for Windows 10/11 (PowerShell + WPF). 360+ apps via winget, tweaks, debloat, 17-phase repair suite and custom ISO builder. Bilingual EN/ES, open source.
-- **Website:** (opcional) déjalo vacío o pon el enlace a la Release.
-- **Topics** (etiquetas, ayudan a que te encuentren):
+- **Website:** (optional) leave empty or link to the Release.
+- **Topics** (they help people find you):
   `windows` `windows-11` `windows-10` `winget` `powershell` `debloat` `tweaks` `post-install` `wpf` `system-repair` `iso-creator` `windows-utility` `chris-titus` `automation` `spanish`
 
-**Social preview** (la miniatura al compartir): **Settings → General → Social preview → Upload** y sube `docs/img/social-preview.png`.
+**Social preview** (the share thumbnail): **Settings → General → Social preview → Upload** and upload `docs/img/social-preview.png`.
 
 ---
 
-## 4) Añadir las capturas
+## 4) Add the screenshots
 
-- Haz las **7 capturas** siguiendo `docs/img/LEEME_CAPTURAS.md`.
-- Guárdalas en `docs/img/` con los nombres exactos (`wpi-hero.png`, `wpi-apps.png`, etc.).
-- Súbelas:
+- Take the **7 screenshots** following `docs/img/README.md`.
+- Save them in `docs/img/` with the exact names (`wpi-hero.png`, `wpi-apps.png`, etc.).
+- Push them:
 ```powershell
 cd C:\Users\alex\Desktop\github\WPI-Moderno
 git add docs/img
-git commit -m "docs: capturas"
+git commit -m "docs: screenshots"
 git push
 ```
-Los README las mostrarán solas.
+The READMEs will show them automatically.
 
 ---
 
-## 5) Crear la Release v1.0.0 (con el ZIP descargable)
+## 5) Create Release v1.0.0 (with the downloadable ZIP)
 
-**a) Construye el ZIP** (bytes exactos, ya verificados):
+**a) Build the ZIP** (exact bytes, already verified):
 ```powershell
 cd C:\Users\alex\Desktop\github\WPI-Moderno
 git archive --format=zip -o ..\WPI-Moderno-v1.0.0.zip HEAD
 ```
-Queda en `C:\Users\alex\Desktop\github\WPI-Moderno-v1.0.0.zip`.
-> *(Ya te he dejado uno construido ahí; regenéralo con el comando de arriba si haces más commits.)*
+It lands in `C:\Users\alex\Desktop\github\WPI-Moderno-v1.0.0.zip`.
+> *(One is already built there; regenerate it with the command above if you make more commits.)*
 
-**b) Publica la Release:**
-1. En el repo → **Releases → Draft a new release** (o "Create a new release").
-2. **Choose a tag →** escribe `v1.0.0` → **Create new tag on publish**.
+**b) Publish the Release:**
+1. In the repo → **Releases → Draft a new release**.
+2. **Choose a tag →** type `v1.0.0` → **Create new tag on publish**.
 3. **Release title:** `WPI Moderno v1.0.0`
-4. **Description:** copia y pega el contenido de **`docs/lanzamiento/RELEASE_v1.0.0.md`**.
-5. **Attach binaries:** arrastra **`WPI-Moderno-v1.0.0.zip`** a la zona de *Assets*.
-6. Marca **"Set as the latest release"** y **Publish release**.
+4. **Description:** copy and paste the contents of **`RELEASE_NOTES_v1.0.0.md`** (repo root).
+5. **Attach binaries:** drag **`WPI-Moderno-v1.0.0.zip`** into the *Assets* area.
+6. Check **"Set as the latest release"** and **Publish release**.
 
 ---
 
-## 6) Difundir (opcional pero recomendado)
+## 6) Spread the word (optional but recommended)
 
-- Textos listos en **`docs/lanzamiento/POSTS.md`** (Reddit, X, Dev.to, en inglés y español).
-- Regla de oro: **no** el mismo post en 10 sitios a la vez. 1-2 comunidades relevantes por día, con 1-2 capturas, y responde a los comentarios.
-- Presentación premium completa para copiar: **`docs/PRESENTACION.md`**.
+- Ready-to-use texts in **`docs/lanzamiento/POSTS.md`** (Reddit, X, Dev.to — English and Spanish).
+- Golden rule: **don't** post the same thing in 10 places at once. 1-2 relevant communities per day, with 1-2 screenshots, and reply to comments.
+- Full premium presentation to copy: **`docs/PRESENTACION.md`**.
 
 ---
 
-## 🔁 Cuando hagas más cambios más adelante
+## 🔁 When you make more changes later
 
 ```powershell
 cd C:\Users\alex\Desktop\github\WPI-Moderno
 git add -A
-git commit -m "describe el cambio"
+git commit -m "describe the change"
 git push
 ```
-Y si sacas una versión nueva, repite el **paso 5** con el nuevo número (`v1.1.0`, etc.) y actualiza `CHANGELOG.md`.
+And if you ship a new version, repeat **step 5** with the new number (`v1.1.0`, etc.) and update `CHANGELOG.md`.
 
 ---
 
-## 📂 Dónde está cada cosa (en este repo)
+## 📂 Where everything is (in this repo)
 
-| Archivo | Para qué |
+| File | Purpose |
 |---|---|
-| `docs/PRESENTACION.md` | Presentación premium completa (para copiar donde quieras) |
-| `docs/lanzamiento/RELEASE_v1.0.0.md` | Texto de la pestaña Releases |
-| `docs/lanzamiento/POSTS.md` | Posts de redes (EN + ES) |
-| `docs/lanzamiento/PASOS_PUBLICAR.md` | Esta guía |
-| `docs/img/LEEME_CAPTURAS.md` | Qué capturas hacer y cómo |
-| `docs/img/social-preview.png` | Miniatura social (ya lista) |
-| `README.md` / `README_EN.md` | Manual completo (ES / EN) |
-| `CHANGELOG.md` | Historial de versiones |
+| `docs/PRESENTACION.md` | Full premium presentation (copy anywhere) |
+| `RELEASE_NOTES_v1.0.0.md` | Text for the Releases tab |
+| `docs/lanzamiento/POSTS.md` | Social posts (EN + ES) |
+| `docs/lanzamiento/PASOS_PUBLICAR.md` | This guide |
+| `docs/img/README.md` | Which screenshots to take and how |
+| `docs/img/social-preview.png` | Social thumbnail (ready) |
+| `README.md` / `README_ES.md` | Full manual (EN / ES) |
+| `CHANGELOG.md` | Version history |

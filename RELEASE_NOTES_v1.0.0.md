@@ -1,84 +1,69 @@
-# 🚀 WPI Moderno v1.0.0 — Primer lanzamiento público
+# 🚀 WPI Moderno v1.0.0 — First public release
 
-> Borrador profesional de Release Notes (español). Cópialo en la descripción del Release de GitHub al publicar la `v1.0.0`.
-
----
-
-## 🪟 Tu Windows ideal, montado en minutos
-
-**WPI Moderno** es un centro de mando todo-en-uno para Windows 10/11. Desde una sola ventana puedes **instalar cientos de programas legales con winget**, **optimizar y limpiar** el sistema, **repararlo** con una suite profesional de 17 fases y —la función estrella— **crear tu propia ISO de Windows personalizada** con tus apps, tus ajustes y tu cuenta ya integrados.
-
-Todo en **español o inglés**, con **tres temas visuales**, y **100% transparente**: nada de pirateo, todo vía winget desde fuentes oficiales.
+> Paste this into the GitHub Release description when publishing the `v1.0.0` tag.
 
 ---
 
-## ✨ Lo que incluye esta versión
+## 🪟 Set up your ideal Windows in an afternoon — install, optimize, clean, repair, and even build your own ISO. All from one app.
 
-### 🛒 Instalación de software inteligente
-- Catálogo curado de **+360 programas** en **22 categorías**.
-- **Detección automática**: WPI sabe qué tienes instalado, tu versión actual y la última disponible.
-- **Presets de un clic**: Gaming, Desarrollador, Multimedia, Esencial, Última sesión.
-- Búsqueda global en todo el repositorio de winget.
-- Centro de actualizaciones (`winget upgrade`).
-- Clonado de equipo / Snapshot para migrar tu entorno.
+**WPI Moderno** is an all-in-one command center for Windows 10/11 (PowerShell + WPF). It brings together **everything you do after a fresh install** — and a lot you didn't know you could — with **no command line, no loose scripts, and nothing shady**: under the hood it uses **Microsoft's official winget**.
 
-### ⚙️ Optimización y limpieza
-- **40+ tweaks** de privacidad, rendimiento y experiencia, con estado y reversión.
-- **Debloat** de apps preinstaladas (usuario + imagen del sistema).
-- Gestión de características de Windows (Hyper-V, WSL2, .NET…).
-
-### 🩹 Reparación profesional
-- **Suite de Reparación bilingüe de 17 fases** con filosofía *anti falsos OK*.
-- Modos `/triage`, `/auto`, `/dry`, `/fases`, `/manual`, `/plan`, `/selftest` y menú interactivo.
-- Funciona incluso fuera de la interfaz gráfica.
-
-### 💿 Creador de ISO personalizada (la joya)
-- Asistente en **8 pasos** que transforma una ISO oficial de Windows en la tuya.
-- Debloat offline, inyección de drivers, WPI + winget offline, `autounattend.xml` a medida y reensamblado con oscdimg.
-- Verificador de ISO incluido.
-
-### 🌍 Experiencia
-- Interfaz **bilingüe ES/EN** completa (incluido el registro en vivo).
-- **3 temas**: Claro, Oscuro y Azul.
-- Tooltips descriptivos en todos los controles.
-
-### ✅ Calidad
-- UTF-8 sin BOM garantizado, cobertura de traducción verificada y formato numérico por idioma.
-- Verificador integral del proyecto + CI en GitHub Actions.
+Bilingual **English/Spanish**, three themes, **no telemetry, no accounts**, open source (MIT). And most importantly: **you're in control** — WPI marks and proposes, but only applies when *you* click.
 
 ---
 
-## 📥 Cómo empezar
+## ⭐ Highlights
 
-1. Descarga **`WPI-Moderno-v1.0.0.zip`** de los *Assets* de abajo.
-2. Extráelo en una carpeta local (por ejemplo `C:\WPI`).
-3. Ejecuta **`Iniciar_WPI.bat`** y acepta la elevación UAC.
-4. Elige idioma y tema, ¡y a montar tu Windows!
+### 🔄 Always up to date — for real
+A two-group update center powered by `winget upgrade`: **WPI-catalog apps** and **the rest of your PC**, kept separate so nothing gets mixed. One click keeps your programs current — and here's the difference: **WPI verifies the actual installed version after updating** and warns you if it *didn't really change* (typical of self-updating or running apps). No more "it says updated but it's still the old version."
 
-📖 Manual completo: [README](README.md) · [English](README_EN.md)
+### 🔎 It knows what you already have (smart auto-detection)
+- **Installed programs:** scans your PC and marks what's already installed **in green, with its version**.
+- **Tweaks:** each tweak shows a **colored dot** — green = *already applied on your PC*, grey = not — plus a live counter ("● N applied · ● M not applied").
+- **Bloatware:** each app shows **amber = still installed** (removable) or **green = already gone**, with its own counter.
 
----
+### 💿 Build your own custom Windows ISO (the star feature)
+The expert-level section, now **guided step by step**: an **8-step wizard** with a **visual breadcrumb** and a green **"NOW:"** banner telling you exactly what to do. It integrates **offline**: debloat before install, **driver injection**, your **apps + tweaks** for first boot, **offline winget**, and a tailored **`autounattend.xml`**. Reassembles with **oscdimg**, includes an **ISO verifier** and **smart reminders** about each choice (drivers baked-in vs. manual, the disk-wiping "VM mode", how to leave Rufus…).
 
-## ⚠️ Notas importantes
-
-- WPI **no incluye ninguna ISO de Windows**. Para crear una ISO personalizada, tú aportas la ISO oficial de Microsoft; WPI solo la personaliza en tu equipo.
-- Las operaciones de sistema requieren **permisos de administrador**.
-- Para tweaks/debloat/reparación, se recomienda probar antes en una **máquina virtual** y crear un **punto de restauración**.
-
----
-
-## 🙏 Inspiración
-
-Hecho con respeto al ecosistema de herramientas de post-instalación de Windows, en especial a **[Chris Titus Tech / WinUtil](https://github.com/ChrisTitusTech/winutil)** (de ahí el tema "Azul").
+### 🎨 Three themes + fully bilingual
+Light, Dark, and **Blue (Chris Titus)**. The whole UI, tooltips, dialogs and the repair suite are available in **English and Spanish**.
 
 ---
 
-## 📝 Changelog
+## 🧩 Everything else it does
 
-Consulta el [CHANGELOG.md](CHANGELOG.md) completo.
-
-**Licencia:** MIT · **Plataforma:** Windows 10/11 x64 · **Requiere:** PowerShell 5.1+ y winget
+- **🛒 360+ app catalog** in 22 categories — one-click presets (Gaming, Dev, Multimedia, Essential), save/load profiles, uninstall, download raw .exe/.msi, scope & parallel threads with auto-retry.
+- **⚙️ 40+ tweaks** with graduated risk presets (🟢 Safe / 🟠 Balanced / 🔴 Aggressive), reversible, "recommended for *my* PC" based on your hardware.
+- **🧹 Appx debloat** for the current user and the system image.
+- **🛡️ Windows Update control** — defer / pause 5 weeks / restore defaults / fully disable (services + SoftwareDistribution + scheduled tasks).
+- **🩹 17-phase Repair Suite** (bilingual) with auto-triage, manual, plan and dry-run modes.
+- **🧩 Windows features** (Hyper-V, WSL2, .NET…) via DISM with detected state.
+- **🖥️ Drivers & hardware** — full spec detection (temps included), GPU drivers with **NVIDIA/AMD/Intel always available**, driver backup, hardware-based recommendations.
+- **🌐 Search all of winget · Clone PC / Snapshot** to replicate a machine.
 
 ---
 
-*Si WPI Moderno te ahorra tiempo, deja una ⭐ en el repositorio. ¡Gracias por probarlo!* 💜
+## 📥 Getting started
+
+1. Download **`WPI-Moderno-v1.0.0.zip`** from the Assets below.
+2. Extract it to a local folder (e.g. `C:\WPI`).
+3. Run **`Iniciar_WPI.bat`** and accept the UAC prompt.
+4. Pick your language and theme, mark what you want, review, and click. Done.
+
+📖 Full guide: [README](README.md) · [Español](README_ES.md)
+
+---
+
+## ⚠️ Notes
+
+- WPI **does not bundle any Windows ISO**. To build a custom ISO, you provide the official Microsoft ISO; WPI only personalizes it on your machine.
+- System operations require **administrator rights** (WPI self-elevates).
+- For tweaks/debloat/repair, testing first in a **virtual machine** and creating a **restore point** is recommended.
+
+**License:** MIT · **Platform:** Windows 10/11 x64 · **Requires:** PowerShell 5.1+ and winget
+
+See the full [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+*If WPI Moderno saves you time, drop a ⭐ on the repo. Thanks for trying it!* 💜

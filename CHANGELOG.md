@@ -1,50 +1,49 @@
 # Changelog
 
-Todos los cambios notables de **WPI Moderno** se documentan en este archivo.
+All notable changes to **WPI Moderno** are documented in this file.
 
-El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
-y el proyecto usa [Versionado Semántico](https://semver.org/lang/es/).
-
-> 🇬🇧 *All notable changes to WPI Moderno are documented here, following Keep a Changelog and Semantic Versioning.*
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and the project uses [Semantic Versioning](https://semver.org/).
 
 ---
 
 ## [1.0.0] — 2026-06-29
 
-Primera versión pública estable. · *First stable public release.*
+First stable public release.
 
-### Añadido · Added
-- 🛒 **Catálogo de +360 apps** organizado en 22 categorías, instalables con winget.
-- 🔍 **Detección automática** de apps instaladas, versión actual y última disponible.
-- 🔄 **Centro de actualizaciones** basado en `winget upgrade`.
-- 🌐 **Búsqueda global en winget** para instalar cualquier paquete fuera del catálogo.
-- 🧬 **Clonado de equipo / Snapshot** (export/import de lo instalado).
-- ⚙️ **40+ tweaks** de privacidad, rendimiento y experiencia, con estado y reversión.
-- 🎚️ **Presets graduados de tweaks** (Seguro 🟢 / Equilibrado 🟠 / Agresivo 🔴), por nivel de riesgo real, con color y conteo — solo marcan, tú revisas y aplicas.
-- 🧹 **Debloat de Appx** para usuario actual e imagen del sistema.
-- 🩹 **Suite de Reparación bilingüe de 17 fases** con filosofía anti falsos OK y múltiples modos (`/triage`, `/auto`, `/dry`, `/fases`, `/manual`, `/plan`, `/selftest`…).
-- 💿 **Creador de ISO personalizada** en 8 pasos (debloat offline, inyección de drivers, WPI + winget offline, `autounattend.xml`, reensamblado con oscdimg).
-- 🖥️ **Panel de drivers y hardware** con detección de specs y backup de controladores.
-- 🧩 **Gestión de características de Windows** (Hyper-V, WSL2, .NET…).
-- 🌍 **Interfaz bilingüe ES/EN** y **3 temas** (Claro, Oscuro, Azul).
-- 💬 **Sistema de tooltips** descriptivos en todos los controles.
-- 📋 **Visor de logs** y registro forense por sesión.
-- ✅ **Verificador integral** (`Verificar_Proyecto.ps1`) con checks de parseo, hashes, encoding (mojibake/BOM) y cobertura de traducción.
-- 🔎 **Verificador de ISO** (`Verificar_ISO.ps1`).
+### Added
+- 🛒 **360+ app catalog** organized in 22 categories, installable with winget.
+- 🔍 **Automatic detection** of installed apps, current version and latest available.
+- 🔄 **Update center** based on `winget upgrade`, with **real post-update verification** (checks the actual installed version and warns if it didn't change).
+- 🌐 **Global winget search** to install any package outside the catalog.
+- 🧬 **Clone PC / Snapshot** (export/import of installed apps).
+- ⚙️ **40+ tweaks** for privacy, performance and experience, with state detection and reversal.
+- 🎚️ **Graduated tweak presets** (Safe 🟢 / Balanced 🟠 / Aggressive 🔴), by real risk level, color-coded and counted — they only mark; you review and apply.
+- 🧹 **Appx debloat** for the current user and the system image, with per-app state detection.
+- 🛡️ **Windows Update control** (defer / pause / restore defaults / fully disable: services + SoftwareDistribution + scheduled tasks).
+- 🩹 **Bilingual 17-phase Repair Suite** with an anti-false-OK philosophy and multiple modes (`/triage`, `/auto`, `/dry`, `/fases`, `/manual`, `/plan`, `/selftest`…).
+- 💿 **Custom ISO builder** with a guided 8-step wizard (offline debloat, driver injection, WPI + offline winget, `autounattend.xml`, reassembly with oscdimg).
+- 🖥️ **Drivers & hardware panel** with spec detection and driver backup; GPU drivers for NVIDIA/AMD/Intel always available.
+- 🧩 **Windows features management** (Hyper-V, WSL2, .NET…).
+- 🌍 **Bilingual EN/ES interface** and **3 themes** (Light, Dark, Blue).
+- 💬 **Descriptive tooltip system** on every control.
+- 📋 **Log viewer** and per-session forensic logging.
+- ✅ **Full project verifier** (`Verificar_Proyecto.ps1`) with checks for parsing, hashes, encoding (mojibake/BOM) and translation coverage.
+- 🔎 **ISO verifier** (`Verificar_ISO.ps1`).
 
-### Calidad · Quality
-- 🔡 **Política de encoding correcta para PowerShell 5.1**: los scripts `.ps1` con caracteres no-ASCII llevan **BOM** (para que 5.1 los lea como UTF-8 y no corrompa tildes/símbolos); los ficheros de **datos** (json/settings) se escriben **sin BOM** por interoperabilidad. El verificador valida ambas reglas y falla si un script con no-ASCII no tiene BOM.
-- 🖥️ **Consolas de la Suite más amplias y legibles** (estilo premium) en ES y EN.
-- 🌎 **Cobertura de traducción** verificada automáticamente: cero texto español filtrado a la versión inglesa.
-- 🔢 **Formato numérico por idioma** (punto/coma decimal correcto según ES/EN).
-- 🧪 **CI en GitHub Actions** que ejecuta el verificador integral en cada push/PR.
+### Quality
+- 🔡 **Correct encoding policy for PowerShell 5.1**: `.ps1` scripts with non-ASCII characters carry a **BOM** (so 5.1 reads them as UTF-8 and doesn't corrupt accents/symbols); **data** files (json/settings) are written **without BOM** for interoperability. The verifier enforces both rules.
+- 🖥️ **Repair Suite console** left clean and legible (default Consolas) in ES and EN.
+- 🌎 **Translation coverage** verified automatically: zero Spanish text leaking into the English version.
+- 🔢 **Per-language number formatting** (correct decimal separator for ES/EN).
+- 🧪 **GitHub Actions CI** that runs the full verifier on every push/PR.
 
 ---
 
-## Notas de versionado
+## Versioning notes
 
-- **MAJOR** (1.x.x): cambios incompatibles o reescrituras grandes.
-- **MINOR** (x.1.x): nuevas funcionalidades compatibles.
-- **PATCH** (x.x.1): correcciones y mejoras menores.
+- **MAJOR** (1.x.x): incompatible changes or large rewrites.
+- **MINOR** (x.1.x): new backward-compatible features.
+- **PATCH** (x.x.1): fixes and minor improvements.
 
 [1.0.0]: https://github.com/Rebel1487/WPI-Moderno/releases/tag/v1.0.0
