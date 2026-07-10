@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) fase suelta: registrar resultado en el estado y generar informe HTML
+if not "%DRY%"=="1" (
+    call :title_of 10
+    call :pshq addphase "10;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Resultado: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Informe:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Pulsa una tecla para cerrar... & pause >nul )
 endlocal & exit /b %RC%
@@ -38,13 +46,18 @@ if "%DRY%"=="1" ( call :dry "Sincronizaria la hora y refrescaria los certificado
 call :step "Sincronizando la hora del sistema"
 net start w32time >nul 2>&1
 w32tm /resync /force >> "%LOGFILE%" 2>&1
+set "TIME_OK=1"
+if !errorlevel! neq 0 ( set "TIME_OK=0" & call :warn "w32tm /resync devolvio error (sin red o servicio de hora parado)" )
 call :step "Actualizando certificados raiz de confianza"
 certutil -generateSSTFromWU "%WORK%\roots.sst" >> "%LOGFILE%" 2>&1
+set "CERT_OK=0"
 if exist "%WORK%\roots.sst" (
-    powershell -NoProfile -Command "try { Import-Certificate -FilePath '%WORK%\roots.sst' -CertStoreLocation Cert:\LocalMachine\Root -ErrorAction SilentlyContinue | Out-Null } catch {}" >> "%LOGFILE%" 2>&1
-    call :ok "Certificados raiz refrescados y hora sincronizada"
+    powershell -NoProfile -Command "try { Import-Certificate -FilePath '%WORK%\roots.sst' -CertStoreLocation Cert:\LocalMachine\Root -ErrorAction Stop | Out-Null; exit 0 } catch { Write-Output $_.Exception.Message; exit 1 }" >> "%LOGFILE%" 2>&1
+    if !errorlevel! equ 0 ( set "CERT_OK=1" ) else ( call :warn "No se pudieron importar los certificados raiz (revisa el log)" & set "PH_NOTE=fallo importando certificados" )
 ) else (
-    call :warn "No se pudieron descargar certificados raiz (sin Internet). Hora sincronizada."
+    call :warn "No se pudieron descargar certificados raiz (sin Internet)."
     set "PH_NOTE=sin Internet para certificados"
 )
-exit /b 0
+if "!CERT_OK!"=="1" if "!TIME_OK!"=="1" ( call :ok "Certificados raiz refrescados y hora sincronizada (verificado)" & exit /b 0 )
+if "!TIME_OK!"=="1" ( call :warn "Hora sincronizada; certificados NO refrescados" ) else ( call :warn "La hora NO se pudo sincronizar" )
+exit /b 1

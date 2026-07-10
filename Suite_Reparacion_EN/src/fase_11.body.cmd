@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) single phase: record result in state and generate the HTML report
+if not "%DRY%"=="1" (
+    call :title_of 11
+    call :pshq addphase "11;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Result: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Report:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Press any key to close... & pause >nul )
 endlocal & exit /b %RC%
@@ -58,9 +66,12 @@ if "%QUICK%"=="1" (
     )
 )
 
+set "NET_RC=0"
 call :step "Resetting Winsock and IP"
 netsh winsock reset >> "%LOGFILE%" 2>&1
+if !errorlevel! neq 0 ( call :warn "netsh winsock reset returned an error (check the log)" & set "NET_RC=1" )
 netsh int ip reset >> "%LOGFILE%" 2>&1
+if !errorlevel! neq 0 call :info "netsh int ip reset returned warnings (protected keys; this is usually normal)"
 call :step "Renewing DHCP and flushing DNS"
 ipconfig /release >nul 2>&1
 ipconfig /renew >nul 2>&1
@@ -75,12 +86,13 @@ route -f >> "%LOGFILE%" 2>&1
 if "%FWRESET%"=="1" (
     call :step "Resetting Windows Firewall (/fwreset)"
     netsh advfirewall reset >> "%LOGFILE%" 2>&1
-    call :ok "Firewall reset to default values"
+    if !errorlevel! equ 0 ( call :ok "Firewall reset to default values" ) else ( call :warn "netsh advfirewall reset returned an error (check the log)" & set "NET_RC=1" )
 )
 
 call :step "Checking the hosts file"
 findstr /v /b "#" "%SystemRoot%\System32\drivers\etc\hosts" | findstr /r "[0-9]" >nul 2>&1
 if !errorlevel! equ 0 ( call :warn "The hosts file has active entries. Review it in case it blocks sites." ) else ( call :ok "hosts file clean" )
 set "PH_NOTE=winsock/ip reset; requires reboot"
+if "!NET_RC!"=="1" ( call :warn "Network stack reset with warnings: check the log" & exit /b 1 )
 call :ok "Network stack reset (winsock requires reboot)"
 exit /b 0

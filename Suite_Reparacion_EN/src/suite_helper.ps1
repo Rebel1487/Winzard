@@ -230,7 +230,7 @@ function New-RestorePoint {
         $k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
         $prev = (Get-ItemProperty $k -Name SystemRestorePointCreationFrequency -ErrorAction SilentlyContinue).SystemRestorePointCreationFrequency
         Set-ItemProperty $k -Name SystemRestorePointCreationFrequency -Value 0 -Type DWord -ErrorAction SilentlyContinue
-        $name = "Suite_Reparacion_$((Get-Date).ToString('yyyy-MM-dd_HH-mm'))"
+        $name = "Repair_Suite_$((Get-Date).ToString('yyyy-MM-dd_HH-mm'))"
         Checkpoint-Computer -Description $name -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
         if ($null -ne $prev) { Set-ItemProperty $k -Name SystemRestorePointCreationFrequency -Value $prev -Type DWord } else { Remove-ItemProperty $k -Name SystemRestorePointCreationFrequency -ErrorAction SilentlyContinue }
         $rp = Get-ComputerRestorePoint | Where-Object { $_.Description -eq $name }
@@ -271,18 +271,18 @@ function Install-WingetBootstrap {
     $tempFile = Join-Path $env:TEMP "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
     try {
         $url = "https://github.com/microsoft/winget-cli/releases/latest/download/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
-        Write-Host "Descargando App Installer desde: $url"
+        Write-Host "Downloading App Installer from: $url"
         $webClient = New-Object System.Net.WebClient
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
         $webClient.DownloadFile($url, $tempFile)
         
-        Write-Host "Instalando App Installer con Add-AppxPackage..."
+        Write-Host "Installing App Installer with Add-AppxPackage..."
         Add-AppxPackage -Path $tempFile -ErrorAction Stop
-        Write-Host "Instalacion exitosa."
+        Write-Host "Installation successful."
         if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
         return $true
     } catch {
-        Write-Host "Error en bootstrap de winget: $($_.Exception.Message)"
+        Write-Host "winget bootstrap error: $($_.Exception.Message)"
         if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
         return $false
     }
@@ -309,13 +309,14 @@ function ConvertTo-MediaClass($mt) {
 # ante tipo incierto, evitando danar un posible SSD).
 function Resolve-OptimizeAction($media) {
     $m = ([string]$media).Trim().ToUpper()
-    if     ($m -eq 'SSD') { return 'TRIM' }
-    elseif ($m -eq 'HDD') { return 'DEFRAG' }
-    else                  { return 'NONE' }
+    if     ($m -eq 'SSD')     { return 'TRIM' }
+    elseif ($m -eq 'HDD')     { return 'DEFRAG' }
+    elseif ($m -eq 'VIRTUAL') { return 'NONE' }   # (v3.2) disco de maquina virtual: no aplica
+    else                      { return 'NONE' }
 }
 
 # Get-MediaType: identifica el disco fisico del volumen del sistema de forma
-# fiable (por DeviceId, respaldo por SerialNumber) y devuelve SSD|HDD|UNKNOWN.
+# fiable (por DeviceId, respaldo por SerialNumber) y devuelve SSD|HDD|VIRTUAL|UNKNOWN.
 function Get-MediaType {
     try {
         $sys  = ($env:SystemDrive).TrimEnd(':')
@@ -330,6 +331,12 @@ function Get-MediaType {
                       Select-Object -First 1
             }
         }
+        # (v3.2) disco de maquina virtual (VirtualBox/VMware/Hyper-V/QEMU): TRIM y
+        # desfragmentacion no aplican; se identifica por el modelo del disco.
+        $modelos = @()
+        if ($disk) { $modelos += [string]$disk.FriendlyName; $modelos += [string]$disk.Model }
+        if ($pd)   { $modelos += [string]$pd.FriendlyName;   $modelos += [string]$pd.Model }
+        if (($modelos -join ' ') -match 'VBOX|VMWARE|VIRTUAL|QEMU|XENSRC') { return 'VIRTUAL' }
         if (-not $pd) { return 'UNKNOWN' }
         return (ConvertTo-MediaClass $pd.MediaType)
     } catch { return 'UNKNOWN' }
@@ -432,6 +439,21 @@ function New-HtmlReport($outPath) {
         if (-not $rows) { $rows = "<div class='empty'>No phases were recorded in this run.</div>" }
         if (-not $bars) { $bars = "<div class='empty'>No timings to show.</div>" }
         $totalPh = $phases.Count
+        # REAL aggregate statistics of what actually ran: total session time and
+        # space freed (summed from each phase's measured notes, MB/GB).
+        $totSecs = 0; $mbFreed = 0.0
+        foreach ($ph in $phases) {
+            $sv = 0; try { $sv = [int]$ph.secs } catch {}; $totSecs += $sv
+            foreach ($m in [regex]::Matches([string]$ph.note, '(?i)(?:liberad\w*|freed)\D{0,10}?([\d\.,]+)\s*(MB|GB)')) {
+                $v = 0.0; try { $v = [double]($m.Groups[1].Value.Replace(',', '.')) } catch {}
+                if ($m.Groups[2].Value -match '(?i)GB') { $v = $v * 1024 }
+                $mbFreed += $v
+            }
+        }
+        $totTxt = if ($totSecs -ge 60) { ('{0} min {1} s' -f [int][math]::Floor($totSecs / 60), ($totSecs % 60)) } else { ('{0} s' -f $totSecs) }
+        $freedTxt = if ($mbFreed -ge 1024) { ('{0:n1} GB' -f ($mbFreed / 1024)) } elseif ($mbFreed -gt 0) { ('{0:n0} MB' -f $mbFreed) } else { '' }
+        $statLine = ('total time: {0}' -f $totTxt)
+        if ($freedTxt) { $statLine += (' &middot; space freed: {0}' -f $freedTxt) }
 
         $findings = @($st.findings)
         $findHtml = ''
@@ -710,6 +732,7 @@ html.light{--glass:rgba(255,255,255,.64);--glassbd:rgba(15,23,42,.08)}
     <div class='exec-mid'>
       <div class='exec-verdict' style='color:$mainColor'>System health: $execVerdict</div>
       <div class='exec-line'>$cOK successful &middot; $cWARN warnings &middot; $cERR errors &middot; $cSKIP skipped &middot; $totalPh phases total</div>
+      <div class='exec-line'>$statLine</div>
     </div>
     <div class='exec-delta' style='color:$deltaColor;border-color:$deltaColor'>$deltaTxt</div>
   </div>
@@ -1249,7 +1272,7 @@ function Get-BcdIntegrity {
             $res.details = 'Entrada de arranque actual integra (device/osdevice presentes).'
         } else {
             $res.ok = $false
-            $res.details = 'No se pudo confirmar la entrada de arranque actual.'
+            $res.details = 'Could not confirm the current startup entry.'
         }
     } catch {
         $res.ok = $false
@@ -1374,7 +1397,7 @@ switch ($Action.ToLower()) {
         try {
             $rps = Get-ComputerRestorePoint -ErrorAction SilentlyContinue
             foreach ($rp in $rps) {
-                if ($rp.Description -like "Suite_Reparacion_*") { $rp_ok = $true; break }
+                if ($rp.Description -like "Repair_Suite_*") { $rp_ok = $true; break }
             }
         } catch { $rp_ok = $false }
         $reg_ok = $true

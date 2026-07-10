@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) single phase: record result in state and generate the HTML report
+if not "%DRY%"=="1" (
+    call :title_of 05
+    call :pshq addphase "05;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Result: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Report:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Press any key to close... & pause >nul )
 endlocal & exit /b %RC%
@@ -64,7 +72,7 @@ if not "!RESTORE_SOURCE!"=="" (
     call :psh findlocalsource > "%CAP%" 2>&1
     type "%CAP%" >> "%LOGFILE%"
     set "LOCSRC="
-    for /f "tokens=1,* delims==" %%A in (%CAP%) do (
+    for /f "usebackq tokens=1,* delims==" %%A in ("%CAP%") do (
         if "%%A"=="SOURCE" set "LOCSRC=%%B"
     )
     if not "!LOCSRC!"=="" (
@@ -78,7 +86,7 @@ if not "!RESTORE_SOURCE!"=="" (
 call :psh dismrestore "!RESTORE_SOURCE!|45" > "%CAP%" 2>&1
 set "D=!errorlevel!"
 type "%CAP%" >> "%LOGFILE%"
-for /f "tokens=1,* delims==" %%A in (%CAP%) do (
+for /f "usebackq tokens=1,* delims==" %%A in ("%CAP%") do (
     if "%%A"=="EXITCODE" set "D=%%B"
     if "%%A"=="TIMEDOUT" set "DISM_TIMEDOUT=%%B"
 )

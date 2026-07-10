@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) fase suelta: registrar resultado en el estado y generar informe HTML
+if not "%DRY%"=="1" (
+    call :title_of 11
+    call :pshq addphase "11;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Resultado: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Informe:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Pulsa una tecla para cerrar... & pause >nul )
 endlocal & exit /b %RC%
@@ -58,9 +66,12 @@ if "%QUICK%"=="1" (
     )
 )
 
+set "NET_RC=0"
 call :step "Reiniciando Winsock e IP"
 netsh winsock reset >> "%LOGFILE%" 2>&1
+if !errorlevel! neq 0 ( call :warn "netsh winsock reset devolvio error (revisa el log)" & set "NET_RC=1" )
 netsh int ip reset >> "%LOGFILE%" 2>&1
+if !errorlevel! neq 0 call :info "netsh int ip reset devolvio avisos (claves protegidas; suele ser normal)"
 call :step "Renovando DHCP y vaciando DNS"
 ipconfig /release >nul 2>&1
 ipconfig /renew >nul 2>&1
@@ -75,12 +86,13 @@ route -f >> "%LOGFILE%" 2>&1
 if "%FWRESET%"=="1" (
     call :step "Restableciendo el Firewall de Windows (/fwreset)"
     netsh advfirewall reset >> "%LOGFILE%" 2>&1
-    call :ok "Firewall restablecido a los valores predeterminados"
+    if !errorlevel! equ 0 ( call :ok "Firewall restablecido a los valores predeterminados" ) else ( call :warn "netsh advfirewall reset devolvio error (revisa el log)" & set "NET_RC=1" )
 )
 
 call :step "Revisando el archivo hosts"
 findstr /v /b "#" "%SystemRoot%\System32\drivers\etc\hosts" | findstr /r "[0-9]" >nul 2>&1
 if !errorlevel! equ 0 ( call :warn "El archivo hosts tiene entradas activas. Revisalo por si bloquea webs." ) else ( call :ok "Archivo hosts limpio" )
 set "PH_NOTE=winsock/ip reset; requiere reinicio"
+if "!NET_RC!"=="1" ( call :warn "Pila de red restablecida con avisos: revisa el log" & exit /b 1 )
 call :ok "Pila de red restablecida (winsock requiere reinicio)"
 exit /b 0

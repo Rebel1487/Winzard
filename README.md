@@ -31,6 +31,16 @@
 
 ---
 
+> ### ✨ New in 1.1.0 — the *verified* release
+> Every section and every button exercised one by one, in both languages, **twice**, on a real PC — plus a live-fire VM test: a custom ISO installed **100 % unattended** (not a single keystroke) and **18/18 apps installed themselves** on first boot.
+> - 📖 **Read the manuals inside Winzard**: one button per manual on Quick start, opening a premium reading window — every button explained, with practical examples.
+> - ⏳ **Startup splash with progress bar** — the app appears fully ready, never half-drawn.
+> - 🥇 **Premium first boot**: per-app progress + live window title, anti-hang watchdog, automatic network retry, and deferred installs through an elevated task — **zero UAC prompts**.
+> - 🛠️ **14 one-click quick system tools** in Repair, wired to the async engine.
+> - 🧯 20+ real bugs found by the verification campaign, fixed and re-verified (see [CHANGELOG](CHANGELOG.md)).
+
+---
+
 ## 📑 Table of contents
 
 - [What is Winzard?](#-what-is-wpi-moderno)
@@ -119,6 +129,8 @@ When you open WPI you'll see a **side menu** with every area. Here's what each o
 ### 🏠 Quick start (easy mode)
 A welcome screen for people who want to get straight to it: shortcuts to the most common actions without getting lost in advanced options.
 
+It opens behind a **loading splash with a progress bar** (the app appears fully ready, never half-drawn) and hosts the **manuals button row**: every manual has its own small button — plus a highlighted **Complete manual** — and opens in a **premium reading window inside Winzard**, with every button explained and practical examples. No folders, no browser.
+
 ### 🔎 Search everything (global)
 A cross-app search that filters **everything**: apps, tweaks, sections... Type what you need and jump right to it.
 
@@ -144,7 +156,7 @@ System update management from a clean panel.
 Removes preinstalled apps (Xbox, Copilot, promo apps...) for both the current user and the system image. Detects what's still installed and color-codes the state.
 
 ### 🩹 Repair
-Access to quick fixes, the **classic Windows panels** (Control Panel, Services, Device Manager, gpedit...) and, above all, the **17-phase Repair Suite** ([see below](#-the-repair-suite-17-phases)).
+Access to quick fixes, the **classic Windows panels** (Control Panel, Services, Device Manager, gpedit...), the new **Quick system tools** (14 one-click repairs — SFC, DISM, network reset, WU cache, Store, search index, winget, monthly maintenance, DNS presets, silence Edge — running on the async engine with full logging and Cancel) and, above all, the **17-phase Repair Suite** ([see below](#-the-repair-suite-17-phases)).
 
 ### 🧩 Windows features
 Enable or disable optional Windows components (Hyper-V, WSL2, .NET, etc.) with their real state detected live.
@@ -258,6 +270,8 @@ The apps section has an action bar. Here's what each button does:
 This is the feature that lifts WPI above a simple app installer. **What if your next Windows install already came fully set up?**
 
 The **ISO Creator** starts from an **official Windows ISO** (the one you download from Microsoft) and turns it into **yours**: same legitimate base, but with your software, your settings and your account already integrated. When you install Windows with it, you boot straight into a clean, optimized and **ready-to-use** system.
+
+And the install itself is **truly 100 % unattended**: generic setup key embedded (Windows activates normally afterwards), the 25H2 OOBE region/keyboard pages suppressed — **not a single keystroke** from booting the ISO to the desktop. The **first boot is a premium experience on any PC**: apps install one by one with a live progress bar, per-app timing and a live window title; each installer closes itself so windows never pile up; a **watchdog** cuts off any stuck install; apps that fail on a network drop are **retried automatically** when connectivity returns; tricky apps are deferred to the first sign-in through an **elevated task — zero UAC prompts**; and you end with an **HTML report** on the desktop, a one-click no-UAC retry script for anything that failed, and a **"Freshly installed" restore point**.
 
 ### The genius of the process
 

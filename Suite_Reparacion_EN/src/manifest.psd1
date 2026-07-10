@@ -10,22 +10,22 @@
 
     # Titulos y "por que" de las 17 fases (00..16), VERBATIM de :title_of en lib_wpi.cmd.
     PHASES = @(
-        @{ Id = '00'; Title = 'Diagnostico y triage'; Why = 'Mira discos, espacio y eventos, y detecta la causa raiz.' }
-        @{ Id = '01'; Title = 'Punto de restauracion'; Why = 'Crea un punto de restauracion y respalda el registro para volver atras.' }
-        @{ Id = '02'; Title = 'Limpieza inicial'; Why = 'Borra temporales, papelera y caches para dar aire al disco.' }
-        @{ Id = '03'; Title = 'CHKDSK'; Why = 'Comprueba el sistema de archivos del disco C: en busca de errores.' }
-        @{ Id = '04'; Title = 'Optimizacion de disco'; Why = 'TRIM si es SSD o desfragmenta si es HDD, segun el tipo de disco.' }
-        @{ Id = '05'; Title = 'DISM'; Why = 'Repara la imagen de componentes de Windows (el origen de SFC).' }
-        @{ Id = '06'; Title = 'SFC y verificacion'; Why = 'Repara archivos de sistema y verifica el resultado tras DISM.' }
-        @{ Id = '07'; Title = 'Reparar WMI'; Why = 'Comprueba y repara el repositorio WMI (su rotura causa fallos raros).' }
-        @{ Id = '08'; Title = 'Apps de Store e Inicio'; Why = 'Re-registra las apps de la Store y repara el menu Inicio.' }
-        @{ Id = '09'; Title = 'Busqueda y caches'; Why = 'Reconstruye el indice de Busqueda, cache de iconos/fuentes y el spooler.' }
-        @{ Id = '10'; Title = 'Certificados y hora'; Why = 'Refresca certificados raiz y sincroniza la hora (arregla WU/Store/cert).' }
-        @{ Id = '11'; Title = 'Red'; Why = 'Reinicia winsock, IP, DNS y proxy, y revisa el archivo hosts.' }
-        @{ Id = '12'; Title = 'Directivas (GPO)'; Why = 'Reaplica las directivas de grupo para deshacer politicas mal aplicadas.' }
-        @{ Id = '13'; Title = 'Windows Update'; Why = 'Repara Windows Update (servicios y cache). Respeta el bloqueo con /keepwu.' }
-        @{ Id = '14'; Title = 'Winget'; Why = 'Repara winget y actualiza el gestor de paquetes.' }
-        @{ Id = '15'; Title = 'Dispositivos'; Why = 'Lista drivers/dispositivos con error para que sepas que revisar.' }
-        @{ Id = '16'; Title = 'Limpieza final e informe'; Why = 'Limpieza profunda, recalcula la salud y genera el informe HTML.' }
+        @{ Id = '00'; Title = 'Diagnostics and triage'; Why = 'Checks disks, space and events, and finds the root cause.' }
+        @{ Id = '01'; Title = 'Restore point'; Why = 'Creates a restore point and backs up the registry so you can roll back.' }
+        @{ Id = '02'; Title = 'Initial cleanup'; Why = 'Clears temp files, recycle bin and caches to free up the disk.' }
+        @{ Id = '03'; Title = 'CHKDSK'; Why = 'Checks the C: drive file system for errors.' }
+        @{ Id = '04'; Title = 'Disk optimization'; Why = 'TRIM for SSDs or defragment for HDDs, depending on the disk type.' }
+        @{ Id = '05'; Title = 'DISM'; Why = 'Repairs the Windows component image (the source SFC relies on).' }
+        @{ Id = '06'; Title = 'SFC and verification'; Why = 'Repairs system files and verifies the result after DISM.' }
+        @{ Id = '07'; Title = 'Repair WMI'; Why = 'Checks and repairs the WMI repository (a broken one causes odd failures).' }
+        @{ Id = '08'; Title = 'Store apps and Startup'; Why = 'Re-registers Store apps and repairs the Start menu.' }
+        @{ Id = '09'; Title = 'Search and caches'; Why = 'Rebuilds the Search index, icon/font caches and the spooler.' }
+        @{ Id = '10'; Title = 'Certificates and time'; Why = 'Refreshes root certificates and syncs the clock (fixes WU/Store/cert).' }
+        @{ Id = '11'; Title = 'Network'; Why = 'Resets winsock, IP, DNS and proxy, and checks the hosts file.' }
+        @{ Id = '12'; Title = 'Policies (GPO)'; Why = 'Re-applies group policies to undo misapplied settings.' }
+        @{ Id = '13'; Title = 'Windows Update'; Why = 'Repairs Windows Update (services and cache). Honors /keepwu.' }
+        @{ Id = '14'; Title = 'Winget'; Why = 'Repairs winget and updates the package manager.' }
+        @{ Id = '15'; Title = 'Devices'; Why = 'Lists drivers/devices with errors so you know what to check.' }
+        @{ Id = '16'; Title = 'Final cleanup and report'; Why = 'Deep cleanup, recomputes health and generates the HTML report.' }
     )
 }

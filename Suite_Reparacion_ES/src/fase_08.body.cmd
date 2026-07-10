@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) fase suelta: registrar resultado en el estado y generar informe HTML
+if not "%DRY%"=="1" (
+    call :title_of 08
+    call :pshq addphase "08;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Resultado: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Informe:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Pulsa una tecla para cerrar... & pause >nul )
 endlocal & exit /b %RC%
@@ -40,5 +48,8 @@ powershell -NoProfile -Command "Get-AppxPackage -AllUsers | ForEach-Object { try
 call :step "Reiniciando el menu Inicio"
 taskkill /f /im StartMenuExperienceHost.exe >nul 2>&1
 taskkill /f /im ShellExperienceHost.exe >nul 2>&1
-call :ok "Apps de Store re-registradas e Inicio reiniciado"
+timeout /t 3 /nobreak >nul 2>&1
+tasklist /fi "imagename eq StartMenuExperienceHost.exe" 2>nul | find /i "StartMenuExperienceHost.exe" >nul 2>&1
+if !errorlevel! neq 0 ( call :warn "Re-registro lanzado, pero el menu Inicio aun no se ha relanzado (lo hace solo al usarlo). Revisa el log si alguna app sigue fallando." & set "PH_NOTE=Inicio pendiente de relanzarse" & exit /b 1 )
+call :ok "Apps de Store re-registradas e Inicio reiniciado (verificado)"
 exit /b 0

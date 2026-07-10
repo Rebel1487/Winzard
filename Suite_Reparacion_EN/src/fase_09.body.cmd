@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) single phase: record result in state and generate the HTML report
+if not "%DRY%"=="1" (
+    call :title_of 09
+    call :pshq addphase "09;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Result: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Report:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Press any key to close... & pause >nul )
 endlocal & exit /b %RC%
@@ -54,5 +62,14 @@ call :step "Restarting print spooler"
 net stop Spooler /y >nul 2>&1
 del /f /q "%SystemRoot%\System32\spool\PRINTERS\*.*" >nul 2>&1
 net start Spooler >nul 2>&1
-call :ok "Search, caches and spooler reset"
+call :step "Verifying that the services started again"
+set "SVCFAIL="
+sc query WSearch 2>nul | findstr /i "RUNNING START_PENDING" >nul 2>&1
+if !errorlevel! neq 0 set "SVCFAIL=!SVCFAIL! WSearch"
+sc query FontCache 2>nul | findstr /i "RUNNING START_PENDING" >nul 2>&1
+if !errorlevel! neq 0 set "SVCFAIL=!SVCFAIL! FontCache"
+sc query Spooler 2>nul | findstr /i "RUNNING START_PENDING" >nul 2>&1
+if !errorlevel! neq 0 set "SVCFAIL=!SVCFAIL! Spooler"
+if defined SVCFAIL ( call :warn "Service(s) not running after the reset:!SVCFAIL!. Check the log." & set "PH_NOTE=services not running:!SVCFAIL!" & exit /b 1 )
+call :ok "Search, caches and spooler reset (services verified)"
 exit /b 0

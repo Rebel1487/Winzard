@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) single phase: record result in state and generate the HTML report
+if not "%DRY%"=="1" (
+    call :title_of 08
+    call :pshq addphase "08;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Result: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Report:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Press any key to close... & pause >nul )
 endlocal & exit /b %RC%
@@ -40,5 +48,8 @@ powershell -NoProfile -Command "Get-AppxPackage -AllUsers | ForEach-Object { try
 call :step "Restarting the Start menu"
 taskkill /f /im StartMenuExperienceHost.exe >nul 2>&1
 taskkill /f /im ShellExperienceHost.exe >nul 2>&1
-call :ok "Store apps re-registered and Start restarted"
+timeout /t 3 /nobreak >nul 2>&1
+tasklist /fi "imagename eq StartMenuExperienceHost.exe" 2>nul | find /i "StartMenuExperienceHost.exe" >nul 2>&1
+if !errorlevel! neq 0 ( call :warn "Re-registration launched, but the Start menu has not relaunched yet (it relaunches on use). Check the log if any app still fails." & set "PH_NOTE=Start pending relaunch" & exit /b 1 )
+call :ok "Store apps re-registered and Start restarted (verified)"
 exit /b 0

@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) fase suelta: registrar resultado en el estado y generar informe HTML
+if not "%DRY%"=="1" (
+    call :title_of 14
+    call :pshq addphase "14;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Resultado: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Informe:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Pulsa una tecla para cerrar... & pause >nul )
 endlocal & exit /b %RC%
@@ -63,7 +71,7 @@ if !errorlevel! neq 0 (
     call :psh bootstrapwinget > "%CAP%" 2>&1
     type "%CAP%" >> "%LOGFILE%"
     set "BOOTSTRAP_OK=0"
-    for /f "tokens=1,2 delims==" %%A in (%CAP%) do (
+    for /f "usebackq tokens=1,2 delims==" %%A in ("%CAP%") do (
         if "%%A"=="BOOTSTRAP_OK" set "BOOTSTRAP_OK=%%B"
     )
     if "!BOOTSTRAP_OK!"=="1" (
@@ -80,6 +88,10 @@ if !errorlevel! neq 0 (
 )
 call :step "Reparando origenes y actualizando winget"
 winget source reset --force >> "%LOGFILE%" 2>&1
+if !errorlevel! neq 0 ( call :warn "winget source reset devolvio error. Revisa el log." & set "PH_NOTE=winget source reset fallo" & exit /b 1 )
 winget source update >> "%LOGFILE%" 2>&1
-call :ok "winget operativo y origenes actualizados"
+if !errorlevel! neq 0 call :warn "winget source update devolvio avisos (algun origen no se actualizo)"
+winget --version >nul 2>&1
+if !errorlevel! neq 0 ( call :warn "winget no responde tras la reparacion" & set "PH_NOTE=winget no responde" & exit /b 1 )
+call :ok "winget operativo y origenes actualizados (verificado)"
 exit /b 0

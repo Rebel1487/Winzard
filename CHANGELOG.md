@@ -7,6 +7,36 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.0] — 2026-07-10  *(app build v7.4)*
+
+The **verified release**: every section, every button, both languages, exercised one by one on a real PC **twice** (two full verification passes), plus a live-fire test — a custom ISO installed 100 % unattended in a VM with **18/18 apps installing themselves** on first boot. Every bug found on the way was fixed and re-verified.
+
+### Added
+- 📖 **In-app manual viewer**: every manual now has its own small button on Quick start (plus a highlighted **Complete manual**) and opens in a **premium reading window inside Winzard** — no folders, no browser. Bilingual, all 3 themes.
+- 📚 **Manuals, doubled down**: 16 manuals per language rewritten with button-by-button detail and **practical examples** ("I want X → press Y") so any user can follow them.
+- ⏳ **Startup splash with progress bar**: Winzard shows a loading screen from the first second and reveals the app fully ready (it also warms up the async install engine, killing the first-action lag).
+- 🛠️ **Quick system tools** in Repair: 14 one-click repairs (SFC, DISM, network reset, WU cache, Store, search index, winget, monthly task, DNS presets, silence Edge) wired to the async engine with full logging and Cancel.
+- 🥇 **Premium first boot** (custom ISO): per-app progress bar + live window title + per-app timing; **anti-hang watchdog** (a stuck winget can't freeze the batch); **automatic network retry** (apps that failed due to a network drop are retried once connectivity returns); problematic apps deferred to first sign-in via an **elevated task — zero UAC prompts**; `Reintentar_apps_fallidas.cmd` also runs **without UAC**; apps resolve from the winget source directly (immune to an uninitialized msstore).
+- 🤖 **Truly 100 % unattended installs**: the 25H2 OOBE region/keyboard pages are suppressed and a generic setup key is embedded — from booting the ISO to the desktop, **not a single keystroke**.
+- 🧰 **CLI, expanded**: documented `-Preset` / `-Update`; global **fail-closed `-DryRun`** with an unmistakable banner; `-BuildIsoKit` now neutral by default with `-IsoTweaksAll` / `-IsoDebloatAll` opt-ins; the unattended console respects the saved language and never blocks waiting for Enter under automation.
+- 💿 **ISO wizard niceties**: output/work folder proposed on the disk with the most free space; honest summary row when the unattended password is empty; multi-partition ISOs mount correctly; single-edition WIMs get the right autounattend image index.
+
+### Fixed
+- 💾 Saving an app preset as `.txt` never wrote the file (silent data loss) — fixed and verified in ES/EN GUI runs.
+- 🧹 Five debloat-panel bugs (stale label readers + missing count refresh + master profile marking installed apps for removal) — fixed and validated in real GUI passes.
+- 🗔 **Dialogs now center over Winzard** (they could open at a screen corner on 4K/DPI setups and go unnoticed).
+- 🐌 **winget exit codes read reliably** (a PS 5.1 quirk could turn real failures into fake `[OK]`s) and inner-installer failures always surface as failures, in GUI, CLI and first boot.
+- 🧵 `Update ALL` got a WU-services preflight, an inactivity watchdog and a content-based verdict; busy-state now also covers theme/language switching and the verify/undo buttons.
+- 🌐 i18n: theme labels, search-result buttons, debloat catalog entries and the whole unattended console honor the selected language; translation audit stays at zero leaks.
+- 🖥️ Window geometry restores correctly on multi-monitor setups with negative coordinates; scope/threads/choco preferences persist across sessions.
+- 🚑 **Repair Suite works from folders with spaces** (unquoted `for /f` paths broke phase verdicts) — fixed across ES/EN and sources, re-verified with full 17-phase runs.
+- ⏎ The unattended console no longer hangs on a final `Read-Host` when stdin is redirected (automation-safe).
+
+### Quality
+- ✅ Two complete verification passes (every section, every button, ES+EN, 3 themes) on a real PC, with forensic evidence for each check, plus a VM fire test: unattended install → first boot → **18/18 apps OK**.
+
+---
+
 ## [1.0.0] — 2026-06-29
 
 First stable public release.

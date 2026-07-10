@@ -207,12 +207,12 @@ exit /b 1
 
 :: --- Req 17.1/17.3: punto unico del esquema de log consolidado ---
 :: Garantiza que orquestador y fases comparten %LOGFILE% =
-:: %LOGDIR%\reparacion_%TIMESTAMP%.log (definido en la cabecera). No introduce
+:: %LOGDIR%\repair_%TIMESTAMP%.log (definido en la cabecera). No introduce
 :: logica nueva: si las variables faltaran, las reconstruye de forma segura.
 :log_consolidate
 if not defined LOGDIR set "LOGDIR=%WORK%\Logs"
 if not exist "%LOGDIR%" mkdir "%LOGDIR%" >nul 2>&1
-if not defined LOGFILE set "LOGFILE=%LOGDIR%\reparacion_%TIMESTAMP%.log"
+if not defined LOGFILE set "LOGFILE=%LOGDIR%\repair_%TIMESTAMP%.log"
 exit /b 0
 
 :: --- Req 17.2: rotacion de logs (conservar los LOG_RETENTION mas recientes) ---
@@ -317,7 +317,7 @@ for %%P in (00 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16) do (
 set "DRY=%_OLDDRY%"
 :: restaurar estado y limpiar artefactos del self-test
 if exist "%WORK%\_estado.selftest.bak" ( move /y "%WORK%\_estado.selftest.bak" "%WORK%\estado.json" >nul 2>&1 ) else ( if exist "%WORK%\estado.json" del /f /q "%WORK%\estado.json" >nul 2>&1 )
-if exist "%WORK%\Informe_%TIMESTAMP%.html" del /f /q "%WORK%\Informe_%TIMESTAMP%.html" >nul 2>&1
+if exist "%WORK%\Report_%TIMESTAMP%.html" del /f /q "%WORK%\Report_%TIMESTAMP%.html" >nul 2>&1
 call :ok "Phases: all 17 initialize in simulation with no critical errors"
 :: 3) equivalencia de bloques (solo si esta el generador, es decir, en desarrollo)
 if exist "%~dp0build\generar.ps1" (
@@ -517,7 +517,7 @@ exit /b 0
 call :step "Generating the HTML report"
 if "%DRY%"=="1" call :info "[SIMULATION] the HTML report would be generated"
 if "%DRY%"=="1" exit /b 0
-set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
 call :psh report "%REPORT%"
 if exist "%REPORT%" ( call :ok "Report created in !REPORT!" ) else ( call :warn "Could not generate the report" )
 exit /b 0

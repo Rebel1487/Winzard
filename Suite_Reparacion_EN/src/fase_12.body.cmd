@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) single phase: record result in state and generate the HTML report
+if not "%DRY%"=="1" (
+    call :title_of 12
+    call :pshq addphase "12;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Result: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Report:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Press any key to close... & pause >nul )
 endlocal & exit /b %RC%
@@ -37,5 +45,6 @@ endlocal & exit /b %RC%
 if "%DRY%"=="1" ( call :dry "Would re-apply the group policies (gpupdate /force)" & exit /b 2 )
 call :step "Re-applying group policies"
 gpupdate /force >> "%LOGFILE%" 2>&1
-call :ok "Group policies re-applied (gpupdate /force)"
+if !errorlevel! neq 0 ( call :warn "gpupdate /force returned an error. Check the log." & set "PH_NOTE=gpupdate error" & exit /b 1 )
+call :ok "Group policies re-applied and verified (gpupdate /force)"
 exit /b 0

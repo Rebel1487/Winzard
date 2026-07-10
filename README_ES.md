@@ -31,6 +31,16 @@
 
 ---
 
+> ### ✨ Novedades de la 1.1.0 — la versión *verificada*
+> Cada sección y cada botón ejercitados uno a uno, en los dos idiomas, **dos veces**, en un PC real — más una prueba de fuego en VM: una ISO personalizada instalada **100 % desatendida** (ni una sola tecla) y **18/18 apps instalándose solas** en el primer arranque.
+> - 📖 **Lee los manuales dentro de Winzard**: un botón por manual en el Inicio rápido, con ventana de lectura premium — cada botón explicado y con ejemplos prácticos.
+> - ⏳ **Pantalla de carga con barra de progreso** al abrir — la app aparece lista del tirón, nunca a medio dibujar.
+> - 🥇 **Primer arranque premium**: progreso por app + título de ventana en vivo, vigilante anticuelgues, reintento automático de red, y diferidos por tarea elevada — **cero avisos de UAC**.
+> - 🛠️ **14 herramientas rápidas de un clic** en Reparación, sobre el motor asíncrono.
+> - 🧯 Más de 20 bugs reales cazados por la campaña de verificación, arreglados y re-verificados (ver [CHANGELOG](CHANGELOG.md)).
+
+---
+
 ## 📑 Tabla de contenidos
 
 - [¿Qué es Winzard?](#-qué-es-wpi-moderno)
@@ -119,6 +129,8 @@ Al abrir WPI verás un **menú lateral** con todas las áreas. Esto es lo que ha
 ### 🏠 Inicio rápido (modo fácil)
 Pantalla de bienvenida pensada para quien quiere ir al grano: accesos directos a las acciones más comunes sin perderse entre opciones avanzadas.
 
+Ahora se abre tras una **pantalla de carga con barra de progreso** (la app aparece lista del tirón, nunca a medio dibujar) y aloja la **botonera de manuales**: cada manual tiene su botón pequeño — más el **Manual completo** destacado — y se abre en una **ventana de lectura premium dentro de Winzard**, con cada botón explicado y ejemplos prácticos. Sin carpetas ni navegador.
+
 ### 🔎 Buscar en todo (global)
 Un buscador transversal que filtra por **toda** la aplicación: apps, tweaks, secciones... Escribe lo que buscas y ve directo.
 
@@ -144,7 +156,7 @@ Gestión de actualizaciones del sistema desde un panel claro.
 Elimina aplicaciones preinstaladas (Xbox, Copilot, apps promocionales...) tanto para el usuario actual como de la imagen del sistema. Detecta qué sigue instalado y marca en colores el estado.
 
 ### 🩹 Reparación
-Acceso a reparaciones rápidas, a los **paneles clásicos de Windows** (Panel de control, Servicios, Administrador de dispositivos, gpedit...) y, sobre todo, a la **Suite de Reparación de 17 fases** ([ver abajo](#-la-suite-de-reparación-17-fases)).
+Acceso a reparaciones rápidas, a los **paneles clásicos de Windows** (Panel de control, Servicios, Administrador de dispositivos, gpedit...), a las nuevas **Herramientas rápidas del sistema** (14 reparaciones de un clic — SFC, DISM, restablecer red, caché de WU, Store, índice de búsqueda, winget, mantenimiento mensual, presets de DNS, silenciar Edge — sobre el motor asíncrono con log completo y Cancelar) y, sobre todo, a la **Suite de Reparación de 17 fases** ([ver abajo](#-la-suite-de-reparación-17-fases)).
 
 ### 🧩 Características de Windows
 Activa o desactiva componentes opcionales de Windows (Hyper-V, WSL2, .NET, etc.) con su estado real detectado en vivo.
@@ -258,6 +270,8 @@ En la sección de apps tienes una barra de acciones. Esto hace cada botón:
 Esta es la función que eleva a WPI por encima de un simple instalador de apps. **¿Y si tu próxima instalación de Windows ya viniera con todo hecho?**
 
 El **Creador de ISO** parte de una **ISO oficial de Windows** (la que descargas de Microsoft) y la transforma en **tu** ISO: misma base legítima, pero con tu software, tus ajustes y tu cuenta ya integrados. Cuando instales Windows con ella, arrancarás directamente en un sistema limpio, optimizado y **listo para usar**.
+
+Y la instalación es **100 % desatendida de verdad**: clave genérica de instalación integrada (Windows se activa después con normalidad), páginas de región/teclado del OOBE de 25H2 suprimidas — **ni una sola tecla** desde que arranca la ISO hasta el escritorio. El **primer arranque es una experiencia premium en cualquier PC**: las apps se instalan una a una con barra de progreso en vivo, tiempo por app y título de ventana vivo; cada instalador se cierra solo para que nunca se apilen ventanas; un **vigilante anticuelgues** corta cualquier instalación clavada; las que caen por un corte de red se **reintentan solas** al volver la conexión; las apps difíciles se difieren al primer inicio de sesión mediante una **tarea elevada — cero avisos de UAC**; y terminas con un **informe HTML** en el escritorio, un script de reintento sin UAC para lo que fallara y un **punto de restauración "Recién instalado"**.
 
 ### La genialidad del proceso
 

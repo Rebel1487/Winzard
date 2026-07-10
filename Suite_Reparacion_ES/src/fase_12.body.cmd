@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) fase suelta: registrar resultado en el estado y generar informe HTML
+if not "%DRY%"=="1" (
+    call :title_of 12
+    call :pshq addphase "12;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Resultado: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Informe:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Pulsa una tecla para cerrar... & pause >nul )
 endlocal & exit /b %RC%
@@ -37,5 +45,6 @@ endlocal & exit /b %RC%
 if "%DRY%"=="1" ( call :dry "Reaplicaria las directivas de grupo (gpupdate /force)" & exit /b 2 )
 call :step "Reaplicando directivas de grupo"
 gpupdate /force >> "%LOGFILE%" 2>&1
-call :ok "Directivas reaplicadas (gpupdate /force)"
+if !errorlevel! neq 0 ( call :warn "gpupdate /force devolvio error. Revisa el log." & set "PH_NOTE=gpupdate con error" & exit /b 1 )
+call :ok "Directivas reaplicadas y verificadas (gpupdate /force)"
 exit /b 0

@@ -4,6 +4,13 @@
 ::SRC El generador descarta las lineas iniciales ::SRC antes de ensamblar.
 @echo off
 setlocal EnableDelayedExpansion
+:: (v3.2) CAPTURAR la identidad del script ANTES del bucle de argumentos:
+:: en cmd, 'shift' sin /1 desplaza TAMBIEN %0, y tras el bucle %~f0/%~dp0
+:: apuntan al ultimo argumento (p. ej. C:\quiet). Era la causa raiz de que
+:: con argumentos el estado fuese a C:\WPI_Suite (raiz del disco) y de que
+:: la auto-elevacion relanzara una ruta invalida.
+set "SELF=%~f0"
+set "SELFDIR=%~dp0"
 :: --- Consola estilo WinUtil: fondo azul oscuro, texto claro (Req B/D) ---
 :: Se aplica a la suite completa y a CADA fase suelta (todas incluyen esta cabecera).
 :: 'color' repinta el bufer; 'cls' garantiza el fondo azul desde el inicio.
@@ -47,7 +54,7 @@ if /i "!ARG:~0,8!"=="/phases:" (
     set "SEL_FASES=!ARG:~8!"
     set "SEL_FASES=!SEL_FASES:+=,!"
 )
-shift
+shift /1
 goto parse_loop
 :parse_done
 :: por seguridad, /selftest implies simulation (no toca el sistema)
@@ -70,12 +77,12 @@ if "%NEED_ADMIN%"=="0" goto :admin_done
 net session >nul 2>&1
 if !errorLevel! neq 0 (
     echo Solicitando privilegios de Administrador...
-    powershell -NoProfile -Command "Start-Process cmd.exe -ArgumentList '/k \"%~f0\" %*' -Verb RunAs"
+    powershell -NoProfile -Command "Start-Process cmd.exe -ArgumentList '/k \"%SELF%\" %*' -Verb RunAs"
     exit /b
 )
 :admin_done
 :: --- carpetas de trabajo ---
-set "WORK=%~dp0WPI_Suite"
+set "WORK=%SELFDIR%WPI_Suite"
 set "LOGDIR=%WORK%\Logs"
 set "BKDIR=%WORK%\Backups"
 if not exist "%WORK%" mkdir "%WORK%" >nul 2>&1

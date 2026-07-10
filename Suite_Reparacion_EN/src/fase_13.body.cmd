@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) single phase: record result in state and generate the HTML report
+if not "%DRY%"=="1" (
+    call :title_of 13
+    call :pshq addphase "13;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Result: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Report:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Press any key to close... & pause >nul )
 endlocal & exit /b %RC%
@@ -85,13 +93,30 @@ if exist "%SystemRoot%\SoftwareDistribution" (
     for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"MOVED=" "%CAP%"`) do set "MOVED=%%a"
     if not "!MOVED!"=="1" ( set "WU_WARN=1" & call :warn "Could not move SoftwareDistribution" )
 )
-if exist "%SystemRoot%\System32\catroot2" (
+rem (v3.2) catroot2 is often locked by cryptsvc for a few seconds: retries with waits
+set "CAT_EXISTS=0"
+if exist "%SystemRoot%\System32\catroot2" set "CAT_EXISTS=1"
+if "!CAT_EXISTS!"=="1" (
     move "%SystemRoot%\System32\catroot2" "%BKDIR%\catroot2_%TIMESTAMP%" >nul 2>&1
+)
+if "!CAT_EXISTS!"=="1" if exist "%SystemRoot%\System32\catroot2" (
+    call :step "catroot2 busy: second attempt after a short pause"
+    net stop cryptsvc /y >nul 2>&1
+    ping 127.0.0.1 -n 5 >nul
+    move "%SystemRoot%\System32\catroot2" "%BKDIR%\catroot2_%TIMESTAMP%" >nul 2>&1
+)
+if "!CAT_EXISTS!"=="1" if exist "%SystemRoot%\System32\catroot2" (
+    call :step "catroot2 busy: third attempt after a longer pause"
+    net stop cryptsvc /y >nul 2>&1
+    ping 127.0.0.1 -n 9 >nul
+    move "%SystemRoot%\System32\catroot2" "%BKDIR%\catroot2_%TIMESTAMP%" >nul 2>&1
+)
+if "!CAT_EXISTS!"=="1" (
     call :psh moveresult "%SystemRoot%\System32\catroot2|%BKDIR%\catroot2_%TIMESTAMP%" > "%CAP%" 2>&1
     type "%CAP%" >> "%LOGFILE%"
     set "MOVED="
     for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"MOVED=" "%CAP%"`) do set "MOVED=%%a"
-    if not "!MOVED!"=="1" ( set "WU_WARN=1" & call :warn "Could not move catroot2" )
+    if not "!MOVED!"=="1" ( set "WU_WARN=1" & call :warn "Could not move catroot2 (3 attempts)" )
 )
 
 call :step "Removing stale WSUS client settings"

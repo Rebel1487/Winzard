@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) single phase: record result in state and generate the HTML report
+if not "%DRY%"=="1" (
+    call :title_of 07
+    call :pshq addphase "07;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Result: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Report:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Press any key to close... & pause >nul )
 endlocal & exit /b %RC%
@@ -70,7 +78,7 @@ cd /d %SystemRoot%\System32\wbem >nul 2>&1
 for /f %%s in ('dir /b *.mof *.mfl') do (
     mofcomp %%s >> "%LOGFILE%" 2>&1
 )
-cd /d "%~dp0" >nul 2>&1
+cd /d "%SELFDIR%" >nul 2>&1
 
 winmgmt /verifyrepository > "%CAP%" 2>&1
 set "WMIRC=!errorlevel!"

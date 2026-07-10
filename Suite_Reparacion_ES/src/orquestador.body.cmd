@@ -433,7 +433,7 @@ call :psh checkbackups "%BKDIR%|%TIMESTAMP%" > "%CAP%" 2>&1
 type "%CAP%" >> "%LOGFILE%"
 set "RP_OK=0"
 set "REG_OK=0"
-for /f "tokens=1,2 delims==" %%A in (%CAP%) do (
+for /f "usebackq tokens=1,2 delims==" %%A in ("%CAP%") do (
     if "%%A"=="RP_OK" set "RP_OK=%%B"
     if "%%A"=="REG_OK" set "REG_OK=%%B"
 )
@@ -506,17 +506,24 @@ for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"OPTIMIZE=" "%CAP%"`)
 call :info "Tipo de disco: !MEDIA!  (accion recomendada: !OPTIMIZE!)"
 if /i "!OPTIMIZE!"=="TRIM" (
     call :step "SSD detectado: enviando TRIM"
-    powershell -NoProfile -Command "Optimize-Volume -DriveLetter %SystemDrive:~0,1% -ReTrim -Verbose" >> "%LOGFILE%" 2>&1
+    powershell -NoProfile -Command "try { Optimize-Volume -DriveLetter %SystemDrive:~0,1% -ReTrim -Verbose -ErrorAction Stop; exit 0 } catch { Write-Output $_.Exception.Message; exit 1 }" >> "%LOGFILE%" 2>&1
+    if !errorlevel! neq 0 ( call :warn "Optimize-Volume fallo al enviar TRIM (revisa el log)" & set "PH_NOTE=TRIM fallo" & exit /b 1 )
     set "PH_NOTE=TRIM enviado (SSD)"
-    call :ok "TRIM completado en %SystemDrive%"
+    call :ok "TRIM completado y verificado en %SystemDrive%"
     exit /b 0
 )
 if /i "!OPTIMIZE!"=="DEFRAG" (
     call :step "HDD detectado: desfragmentando %SystemDrive% (puede tardar)"
-    powershell -NoProfile -Command "Optimize-Volume -DriveLetter %SystemDrive:~0,1% -Defrag -Verbose" >> "%LOGFILE%" 2>&1
+    powershell -NoProfile -Command "try { Optimize-Volume -DriveLetter %SystemDrive:~0,1% -Defrag -Verbose -ErrorAction Stop; exit 0 } catch { Write-Output $_.Exception.Message; exit 1 }" >> "%LOGFILE%" 2>&1
+    if !errorlevel! neq 0 ( call :warn "Optimize-Volume fallo al desfragmentar (revisa el log)" & set "PH_NOTE=desfragmentacion fallo" & exit /b 1 )
     set "PH_NOTE=desfragmentado (HDD)"
-    call :ok "Desfragmentacion completada en %SystemDrive%"
+    call :ok "Desfragmentacion completada y verificada en %SystemDrive%"
     exit /b 0
+)
+if /i "!MEDIA!"=="VIRTUAL" (
+    call :info "Disco virtual de maquina virtual detectado: optimizacion omitida (no aplica; TRIM/desfrag no benefician a un disco virtual)"
+    set "PH_NOTE=disco virtual: optimizacion no aplica"
+    exit /b 2
 )
 call :warn "Tipo de disco indeterminado: no se optimiza para no arriesgar un SSD"
 set "PH_NOTE=tipo de disco indeterminado; no se optimiza"
@@ -536,7 +543,7 @@ if not "!RESTORE_SOURCE!"=="" (
     call :psh findlocalsource > "%CAP%" 2>&1
     type "%CAP%" >> "%LOGFILE%"
     set "LOCSRC="
-    for /f "tokens=1,* delims==" %%A in (%CAP%) do if "%%A"=="SOURCE" set "LOCSRC=%%B"
+    for /f "usebackq tokens=1,* delims==" %%A in ("%CAP%") do if "%%A"=="SOURCE" set "LOCSRC=%%B"
     if not "!LOCSRC!"=="" (
         set "RESTORE_SOURCE=!LOCSRC!"
         call :step "Origen offline local encontrado: !RESTORE_SOURCE!"
@@ -548,7 +555,7 @@ if not "!RESTORE_SOURCE!"=="" (
 call :psh dismrestore "!RESTORE_SOURCE!|45" > "%CAP%" 2>&1
 set "D=3" & set "DISM_TIMEDOUT=0"
 type "%CAP%" >> "%LOGFILE%"
-for /f "tokens=1,* delims==" %%A in (%CAP%) do (
+for /f "usebackq tokens=1,* delims==" %%A in ("%CAP%") do (
     if "%%A"=="EXITCODE" set "D=%%B"
     if "%%A"=="TIMEDOUT" set "DISM_TIMEDOUT=%%B"
 )
@@ -600,7 +607,10 @@ powershell -NoProfile -Command "Get-AppxPackage -AllUsers | ForEach-Object { try
 call :step "Reiniciando el menu Inicio"
 taskkill /f /im StartMenuExperienceHost.exe >nul 2>&1
 taskkill /f /im ShellExperienceHost.exe >nul 2>&1
-call :ok "Apps de Store re-registradas e Inicio reiniciado"
+timeout /t 3 /nobreak >nul 2>&1
+tasklist /fi "imagename eq StartMenuExperienceHost.exe" 2>nul | find /i "StartMenuExperienceHost.exe" >nul 2>&1
+if !errorlevel! neq 0 ( call :warn "Re-registro lanzado, pero el menu Inicio aun no se ha relanzado (lo hace solo al usarlo). Revisa el log si alguna app sigue fallando." & set "PH_NOTE=Inicio pendiente de relanzarse" & exit /b 1 )
+call :ok "Apps de Store re-registradas e Inicio reiniciado (verificado)"
 exit /b 0
 :Fase09
 if "%DRY%"=="1" ( call :dry "Reconstruiria indice de Busqueda y caches de iconos/fuentes y reiniciaria el spooler" & exit /b 2 )
@@ -623,28 +633,45 @@ call :step "Reiniciando la cola de impresion"
 net stop Spooler /y >nul 2>&1
 del /f /q "%SystemRoot%\System32\spool\PRINTERS\*.*" >nul 2>&1
 net start Spooler >nul 2>&1
-call :ok "Busqueda, caches y spooler restablecidos"
+call :step "Verificando que los servicios han vuelto a arrancar"
+set "SVCFAIL="
+sc query WSearch 2>nul | findstr /i "RUNNING START_PENDING" >nul 2>&1
+if !errorlevel! neq 0 set "SVCFAIL=!SVCFAIL! WSearch"
+sc query FontCache 2>nul | findstr /i "RUNNING START_PENDING" >nul 2>&1
+if !errorlevel! neq 0 set "SVCFAIL=!SVCFAIL! FontCache"
+sc query Spooler 2>nul | findstr /i "RUNNING START_PENDING" >nul 2>&1
+if !errorlevel! neq 0 set "SVCFAIL=!SVCFAIL! Spooler"
+if defined SVCFAIL ( call :warn "Servicio(s) sin arrancar tras el reset:!SVCFAIL!. Revisa el log." & set "PH_NOTE=servicios sin arrancar:!SVCFAIL!" & exit /b 1 )
+call :ok "Busqueda, caches y spooler restablecidos (servicios verificados)"
 exit /b 0
 :Fase10
 if "%DRY%"=="1" ( call :dry "Sincronizaria la hora y refrescaria los certificados raiz" & exit /b 2 )
 call :step "Sincronizando la hora del sistema"
 net start w32time >nul 2>&1
 w32tm /resync /force >> "%LOGFILE%" 2>&1
+set "TIME_OK=1"
+if !errorlevel! neq 0 ( set "TIME_OK=0" & call :warn "w32tm /resync devolvio error (sin red o servicio de hora parado)" )
 call :step "Actualizando certificados raiz de confianza"
 certutil -generateSSTFromWU "%WORK%\roots.sst" >> "%LOGFILE%" 2>&1
+set "CERT_OK=0"
 if exist "%WORK%\roots.sst" (
-    powershell -NoProfile -Command "try { Import-Certificate -FilePath '%WORK%\roots.sst' -CertStoreLocation Cert:\LocalMachine\Root -ErrorAction SilentlyContinue | Out-Null } catch {}" >> "%LOGFILE%" 2>&1
-    call :ok "Certificados raiz refrescados y hora sincronizada"
+    powershell -NoProfile -Command "try { Import-Certificate -FilePath '%WORK%\roots.sst' -CertStoreLocation Cert:\LocalMachine\Root -ErrorAction Stop | Out-Null; exit 0 } catch { Write-Output $_.Exception.Message; exit 1 }" >> "%LOGFILE%" 2>&1
+    if !errorlevel! equ 0 ( set "CERT_OK=1" ) else ( call :warn "No se pudieron importar los certificados raiz (revisa el log)" & set "PH_NOTE=fallo importando certificados" )
 ) else (
-    call :warn "No se pudieron descargar certificados raiz (sin Internet). Hora sincronizada."
+    call :warn "No se pudieron descargar certificados raiz (sin Internet)."
     set "PH_NOTE=sin Internet para certificados"
 )
-exit /b 0
+if "!CERT_OK!"=="1" if "!TIME_OK!"=="1" ( call :ok "Certificados raiz refrescados y hora sincronizada (verificado)" & exit /b 0 )
+if "!TIME_OK!"=="1" ( call :warn "Hora sincronizada; certificados NO refrescados" ) else ( call :warn "La hora NO se pudo sincronizar" )
+exit /b 1
 :Fase11
 if "%DRY%"=="1" ( call :dry "Reiniciaria winsock, IP, DNS y proxy" & exit /b 2 )
+set "NET_RC=0"
 call :step "Reiniciando Winsock e IP"
 netsh winsock reset >> "%LOGFILE%" 2>&1
+if !errorlevel! neq 0 ( call :warn "netsh winsock reset devolvio error (revisa el log)" & set "NET_RC=1" )
 netsh int ip reset >> "%LOGFILE%" 2>&1
+if !errorlevel! neq 0 call :info "netsh int ip reset devolvio avisos (claves protegidas; suele ser normal)"
 call :step "Renovando DHCP y vaciando DNS"
 ipconfig /release >nul 2>&1
 ipconfig /renew >nul 2>&1
@@ -655,13 +682,15 @@ call :step "Revisando el archivo hosts"
 findstr /v /b "#" "%SystemRoot%\System32\drivers\etc\hosts" | findstr /r "[0-9]" >nul 2>&1
 if !errorlevel! equ 0 ( call :warn "El archivo hosts tiene entradas activas. Revisalo por si bloquea webs." ) else ( call :ok "Archivo hosts limpio" )
 set "PH_NOTE=winsock/ip reset; requiere reinicio"
+if "!NET_RC!"=="1" ( call :warn "Pila de red restablecida con avisos: revisa el log" & exit /b 1 )
 call :ok "Pila de red restablecida (winsock requiere reinicio)"
 exit /b 0
 :Fase12
 if "%DRY%"=="1" ( call :dry "Reaplicaria las directivas de grupo (gpupdate /force)" & exit /b 2 )
 call :step "Reaplicando directivas de grupo"
 gpupdate /force >> "%LOGFILE%" 2>&1
-call :ok "Directivas reaplicadas (gpupdate /force)"
+if !errorlevel! neq 0 ( call :warn "gpupdate /force devolvio error. Revisa el log." & set "PH_NOTE=gpupdate con error" & exit /b 1 )
+call :ok "Directivas reaplicadas y verificadas (gpupdate /force)"
 exit /b 0
 :Fase13
 call :step "Comprobando si Windows Update esta bloqueado a proposito"
@@ -705,13 +734,30 @@ if exist "%SystemRoot%\SoftwareDistribution" (
     for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"MOVED=" "%CAP%"`) do set "MOVED=%%a"
     if not "!MOVED!"=="1" ( set "WU_WARN=1" & call :warn "No se pudo mover SoftwareDistribution" )
 )
-if exist "%SystemRoot%\System32\catroot2" (
+rem (v3.2) catroot2 suele quedar bloqueado por cryptsvc unos segundos: reintentos con espera
+set "CAT_EXISTS=0"
+if exist "%SystemRoot%\System32\catroot2" set "CAT_EXISTS=1"
+if "!CAT_EXISTS!"=="1" (
     move "%SystemRoot%\System32\catroot2" "%BKDIR%\catroot2_%TIMESTAMP%" >nul 2>&1
+)
+if "!CAT_EXISTS!"=="1" if exist "%SystemRoot%\System32\catroot2" (
+    call :step "catroot2 ocupado: segundo intento tras pausa breve"
+    net stop cryptsvc /y >nul 2>&1
+    ping 127.0.0.1 -n 5 >nul
+    move "%SystemRoot%\System32\catroot2" "%BKDIR%\catroot2_%TIMESTAMP%" >nul 2>&1
+)
+if "!CAT_EXISTS!"=="1" if exist "%SystemRoot%\System32\catroot2" (
+    call :step "catroot2 ocupado: tercer intento tras pausa larga"
+    net stop cryptsvc /y >nul 2>&1
+    ping 127.0.0.1 -n 9 >nul
+    move "%SystemRoot%\System32\catroot2" "%BKDIR%\catroot2_%TIMESTAMP%" >nul 2>&1
+)
+if "!CAT_EXISTS!"=="1" (
     call :psh moveresult "%SystemRoot%\System32\catroot2|%BKDIR%\catroot2_%TIMESTAMP%" > "%CAP%" 2>&1
     type "%CAP%" >> "%LOGFILE%"
     set "MOVED="
     for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"MOVED=" "%CAP%"`) do set "MOVED=%%a"
-    if not "!MOVED!"=="1" ( set "WU_WARN=1" & call :warn "No se pudo mover catroot2" )
+    if not "!MOVED!"=="1" ( set "WU_WARN=1" & call :warn "No se pudo mover catroot2 (3 intentos)" )
 )
 call :step "Eliminando configuracion de cliente WSUS obsoleta"
 reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate" /v AccountDomainSid /f >nul 2>&1
@@ -743,8 +789,12 @@ where winget >nul 2>&1
 if !errorlevel! neq 0 ( call :warn "winget no esta disponible. Instala App Installer desde la Store." & set "PH_NOTE=winget ausente" & exit /b 1 )
 call :step "Reparando origenes y actualizando winget"
 winget source reset --force >> "%LOGFILE%" 2>&1
+if !errorlevel! neq 0 ( call :warn "winget source reset devolvio error. Revisa el log." & set "PH_NOTE=winget source reset fallo" & exit /b 1 )
 winget source update >> "%LOGFILE%" 2>&1
-call :ok "winget operativo y origenes actualizados"
+if !errorlevel! neq 0 call :warn "winget source update devolvio avisos (algun origen no se actualizo)"
+winget --version >nul 2>&1
+if !errorlevel! neq 0 ( call :warn "winget no responde tras la reparacion" & set "PH_NOTE=winget no responde" & exit /b 1 )
+call :ok "winget operativo y origenes actualizados (verificado)"
 exit /b 0
 :Fase15
 call :step "Buscando dispositivos o drivers con error"

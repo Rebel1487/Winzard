@@ -24,10 +24,18 @@ set "COL=%GR%"
 if "!RES!"=="WARN" set "COL=%YE%"
 if "!RES!"=="SKIP" set "COL=%DIM%"
 if "!RES!"=="ERROR" set "COL=%RE%"
+rem (v3.2) fase suelta: registrar resultado en el estado y generar informe HTML
+if not "%DRY%"=="1" (
+    call :title_of 04
+    call :pshq addphase "04;!PH_TITLE!;!RES!;!SECS!;!PH_NOTE!"
+    set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+    call :psh report "!REPORT!" >nul 2>&1
+)
 echo(
 echo %BL%------------------------------------------------------------%R%
 echo    Resultado: !COL!!RES!%R%   %DIM%^(!SECS!s^)%R%
 echo    %WH%Log:%R% %LOGFILE%
+if exist "!REPORT!" echo    %WH%Informe:%R% !REPORT!
 echo %BL%------------------------------------------------------------%R%
 if "%MODE_AUTO%"=="0" ( echo( & echo  Pulsa una tecla para cerrar... & pause >nul )
 endlocal & exit /b %RC%
@@ -44,17 +52,24 @@ for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"OPTIMIZE=" "%CAP%"`)
 call :info "Tipo de disco: !MEDIA!  (accion recomendada: !OPTIMIZE!)"
 if /i "!OPTIMIZE!"=="TRIM" (
     call :step "SSD detectado: enviando TRIM"
-    powershell -NoProfile -Command "Optimize-Volume -DriveLetter %SystemDrive:~0,1% -ReTrim -Verbose" >> "%LOGFILE%" 2>&1
+    powershell -NoProfile -Command "try { Optimize-Volume -DriveLetter %SystemDrive:~0,1% -ReTrim -Verbose -ErrorAction Stop; exit 0 } catch { Write-Output $_.Exception.Message; exit 1 }" >> "%LOGFILE%" 2>&1
+    if !errorlevel! neq 0 ( call :warn "Optimize-Volume fallo al enviar TRIM (revisa el log)" & set "PH_NOTE=TRIM fallo" & exit /b 1 )
     set "PH_NOTE=TRIM enviado (SSD)"
-    call :ok "TRIM completado en %SystemDrive%"
+    call :ok "TRIM completado y verificado en %SystemDrive%"
     exit /b 0
 )
 if /i "!OPTIMIZE!"=="DEFRAG" (
     call :step "HDD detectado: desfragmentando %SystemDrive% (puede tardar)"
-    powershell -NoProfile -Command "Optimize-Volume -DriveLetter %SystemDrive:~0,1% -Defrag -Verbose" >> "%LOGFILE%" 2>&1
+    powershell -NoProfile -Command "try { Optimize-Volume -DriveLetter %SystemDrive:~0,1% -Defrag -Verbose -ErrorAction Stop; exit 0 } catch { Write-Output $_.Exception.Message; exit 1 }" >> "%LOGFILE%" 2>&1
+    if !errorlevel! neq 0 ( call :warn "Optimize-Volume fallo al desfragmentar (revisa el log)" & set "PH_NOTE=desfragmentacion fallo" & exit /b 1 )
     set "PH_NOTE=desfragmentado (HDD)"
-    call :ok "Desfragmentacion completada en %SystemDrive%"
+    call :ok "Desfragmentacion completada y verificada en %SystemDrive%"
     exit /b 0
+)
+if /i "!MEDIA!"=="VIRTUAL" (
+    call :info "Disco virtual de maquina virtual detectado: optimizacion omitida (no aplica; TRIM/desfrag no benefician a un disco virtual)"
+    set "PH_NOTE=disco virtual: optimizacion no aplica"
+    exit /b 2
 )
 call :warn "Tipo de disco indeterminado: no se optimiza para no arriesgar un SSD"
 set "PH_NOTE=tipo de disco indeterminado; no se optimiza"

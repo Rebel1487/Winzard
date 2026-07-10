@@ -309,13 +309,14 @@ function ConvertTo-MediaClass($mt) {
 # ante tipo incierto, evitando danar un posible SSD).
 function Resolve-OptimizeAction($media) {
     $m = ([string]$media).Trim().ToUpper()
-    if     ($m -eq 'SSD') { return 'TRIM' }
-    elseif ($m -eq 'HDD') { return 'DEFRAG' }
-    else                  { return 'NONE' }
+    if     ($m -eq 'SSD')     { return 'TRIM' }
+    elseif ($m -eq 'HDD')     { return 'DEFRAG' }
+    elseif ($m -eq 'VIRTUAL') { return 'NONE' }   # (v3.2) disco de maquina virtual: no aplica
+    else                      { return 'NONE' }
 }
 
 # Get-MediaType: identifica el disco fisico del volumen del sistema de forma
-# fiable (por DeviceId, respaldo por SerialNumber) y devuelve SSD|HDD|UNKNOWN.
+# fiable (por DeviceId, respaldo por SerialNumber) y devuelve SSD|HDD|VIRTUAL|UNKNOWN.
 function Get-MediaType {
     try {
         $sys  = ($env:SystemDrive).TrimEnd(':')
@@ -330,6 +331,12 @@ function Get-MediaType {
                       Select-Object -First 1
             }
         }
+        # (v3.2) disco de maquina virtual (VirtualBox/VMware/Hyper-V/QEMU): TRIM y
+        # desfragmentacion no aplican; se identifica por el modelo del disco.
+        $modelos = @()
+        if ($disk) { $modelos += [string]$disk.FriendlyName; $modelos += [string]$disk.Model }
+        if ($pd)   { $modelos += [string]$pd.FriendlyName;   $modelos += [string]$pd.Model }
+        if (($modelos -join ' ') -match 'VBOX|VMWARE|VIRTUAL|QEMU|XENSRC') { return 'VIRTUAL' }
         if (-not $pd) { return 'UNKNOWN' }
         return (ConvertTo-MediaClass $pd.MediaType)
     } catch { return 'UNKNOWN' }
@@ -432,6 +439,21 @@ function New-HtmlReport($outPath) {
         if (-not $rows) { $rows = "<div class='empty'>No se registraron fases en esta ejecucion.</div>" }
         if (-not $bars) { $bars = "<div class='empty'>Sin tiempos que mostrar.</div>" }
         $totalPh = $phases.Count
+        # Estadisticas REALES agregadas de lo ejecutado: tiempo total de la sesion
+        # y espacio liberado (sumado de las notas medidas de cada fase, MB/GB).
+        $totSecs = 0; $mbFreed = 0.0
+        foreach ($ph in $phases) {
+            $sv = 0; try { $sv = [int]$ph.secs } catch {}; $totSecs += $sv
+            foreach ($m in [regex]::Matches([string]$ph.note, '(?i)(?:liberad\w*|freed)\D{0,10}?([\d\.,]+)\s*(MB|GB)')) {
+                $v = 0.0; try { $v = [double]($m.Groups[1].Value.Replace(',', '.')) } catch {}
+                if ($m.Groups[2].Value -match '(?i)GB') { $v = $v * 1024 }
+                $mbFreed += $v
+            }
+        }
+        $totTxt = if ($totSecs -ge 60) { ('{0} min {1} s' -f [int][math]::Floor($totSecs / 60), ($totSecs % 60)) } else { ('{0} s' -f $totSecs) }
+        $freedTxt = if ($mbFreed -ge 1024) { ('{0:n1} GB' -f ($mbFreed / 1024)) } elseif ($mbFreed -gt 0) { ('{0:n0} MB' -f $mbFreed) } else { '' }
+        $statLine = ('tiempo total: {0}' -f $totTxt)
+        if ($freedTxt) { $statLine += (' &middot; espacio liberado: {0}' -f $freedTxt) }
 
         $findings = @($st.findings)
         $findHtml = ''
@@ -710,6 +732,7 @@ html.light{--glass:rgba(255,255,255,.64);--glassbd:rgba(15,23,42,.08)}
     <div class='exec-mid'>
       <div class='exec-verdict' style='color:$mainColor'>Salud del sistema: $execVerdict</div>
       <div class='exec-line'>$cOK correctas &middot; $cWARN avisos &middot; $cERR errores &middot; $cSKIP omitidas &middot; $totalPh fases en total</div>
+      <div class='exec-line'>$statLine</div>
     </div>
     <div class='exec-delta' style='color:$deltaColor;border-color:$deltaColor'>$deltaTxt</div>
   </div>

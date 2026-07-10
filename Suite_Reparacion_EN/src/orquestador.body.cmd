@@ -269,7 +269,7 @@ if not defined SCORE_AFTER (
 if defined SCORE_BEFORE if defined SCORE_AFTER echo    %WH%Health:%R%  !SCORE_BEFORE!/100  %DIM%-^>%R%  %GR%!SCORE_AFTER!/100%R%
 if not defined SCORE_BEFORE if defined SCORE_AFTER echo    %WH%Health:%R%  %GR%!SCORE_AFTER!/100%R%
 :: --- (v3.1) generar el informe SIEMPRE, aunque la Phase 16 no se ejecutara ---
-set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
 if not exist "!REPORT!" call :psh report "!REPORT!" > "%CAP%" 2>&1
 if exist "!REPORT!" (
     echo    %WH%Report:%R%  !REPORT!
@@ -277,7 +277,7 @@ if exist "!REPORT!" (
 )
 :: --- (v3.1) informe JSON opcional (/json) ---
 if "%JSON%"=="1" (
-    set "REPORT_JSON=%WORK%\Informe_%TIMESTAMP%.json"
+    set "REPORT_JSON=%WORK%\Report_%TIMESTAMP%.json"
     call :psh jsonreport "!REPORT_JSON!" > "%CAP%" 2>&1
     if exist "!REPORT_JSON!" echo    %WH%JSON:%R%     !REPORT_JSON!
 )
@@ -301,8 +301,8 @@ echo %BL%============================================================%R%
 :: --- rotacion de logs (Req 17.2) ---
 call :log_rotate
 :: --- reinicio + checkpoint para /resume (Task 8.3 / Req 4) ---
-set "CP_REASON=reparacion_completada"
-if defined CHKDSK_SCHEDULED set "CP_REASON=chkdsk_programado"
+set "CP_REASON=repair_completed"
+if defined CHKDSK_SCHEDULED set "CP_REASON=chkdsk_scheduled"
 if "%DRY%"=="1" ( call :checkpoint_clear & goto :tail_end )
 if "%MODE_AUTO%"=="1" (
     if "%NO_REBOOT%"=="0" (
@@ -426,7 +426,7 @@ call :psh checkbackups "%BKDIR%|%TIMESTAMP%" > "%CAP%" 2>&1
 type "%CAP%" >> "%LOGFILE%"
 set "RP_OK=0"
 set "REG_OK=0"
-for /f "tokens=1,2 delims==" %%A in (%CAP%) do (
+for /f "usebackq tokens=1,2 delims==" %%A in ("%CAP%") do (
     if "%%A"=="RP_OK" set "RP_OK=%%B"
     if "%%A"=="REG_OK" set "REG_OK=%%B"
 )
@@ -499,17 +499,24 @@ for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"OPTIMIZE=" "%CAP%"`)
 call :info "Disk type: !MEDIA!  (recommended action: !OPTIMIZE!)"
 if /i "!OPTIMIZE!"=="TRIM" (
     call :step "SSD detected: sending TRIM"
-    powershell -NoProfile -Command "Optimize-Volume -DriveLetter %SystemDrive:~0,1% -ReTrim -Verbose" >> "%LOGFILE%" 2>&1
-    set "PH_NOTE=TRIM enviado (SSD)"
-    call :ok "TRIM completed on %SystemDrive%"
+    powershell -NoProfile -Command "try { Optimize-Volume -DriveLetter %SystemDrive:~0,1% -ReTrim -Verbose -ErrorAction Stop; exit 0 } catch { Write-Output $_.Exception.Message; exit 1 }" >> "%LOGFILE%" 2>&1
+    if !errorlevel! neq 0 ( call :warn "Optimize-Volume failed to send TRIM (check the log)" & set "PH_NOTE=TRIM failed" & exit /b 1 )
+    set "PH_NOTE=TRIM sent (SSD)"
+    call :ok "TRIM completed and verified on %SystemDrive%"
     exit /b 0
 )
 if /i "!OPTIMIZE!"=="DEFRAG" (
     call :step "HDD detected: defragmenting %SystemDrive% (may take a while)"
-    powershell -NoProfile -Command "Optimize-Volume -DriveLetter %SystemDrive:~0,1% -Defrag -Verbose" >> "%LOGFILE%" 2>&1
+    powershell -NoProfile -Command "try { Optimize-Volume -DriveLetter %SystemDrive:~0,1% -Defrag -Verbose -ErrorAction Stop; exit 0 } catch { Write-Output $_.Exception.Message; exit 1 }" >> "%LOGFILE%" 2>&1
+    if !errorlevel! neq 0 ( call :warn "Optimize-Volume failed to defragment (check the log)" & set "PH_NOTE=defrag failed" & exit /b 1 )
     set "PH_NOTE=defragmented (HDD)"
-    call :ok "Defragmentation completed on %SystemDrive%"
+    call :ok "Defragmentation completed and verified on %SystemDrive%"
     exit /b 0
+)
+if /i "!MEDIA!"=="VIRTUAL" (
+    call :info "Virtual machine disk detected: optimization skipped (not applicable; TRIM/defrag do not benefit a virtual disk)"
+    set "PH_NOTE=virtual disk: optimization not applicable"
+    exit /b 2
 )
 call :warn "Disk type undetermined: skipping optimization to avoid risking an SSD"
 set "PH_NOTE=undetermined disk type; skipped optimization"
@@ -529,7 +536,7 @@ if not "!RESTORE_SOURCE!"=="" (
     call :psh findlocalsource > "%CAP%" 2>&1
     type "%CAP%" >> "%LOGFILE%"
     set "LOCSRC="
-    for /f "tokens=1,* delims==" %%A in (%CAP%) do if "%%A"=="SOURCE" set "LOCSRC=%%B"
+    for /f "usebackq tokens=1,* delims==" %%A in ("%CAP%") do if "%%A"=="SOURCE" set "LOCSRC=%%B"
     if not "!LOCSRC!"=="" (
         set "RESTORE_SOURCE=!LOCSRC!"
         call :step "Local offline source found: !RESTORE_SOURCE!"
@@ -541,7 +548,7 @@ if not "!RESTORE_SOURCE!"=="" (
 call :psh dismrestore "!RESTORE_SOURCE!|45" > "%CAP%" 2>&1
 set "D=3" & set "DISM_TIMEDOUT=0"
 type "%CAP%" >> "%LOGFILE%"
-for /f "tokens=1,* delims==" %%A in (%CAP%) do (
+for /f "usebackq tokens=1,* delims==" %%A in ("%CAP%") do (
     if "%%A"=="EXITCODE" set "D=%%B"
     if "%%A"=="TIMEDOUT" set "DISM_TIMEDOUT=%%B"
 )
@@ -555,12 +562,12 @@ call :warn "DISM could not confirm component image repair"
 exit /b 1
 :Fase06
 if "%DRY%"=="1" ( call :dry "Would run SFC /scannow and verify with a second pass" & exit /b 2 )
-call :substep 1 2 "SFC /scannow (primera pasada)"
+call :substep 1 2 "SFC /scannow (first pass)"
 sfc /scannow > "%CAP%" 2>&1
 set "SFCRC=!errorlevel!"
 type "%CAP%" >> "%LOGFILE%"
 call :sfc_classify !SFCRC!
-if "!SFC_RES!"=="clean" ( call :ok "SFC: sin violaciones de integridad" & exit /b 0 )
+if "!SFC_RES!"=="clean" ( call :ok "SFC: no integrity violations" & exit /b 0 )
 if "!SFC_RES!"=="unrepairable" ( call :warn "SFC: unrepairable damage. Run phase DISM (05) and retry." & call :pshq finding "SFC: unrepairable system damage (requires DISM)" & set "PH_NOTE=unrepairable damage" & exit /b 1 )
 if not "!SFC_RES!"=="repaired" ( call :warn "Undetermined SFC result. Review CBS.log." & set "PH_NOTE=undetermined SFC result" & exit /b 1 )
 call :warn "SFC repaired files. Reboot and run phase 06 again to verify without blocking this session."
@@ -593,7 +600,10 @@ powershell -NoProfile -Command "Get-AppxPackage -AllUsers | ForEach-Object { try
 call :step "Restarting the Start menu"
 taskkill /f /im StartMenuExperienceHost.exe >nul 2>&1
 taskkill /f /im ShellExperienceHost.exe >nul 2>&1
-call :ok "Store apps re-registered and Start restarted"
+timeout /t 3 /nobreak >nul 2>&1
+tasklist /fi "imagename eq StartMenuExperienceHost.exe" 2>nul | find /i "StartMenuExperienceHost.exe" >nul 2>&1
+if !errorlevel! neq 0 ( call :warn "Re-registration launched, but the Start menu has not relaunched yet (it relaunches on use). Check the log if any app still fails." & set "PH_NOTE=Start pending relaunch" & exit /b 1 )
+call :ok "Store apps re-registered and Start restarted (verified)"
 exit /b 0
 :Fase09
 if "%DRY%"=="1" ( call :dry "Would rebuild the Search index and icon/font caches and restart the spooler" & exit /b 2 )
@@ -616,28 +626,45 @@ call :step "Restarting print spooler"
 net stop Spooler /y >nul 2>&1
 del /f /q "%SystemRoot%\System32\spool\PRINTERS\*.*" >nul 2>&1
 net start Spooler >nul 2>&1
-call :ok "Search, caches and spooler reset"
+call :step "Verifying that the services started again"
+set "SVCFAIL="
+sc query WSearch 2>nul | findstr /i "RUNNING START_PENDING" >nul 2>&1
+if !errorlevel! neq 0 set "SVCFAIL=!SVCFAIL! WSearch"
+sc query FontCache 2>nul | findstr /i "RUNNING START_PENDING" >nul 2>&1
+if !errorlevel! neq 0 set "SVCFAIL=!SVCFAIL! FontCache"
+sc query Spooler 2>nul | findstr /i "RUNNING START_PENDING" >nul 2>&1
+if !errorlevel! neq 0 set "SVCFAIL=!SVCFAIL! Spooler"
+if defined SVCFAIL ( call :warn "Service(s) not running after the reset:!SVCFAIL!. Check the log." & set "PH_NOTE=services not running:!SVCFAIL!" & exit /b 1 )
+call :ok "Search, caches and spooler reset (services verified)"
 exit /b 0
 :Fase10
 if "%DRY%"=="1" ( call :dry "Would sync the clock and refresh the root certificates" & exit /b 2 )
 call :step "Synchronizing the system clock"
 net start w32time >nul 2>&1
 w32tm /resync /force >> "%LOGFILE%" 2>&1
+set "TIME_OK=1"
+if !errorlevel! neq 0 ( set "TIME_OK=0" & call :warn "w32tm /resync returned an error (no network or time service stopped)" )
 call :step "Updating trusted root certificates"
 certutil -generateSSTFromWU "%WORK%\roots.sst" >> "%LOGFILE%" 2>&1
+set "CERT_OK=0"
 if exist "%WORK%\roots.sst" (
-    powershell -NoProfile -Command "try { Import-Certificate -FilePath '%WORK%\roots.sst' -CertStoreLocation Cert:\LocalMachine\Root -ErrorAction SilentlyContinue | Out-Null } catch {}" >> "%LOGFILE%" 2>&1
-    call :ok "Root certificates refreshed and clock synchronized"
+    powershell -NoProfile -Command "try { Import-Certificate -FilePath '%WORK%\roots.sst' -CertStoreLocation Cert:\LocalMachine\Root -ErrorAction Stop | Out-Null; exit 0 } catch { Write-Output $_.Exception.Message; exit 1 }" >> "%LOGFILE%" 2>&1
+    if !errorlevel! equ 0 ( set "CERT_OK=1" ) else ( call :warn "Could not import the root certificates (check the log)" & set "PH_NOTE=certificate import failed" )
 ) else (
-    call :warn "Could not download root certificates (no Internet). Clock synchronized."
+    call :warn "Could not download root certificates (no Internet)."
     set "PH_NOTE=no Internet for certificates"
 )
-exit /b 0
+if "!CERT_OK!"=="1" if "!TIME_OK!"=="1" ( call :ok "Root certificates refreshed and clock synchronized (verified)" & exit /b 0 )
+if "!TIME_OK!"=="1" ( call :warn "Clock synchronized; certificates NOT refreshed" ) else ( call :warn "The clock could NOT be synchronized" )
+exit /b 1
 :Fase11
 if "%DRY%"=="1" ( call :dry "Would reset winsock, IP, DNS and proxy" & exit /b 2 )
+set "NET_RC=0"
 call :step "Resetting Winsock and IP"
 netsh winsock reset >> "%LOGFILE%" 2>&1
+if !errorlevel! neq 0 ( call :warn "netsh winsock reset returned an error (check the log)" & set "NET_RC=1" )
 netsh int ip reset >> "%LOGFILE%" 2>&1
+if !errorlevel! neq 0 call :info "netsh int ip reset returned warnings (protected keys; this is usually normal)"
 call :step "Renewing DHCP and flushing DNS"
 ipconfig /release >nul 2>&1
 ipconfig /renew >nul 2>&1
@@ -648,6 +675,7 @@ call :step "Reviewing hosts file"
 findstr /v /b "#" "%SystemRoot%\System32\drivers\etc\hosts" | findstr /r "[0-9]" >nul 2>&1
 if !errorlevel! equ 0 ( call :warn "The hosts file has active entries. Review it in case it blocks sites." ) else ( call :ok "Clean hosts file" )
 set "PH_NOTE=winsock/ip reset; requires reboot"
+if "!NET_RC!"=="1" ( call :warn "Network stack reset with warnings: check the log" & exit /b 1 )
 call :ok "Network stack reset (winsock requires reboot)"
 exit /b 0
 :Fase12
@@ -698,13 +726,30 @@ if exist "%SystemRoot%\SoftwareDistribution" (
     for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"MOVED=" "%CAP%"`) do set "MOVED=%%a"
     if not "!MOVED!"=="1" ( set "WU_WARN=1" & call :warn "Could not move SoftwareDistribution" )
 )
-if exist "%SystemRoot%\System32\catroot2" (
+rem (v3.2) catroot2 is often locked by cryptsvc for a few seconds: retries with waits
+set "CAT_EXISTS=0"
+if exist "%SystemRoot%\System32\catroot2" set "CAT_EXISTS=1"
+if "!CAT_EXISTS!"=="1" (
     move "%SystemRoot%\System32\catroot2" "%BKDIR%\catroot2_%TIMESTAMP%" >nul 2>&1
+)
+if "!CAT_EXISTS!"=="1" if exist "%SystemRoot%\System32\catroot2" (
+    call :step "catroot2 busy: second attempt after a short pause"
+    net stop cryptsvc /y >nul 2>&1
+    ping 127.0.0.1 -n 5 >nul
+    move "%SystemRoot%\System32\catroot2" "%BKDIR%\catroot2_%TIMESTAMP%" >nul 2>&1
+)
+if "!CAT_EXISTS!"=="1" if exist "%SystemRoot%\System32\catroot2" (
+    call :step "catroot2 busy: third attempt after a longer pause"
+    net stop cryptsvc /y >nul 2>&1
+    ping 127.0.0.1 -n 9 >nul
+    move "%SystemRoot%\System32\catroot2" "%BKDIR%\catroot2_%TIMESTAMP%" >nul 2>&1
+)
+if "!CAT_EXISTS!"=="1" (
     call :psh moveresult "%SystemRoot%\System32\catroot2|%BKDIR%\catroot2_%TIMESTAMP%" > "%CAP%" 2>&1
     type "%CAP%" >> "%LOGFILE%"
     set "MOVED="
     for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"MOVED=" "%CAP%"`) do set "MOVED=%%a"
-    if not "!MOVED!"=="1" ( set "WU_WARN=1" & call :warn "Could not move catroot2" )
+    if not "!MOVED!"=="1" ( set "WU_WARN=1" & call :warn "Could not move catroot2 (3 attempts)" )
 )
 call :step "Removing stale WSUS client settings"
 reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate" /v AccountDomainSid /f >nul 2>&1
@@ -736,8 +781,12 @@ where winget >nul 2>&1
 if !errorlevel! neq 0 ( call :warn "winget is not available. Install App Installer from the Store." & set "PH_NOTE=winget absent" & exit /b 1 )
 call :step "Repairing sources and updating winget"
 winget source reset --force >> "%LOGFILE%" 2>&1
+if !errorlevel! neq 0 ( call :warn "winget source reset returned an error. Check the log." & set "PH_NOTE=winget source reset failed" & exit /b 1 )
 winget source update >> "%LOGFILE%" 2>&1
-call :ok "winget operational and sources updated"
+if !errorlevel! neq 0 call :warn "winget source update returned warnings (some source did not update)"
+winget --version >nul 2>&1
+if !errorlevel! neq 0 ( call :warn "winget is not responding after the repair" & set "PH_NOTE=winget not responding" & exit /b 1 )
+call :ok "winget operational and sources updated (verified)"
 exit /b 0
 :Fase15
 call :step "Looking for devices or drivers with errors"
@@ -768,7 +817,7 @@ set "SCORE_AFTER="
 for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"SCORE=" "%CAP%"`) do set "SCORE_AFTER=%%a"
 if defined SCORE_AFTER ( call :pshq setafter "!SCORE_AFTER!" & call :info "Health after: !SCORE_AFTER!/100" )
 call :step "Generating HTML report"
-set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
 call :psh report "%REPORT%"
 if exist "%REPORT%" ( call :ok "Report created at !REPORT!" & set "PH_NOTE=HTML report generated" ) else ( call :warn "Could not generate HTML report" )
 exit /b 0

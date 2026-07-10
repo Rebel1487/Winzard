@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# WPI MODERNO v3.5 "OBRA MAESTRA" - Post-instalador de Windows
+# WINZARD (antes WPI Moderno) - Post-instalador premium de Windows
 # GUI WPF de nueva generacion + motor winget asincrono.
 #
 # USO:
@@ -11,6 +11,39 @@
 #   Iniciar_WPI.bat -Profile perfil.json -> aplica un PERFIL MAESTRO completo
 #   Iniciar_WPI.bat -Profile perfil.json -DryRun -> muestra el PLAN sin aplicar
 #   (se pueden combinar: -Preset l.txt -Tweaks recommended -Debloat all)
+#
+# NOVEDADES v7.1 "DESCRIPCIONES PREMIUM" (julio 2026):
+#  - Cada una de las 352 apps del catalogo tiene ahora una DESCRIPCION clara
+#    (que es y para que sirve) en ES y EN ($AppDesc / $AppDescEn + Get-AppDesc).
+#    Se muestra en el tooltip de cada casilla (pestana Apps y paso de Apps del
+#    asistente de ISO) y se conserva al marcarla como "YA INSTALADA".
+#  - El buscador global y el buscador del asistente de ISO tambien buscan en
+#    las descripciones: puedes escribir "editor de video" o "password manager"
+#    y encontrar las apps aunque no sepas su nombre.
+#  - Buscador del asistente: extraccion robusta del texto del CheckBox (antes
+#    convertia el TextBlock entero a cadena, fragil).
+#  - Lanzador Iniciar_WPI.bat endurecido: comprueba que PowerShell existe,
+#    mensajes bilingues mas claros, y el generador embebido (Get-IniciarBatText)
+#    queda 100 por cien sincronizado para que la ISO lleve el mismo lanzador.
+#
+# NOVEDADES v7.0 "AUDITORIA CATALOGO" (julio 2026):
+#  - CATALOGO auditado entrada a entrada contra el arbol REAL de
+#    microsoft/winget-pkgs (todos los IDs verificados):
+#      * eMule: ID corregido (eMuleCommunity.eMule NO existe) ->
+#        eMule.eMule.community (0.70b) y se anade eMule.eMule (clasico 0.50a).
+#      * uTorrent: ELIMINADO (nunca ha tenido manifiesto en winget);
+#        qBittorrent se mantiene como cliente torrent del catalogo.
+#      * RustDesk: ELIMINADO (retirado de winget: la deteccion PUA de los
+#        antivirus bloquea la validacion del manifiesto).
+#      * FileZilla Client: ELIMINADO (retirado de winget); WinSCP en catalogo.
+#      * RPCS3: ELIMINADO del catalogo (sin manifiesto); su guia y web
+#        oficial (rpcs3.net) siguen disponibles en el panel de guias.
+#      * Snes9x -> sustituido por bsnes (bsnes-emu.BSNES, activo en winget).
+#      * Visual Studio 2022 Community: linea DUPLICADA eliminada.
+#  - Paso final de Crear ISO: ADVERTENCIA visible de duracion (15-30 min,
+#    "no cierres ni interrumpas") + nuevo aviso "PRIMER ARRANQUE": la
+#    instalacion de apps/ajustes es automatica y el equipo se reinicia solo.
+#    Ambos avisos traducidos (ES/EN) via TrMap.
 #
 # NOVEDADES v6.9 "FIX ISO OOBE + COMBOS LEGIBLES + CARPETAS + GUIAS":
 #  - ISO: los tweaks van a preset_tweaks.txt; el autounattend pasa solo la RUTA
@@ -358,11 +391,16 @@ param(
     [switch]$FirstBoot,
     [switch]$NoReboot,
     [switch]$DryRun,
+    [switch]$ExportCatalog,
     [switch]$SelfTestGui,
     [switch]$BuildIsoKit,
     [string]$IsoPath,
     [string]$IsoOutDir,
-    [string]$IsoName = 'WPI_Custom.iso'
+    [string]$IsoName = 'WPI_Custom.iso',
+    # F6-B1 (VT2): opt-in EXPLICITO del contenido del kit headless. Sin estos switches
+    # el kit sale NEUTRO (0 tweaks, 0 debloat) y se rellena editando kit-config.json.
+    [switch]$IsoTweaksAll,
+    [switch]$IsoDebloatAll
 )
 
 $ErrorActionPreference = 'Continue'
@@ -420,7 +458,9 @@ if (-not $PSScriptRoot) {
 # elevarse. Si no es admin, se relanza elevado conservando los argumentos y se
 # cierra esta instancia. NO se eleva en -SelfTestGui (prueba headless). Si el
 # usuario cancela el UAC, se continua sin admin con el aviso de mas abajo.
-if (-not $SelfTestGui) {
+if (-not $SelfTestGui -and -not $ExportCatalog) {
+    # F1-B3 (VT2): -ExportCatalog es headless (solo escribe el catalogo); no debe
+    # disparar UAC ni splash, igual que -SelfTestGui.
     $__isAdminBoot = $false
     try { $__isAdminBoot = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch {}
     if (-not $__isAdminBoot) {
@@ -463,6 +503,10 @@ $Config = @{
     # WATCHDOG: minutos maximos por instalacion antes de matar al
     # instalador colgado y marcarlo como fallo (0 = sin limite)
     InstallTimeoutMin = 25
+    # B4 (persistente): ambito de instalacion (''=Auto, 'user', 'machine')
+    # y fallback a Chocolatey. Ahora se recuerdan entre arranques.
+    InstallScope = ''
+    ChocoFallback = $false
     # Carpeta de logs forenses (se crea junto al script)
     LogDir            = (Join-Path $PSScriptRoot 'logs')
     # Ajustes persistentes (velocidad, ultima seleccion...)
@@ -474,6 +518,162 @@ if ($SelfTestGui -or $BuildIsoKit) {
     $Config.AutoUpdateSources = $false
     $Config.AutoUpgradeApps = $false
     $Config.AutoDetectInstalled = $false
+}
+# ============================================================
+
+# ============== PANTALLA DE CARGA PREMIUM (SPLASH) ==========
+# La app tarda varios segundos en prepararse (winget, catalogo, XAML) y sin
+# aviso parece colgada: solo se ve el cursor de espera. Esta splash WIN|ZARD
+# vive en un runspace STA propio con su Dispatcher, de modo que la animacion
+# sigue fluida aunque el hilo principal este ocupado cargando. Arranca ANTES
+# de que exista TrMap, asi que el idioma se decide leyendo wpi_settings.json
+# (clave Lang) con textos locales ES/EN de respaldo. No aparece en modo
+# -SelfTestGui, -BuildIsoKit ni en el desatendido (esos viven en consola).
+$script:SplashSync = $null
+$script:SplashPS = $null
+
+function Show-WpiSplash {
+    if ($script:SplashSync) { return }
+    $lang = 'es'
+    try {
+        if (Test-Path $Config.SettingsFile) {
+            $____sj = Get-Content $Config.SettingsFile -Raw | ConvertFrom-Json
+            if ([string]$____sj.Lang -eq 'en') { $lang = 'en' }
+        }
+    } catch {}
+    $sync = [hashtable]::Synchronized(@{ Close = $false; Topmost = $true; Lang = $lang })
+    if ($lang -eq 'en') {
+        $sync.Title = 'Preparing Winzard...'
+        $sync.Msg = 'Loading the catalog and the winget engine...'
+    } else {
+        $sync.Title = 'Preparando Winzard...'
+        $sync.Msg = 'Cargando el catalogo y el motor winget...'
+    }
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'STA'
+        $rs.ThreadOptions = 'ReuseThread'
+        $rs.Open()
+        $rs.SessionStateProxy.SetVariable('sync', $sync)
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript({
+            try {
+                Add-Type -AssemblyName PresentationFramework
+                $xamlSplash = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        SizeToContent="WidthAndHeight" WindowStartupLocation="CenterScreen"
+        Topmost="True" ShowInTaskbar="False" ShowActivated="False" ResizeMode="NoResize">
+  <Border CornerRadius="16" BorderThickness="1" Padding="42,32,42,30" Margin="24">
+    <Border.Effect><DropShadowEffect BlurRadius="24" ShadowDepth="0" Opacity="0.55" Color="#FF000000"/></Border.Effect>
+    <Border.Background>
+      <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#FF0F1420" Offset="0"/><GradientStop Color="#FF161D2E" Offset="1"/>
+      </LinearGradientBrush>
+    </Border.Background>
+    <Border.BorderBrush>
+      <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#5500E5FF" Offset="0"/><GradientStop Color="#557C4DFF" Offset="1"/>
+      </LinearGradientBrush>
+    </Border.BorderBrush>
+    <StackPanel>
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+        <TextBlock Text="WIN" FontFamily="Segoe UI" FontSize="36" FontWeight="ExtraBold" Foreground="#FF00E5FF"/>
+        <TextBlock Text="ZARD" FontFamily="Segoe UI" FontSize="36" FontWeight="ExtraBold" Foreground="#FF7C4DFF"/>
+      </StackPanel>
+      <TextBlock x:Name="SplashTitle" Text="" Margin="0,14,0,0" HorizontalAlignment="Center"
+                 FontFamily="Segoe UI" FontSize="14.5" FontWeight="SemiBold" Foreground="#FFE8ECF4"/>
+      <TextBlock x:Name="SplashStage" Text="" Margin="0,5,0,0" HorizontalAlignment="Center"
+                 FontFamily="Segoe UI" FontSize="11.5" Foreground="#FF9AA3B5"/>
+      <Border Margin="0,20,0,0" Width="330" Height="6" CornerRadius="3" Background="#FF1E2740" ClipToBounds="True">
+        <Border x:Name="SplashRunner" Width="120" Height="6" CornerRadius="3" HorizontalAlignment="Left">
+          <Border.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+              <GradientStop Color="#FF00E5FF" Offset="0"/><GradientStop Color="#FF7C4DFF" Offset="1"/>
+            </LinearGradientBrush>
+          </Border.Background>
+          <Border.RenderTransform><TranslateTransform x:Name="SplashRunnerTT" X="-130"/></Border.RenderTransform>
+        </Border>
+      </Border>
+    </StackPanel>
+  </Border>
+</Window>
+'@
+                $global:spWin = [Windows.Markup.XamlReader]::Parse($xamlSplash)
+                $global:spWin.FindName('SplashTitle').Text = [string]$sync.Title
+                $global:spWin.FindName('SplashStage').Text = [string]$sync.Msg
+                $global:spLastMsg = [string]$sync.Msg
+
+                # Barra indeterminada: el corredor degradado cian->violeta se
+                # desliza en bucle por el carril (clipado por ClipToBounds).
+                $spAnim = New-Object System.Windows.Media.Animation.DoubleAnimation(-130, 340, (New-Object System.Windows.Duration([TimeSpan]::FromMilliseconds(1500))))
+                $spAnim.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+                $spEase = New-Object System.Windows.Media.Animation.QuadraticEase
+                $spEase.EasingMode = 'EaseInOut'
+                $spAnim.EasingFunction = $spEase
+                $global:spWin.FindName('SplashRunnerTT').BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $spAnim)
+
+                # Vigilante del canal $sync: cierre ordenado, mensaje por etapas
+                # y bajada temporal de Topmost (para no tapar un MessageBox).
+                $global:spTimer = New-Object System.Windows.Threading.DispatcherTimer
+                $global:spTimer.Interval = [TimeSpan]::FromMilliseconds(120)
+                $global:spTimer.Add_Tick({
+                    try {
+                        if ($sync.Close) { $global:spTimer.Stop(); $global:spWin.Close(); return }
+                        $m = [string]$sync.Msg
+                        if ($m -ne $global:spLastMsg) { $global:spLastMsg = $m; $global:spWin.FindName('SplashStage').Text = $m }
+                        $t = [bool]$sync.Topmost
+                        if ($global:spWin.Topmost -ne $t) { $global:spWin.Topmost = $t }
+                    } catch {}
+                })
+                $global:spTimer.Start()
+                [void]$global:spWin.ShowDialog()
+                try { $global:spTimer.Stop() } catch {}
+            } catch {}
+        })
+        $script:SplashSync = $sync
+        $script:SplashPS = $ps
+        [void]$ps.BeginInvoke()
+    } catch { $script:SplashSync = $null; $script:SplashPS = $null }
+}
+
+# Cambia la linea de etapa de la splash (elige ES/EN con el idioma ya decidido).
+# Inofensiva si la splash no existe (modos consola/prueba) o ya se cerro.
+function Update-WpiSplash([string]$es, [string]$en) {
+    try {
+        if ($script:SplashSync) {
+            $script:SplashSync.Msg = $(if ($script:SplashSync.Lang -eq 'en') { $en } else { $es })
+        }
+    } catch {}
+}
+
+# Baja/sube el Topmost de la splash para que no tape un MessageBox critico.
+function Set-WpiSplashTopmost([bool]$on) {
+    try { if ($script:SplashSync) { $script:SplashSync.Topmost = $on } } catch {}
+}
+
+# Cierra la splash SIEMPRE sin romper nada: señala el cierre por el canal,
+# da un respiro al Dispatcher del runspace y libera el pipeline. Reentrante.
+function Close-WpiSplash {
+    try { if ($script:SplashSync) { $script:SplashSync.Close = $true } } catch {}
+    try {
+        if ($script:SplashPS) {
+            Start-Sleep -Milliseconds 300
+            $____rs = $script:SplashPS.Runspace
+            $script:SplashPS.Dispose()
+            if ($____rs) { $____rs.Dispose() }
+        }
+    } catch {}
+    $script:SplashSync = $null
+    $script:SplashPS = $null
+}
+
+# La splash SOLO tiene sentido cuando va a abrirse la ventana principal:
+# nunca en -SelfTestGui/-BuildIsoKit/-ExportCatalog (F1-B3) ni en el desatendido.
+if (-not $SelfTestGui -and -not $BuildIsoKit -and -not $ExportCatalog -and -not ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath -or $FirstBoot)) {
+    Show-WpiSplash
 }
 # ============================================================
 
@@ -574,14 +774,13 @@ $catalog = @(
     @{Cat='Emuladores'; Sub='Nintendo';      Name='Dolphin (GameCube/Wii)';    Id='DolphinEmulator.Dolphin'}
     @{Cat='Emuladores'; Sub='Nintendo';      Name='Cemu (Wii U)';              Id='Cemu.Cemu'}
     @{Cat='Emuladores'; Sub='Nintendo';      Name='Project64 (Nintendo 64)';   Id='Project64.Project64'}
-    @{Cat='Emuladores'; Sub='Nintendo';      Name='Snes9x (Super Nintendo)';   Id='Snes9x.Snes9x'}
+    @{Cat='Emuladores'; Sub='Nintendo';      Name='bsnes (Super Nintendo)';    Id='bsnes-emu.BSNES'}
     @{Cat='Emuladores'; Sub='Nintendo';      Name='Mesen (NES/SNES/GB)';       Id='SourMesen.Mesen'}
     @{Cat='Emuladores'; Sub='Nintendo';      Name='mGBA (Game Boy Advance)';   Id='JeffreyPfau.mGBA'}
     @{Cat='Emuladores'; Sub='Nintendo';      Name='melonDS (Nintendo DS)';     Id='melonDS.melonDS'}
     @{Cat='Emuladores'; Sub='Nintendo';      Name='DeSmuME (Nintendo DS)';     Id='DeSmuMETeam.DeSmuME'}
     @{Cat='Emuladores'; Sub='PlayStation';   Name='DuckStation (PlayStation 1)'; Id='Stenzek.DuckStation'}
     @{Cat='Emuladores'; Sub='PlayStation';   Name='PCSX2 (PlayStation 2)';     Id='PCSX2Team.PCSX2'}
-    @{Cat='Emuladores'; Sub='PlayStation';   Name='RPCS3 (PlayStation 3)';     Id='RPCS3.RPCS3'}
     @{Cat='Emuladores'; Sub='PlayStation';   Name='PPSSPP (PSP)';              Id='PPSSPPTeam.PPSSPP'}
     @{Cat='Emuladores'; Sub='PlayStation';   Name='Vita3K (PS Vita)';          Id='Vita3K.Vita3K'}
     @{Cat='Emuladores'; Sub='Xbox y PC';     Name='xemu (Xbox clasica)';       Id='xemu-project.xemu'}
@@ -591,7 +790,6 @@ $catalog = @(
     # ------------- DESARROLLO Y TERMINAL -------------
     @{Cat='Desarrollo';       Name='Visual Studio Code';     Id='Microsoft.VisualStudioCode'}
     @{Cat='Desarrollo';       Name='VS Codium';              Id='VSCodium.VSCodium'}
-    @{Cat='Desarrollo';       Name='Visual Studio 2022 Community'; Id='Microsoft.VisualStudio.2022.Community'}
     @{Cat='Desarrollo';       Name='Visual Studio 2022 Community'; Id='Microsoft.VisualStudio.2022.Community'}
     @{Cat='Desarrollo';       Name='Git';                    Id='Git.Git'}
     @{Cat='Desarrollo';       Name='GitHub Desktop';         Id='GitHub.GitHubDesktop'}
@@ -629,15 +827,13 @@ $catalog = @(
 
     # ------------ RED, VPN Y DESCARGAS ---------------
     @{Cat='Red y Remoto';     Name='Tailscale';              Id='Tailscale.Tailscale'}
-    @{Cat='Red y Remoto';     Name='RustDesk';               Id='RustDesk.RustDesk'}
     @{Cat='Red y Remoto';     Name='WireGuard';              Id='WireGuard.WireGuard'}
     @{Cat='Red y Remoto';     Name='qBittorrent';            Id='qBittorrent.qBittorrent'}
-    @{Cat='Red y Remoto';     Name='uTorrent';               Id='uTorrent.uTorrent'}
-    @{Cat='Red y Remoto';     Name='eMule (Community)';      Id='eMuleCommunity.eMule'}
+    @{Cat='Red y Remoto';     Name='eMule (Community)';      Id='eMule.eMule.community'}
+    @{Cat='Red y Remoto';     Name='eMule (clasico 0.50a)';  Id='eMule.eMule'}
     @{Cat='Red y Remoto';     Name='Advanced IP Scanner';    Id='Famatech.AdvancedIPScanner'}
     @{Cat='Red y Remoto';     Name='Angry IP Scanner';       Id='angryziber.AngryIPScanner'}
     @{Cat='Red y Remoto';     Name='Cloudflare One (WARP)';  Id='Cloudflare.Warp'}
-    @{Cat='Red y Remoto';     Name='FileZilla Client';       Id='TimKosse.FileZilla.Client'}
     @{Cat='Red y Remoto';     Name='JDownloader 2';          Id='AppWork.JDownloader'}
     @{Cat='Red y Remoto';     Name='Moonlight (cliente)';    Id='MoonlightGameStreamingProject.Moonlight'}
     @{Cat='Red y Remoto';     Name='Mullvad VPN';            Id='MullvadVPN.MullvadVPN'}
@@ -907,15 +1103,741 @@ $catalog = @(
     @{Cat='Nube y Sync';      Name='Nextcloud Desktop';         Id='Nextcloud.NextcloudDesktop'}
     @{Cat='Nube y Sync';      Name='Syncthing';                 Id='Syncthing.Syncthing'}
 )
-# --- NO DISPONIBLES EN EL REPOSITORIO DE WINGET (junio 2026) ---
-# Estas apps de tu lista no tienen manifiesto fiable en winget y se
-# excluyen a proposito para no romper instalaciones masivas:
+# --- NO DISPONIBLES EN EL REPOSITORIO DE WINGET (auditado julio 2026) ---
+# Estas apps no tienen manifiesto fiable en winget y se excluyen a
+# proposito para no romper instalaciones masivas:
 #   * BD3D2MK3D            -> descarga manual (videohelp.com)
 #   * BlurAutoClicker      -> descarga manual
 #   * Z-Library Desktop    -> no esta en winget
-# Si algun dia aparecen, anade su linea @{Cat=...;Name=...;Id=...}
+#   * uTorrent             -> nunca ha tenido manifiesto en winget (usa qBittorrent)
+#   * RustDesk             -> RETIRADO de winget (deteccion PUA de antivirus
+#                             bloquea la validacion); descarga de rustdesk.com
+#   * FileZilla Client     -> retirado de winget; alternativa: WinSCP (en catalogo)
+#   * RPCS3 (PS3)          -> retirado de winget; descarga de rpcs3.net
+#                             (su guia y web oficial siguen en el panel de guias)
+#   * Snes9x               -> retirado de winget; sustituido por bsnes (bsnes-emu.BSNES)
+# Si algun dia vuelven, anade su linea @{Cat=...;Name=...;Id=...}
 # y pulsa [Validar IDs] para confirmarla.
 # ============================================================
+
+# ---- DESCRIPCIONES PREMIUM DEL CATALOGO (v7.1) ----
+# Una linea clara por app: que es y para que sirve. Se muestran en el
+# tooltip de cada casilla (Apps y asistente de ISO) y el buscador tambien
+# busca en ellas (puedes buscar 'editor de video' o 'password manager').
+$AppDesc = @{
+    'Brave.Brave' = 'Navegador rapido basado en Chromium con bloqueador de anuncios integrado.'
+    'Hibbiki.Chromium' = 'Chromium puro sin los servicios de Google; base abierta de Chrome.'
+    'Mozilla.Firefox' = 'Navegador libre de Mozilla, centrado en privacidad y personalizacion.'
+    'Mozilla.Firefox.ESR' = 'Firefox de soporte extendido: cambios lentos, ideal para empresas.'
+    'Ablaze.Floorp' = 'Firefox japones muy personalizable con paneles y diseno flexible.'
+    'Google.Chrome' = 'El navegador mas usado del mundo; sincroniza con tu cuenta Google.'
+    'ImputNet.Helium' = 'Navegador Chromium minimalista, sin telemetria y muy ligero.'
+    'LibreWolf.LibreWolf' = 'Firefox endurecido: sin telemetria y con privacidad al maximo.'
+    'Microsoft.Edge' = 'Navegador de Microsoft basado en Chromium, integrado en Windows.'
+    'MullvadVPN.MullvadBrowser' = 'Navegador anti-huella de Mullvad y Tor Project, para usar con VPN.'
+    'TorProject.TorBrowser' = 'Navega por la red Tor con anonimato y evita censura.'
+    'Vivaldi.Vivaldi' = 'Navegador ultra-configurable con pestanas en mosaico y notas.'
+    'Waterfox.Waterfox' = 'Derivado de Firefox orientado a privacidad y rendimiento.'
+    'Zen-Team.Zen-Browser' = 'Firefox moderno con interfaz minimalista y espacios de trabajo.'
+    '7zip.7zip' = 'Compresor/descompresor libre: ZIP, 7z, RAR y muchos mas.'
+    'RARLab.WinRAR' = 'El clasico compresor RAR/ZIP con interfaz sencilla.'
+    'Notepad++.Notepad++' = 'Editor de texto y codigo ligero con resaltado y pestanas.'
+    'voidtools.Everything' = 'Busca archivos por nombre en TODO el disco al instante.'
+    'Microsoft.PowerToys' = 'Utilidades oficiales: FancyZones, renombrado masivo, OCR y mas.'
+    'Rufus.Rufus' = 'Crea USBs booteables de Windows/Linux en segundos.'
+    'AIMP.AIMP' = 'Reproductor de musica ligero con ecualizador de calidad.'
+    'ClassicOldSong.Apollo' = 'Servidor GameStream compatible con Moonlight para jugar en remoto.'
+    'Audacity.Audacity' = 'Editor de audio libre: graba, corta y aplica efectos.'
+    'AviSynth.AviSynthPlus' = 'Motor de procesado de video por scripts para edicion avanzada.'
+    'BlenderFoundation.Blender' = 'Suite 3D libre: modelado, animacion, render y edicion de video.'
+    'ByteDance.CapCut' = 'Editor de video facil y popular para redes sociales.'
+    'GIMP.GIMP' = 'Editor de imagenes libre estilo Photoshop, con capas y filtros.'
+    'HandBrake.HandBrake' = 'Convierte y comprime videos a MP4/MKV con perfiles listos.'
+    'DuongDieuPhap.ImageGlass' = 'Visor de imagenes moderno, ligero y de codigo abierto.'
+    'IrfanSkiljan.IrfanView' = 'Visor de imagenes veterano, rapidisimo y con proceso por lotes.'
+    'Apple.iTunes' = 'Gestor multimedia de Apple; necesario para iPhone/iPad antiguos.'
+    'CodecGuide.K-LiteCodecPack.Mega' = 'Pack completo de codecs para reproducir cualquier formato.'
+    'GuinpinSoft.MakeMKV' = 'Extrae discos Blu-ray/DVD a archivos MKV sin recomprimir.'
+    'MoritzBunkus.MKVToolNix' = 'Une, separa y edita pistas de archivos MKV.'
+    'clsid2.mpc-hc' = 'Reproductor de video clasico, minimo y muy compatible (MPC-HC).'
+    'mpc-qt.mpc-qt' = 'Reproductor estilo MPC con motor mpv moderno.'
+    'OBSProject.OBSStudio' = 'Graba y emite en directo (streaming) con escenas y fuentes.'
+    'dotPDN.PaintDotNet' = 'Editor de imagenes ligero con capas, entre Paint y Photoshop.'
+    'ShareX.ShareX' = 'Capturas y grabacion de pantalla con subida automatica; muy completo.'
+    'Spotify.Spotify' = 'Musica y podcasts en streaming con listas y descubrimiento.'
+    'VideoLAN.VLC' = 'El reproductor que lo reproduce todo, sin codecs extra.'
+    'Valve.Steam' = 'La mayor tienda y biblioteca de juegos de PC.'
+    'Discord.Discord' = 'Voz, video y texto para comunidades y amigos.'
+    'EpicGames.EpicGamesLauncher' = 'Tienda de Epic con juegos gratis cada semana.'
+    'Playnite.Playnite' = 'Unifica TODAS tus bibliotecas de juegos en una sola interfaz.'
+    'beeradmoore.dlss-swapper' = 'Actualiza el DLSS de tus juegos a la ultima version.'
+    'ElectronicArts.EADesktop' = 'Launcher oficial de EA (antiguo Origin).'
+    'Nvidia.GeForceNow' = 'Juega en la nube de NVIDIA sin PC potente.'
+    'GOG.Galaxy' = 'Launcher de GOG: juegos sin DRM y bibliotecas unificadas.'
+    'HeroicGamesLauncher.HeroicGamesLauncher' = 'Launcher libre para juegos de Epic, GOG y Amazon.'
+    'ItchIo.Itch' = 'Tienda de juegos indie y experimentales.'
+    'Modrinth.ModrinthApp' = 'Instala mods y modpacks de Minecraft desde Modrinth.'
+    'Orbmu2k.nvidiaProfileInspector' = 'Edita perfiles ocultos del driver NVIDIA por juego.'
+    'PrismLauncher.PrismLauncher' = 'Launcher de Minecraft con instancias y mods facil.'
+    'LizardByte.Sunshine' = 'Servidor GameStream libre para Moonlight en cualquier GPU.'
+    'Ubisoft.Connect' = 'Launcher oficial de Ubisoft con logros y recompensas.'
+    'VirtualDesktop.Streamer' = 'Transmite PC VR a visores Quest por WiFi.'
+    'Blizzard.BattleNet' = 'Launcher de Blizzard: WoW, Diablo, Overwatch...'
+    'Ryochan7.DS4Windows' = 'Usa mandos de PlayStation en Windows como si fueran Xbox.'
+    'ViGEm.ViGEmBus' = 'Driver de mandos virtuales requerido por DS4Windows y otros.'
+    'Nefarius.HidHide' = 'Oculta mandos fisicos duplicados a los juegos.'
+    'SpecialK.SpecialK' = 'Inyector para mejorar juegos: limites de FPS, HDR y fixes.'
+    'Guru3D.Afterburner' = 'Overclocking y monitorizacion de GPU de referencia (MSI).'
+    'Guru3D.RTSS' = 'Limita FPS y muestra OSD en juegos (companero de Afterburner).'
+    'CXWorld.CapFrameX' = 'Analiza los frametimes de tus juegos con graficas.'
+    'Libretro.RetroArch' = 'Emulador multi-sistema con nucleos para casi todas las consolas.'
+    'TASEmulators.BizHawk' = 'Emulador multi-consola orientado a TAS y precision.'
+    'DolphinEmulator.Dolphin' = 'Emulador de GameCube y Wii, maduro y compatible.'
+    'Cemu.Cemu' = 'Emulador de Wii U con gran compatibilidad.'
+    'Project64.Project64' = 'Emulador veterano de Nintendo 64.'
+    'bsnes-emu.BSNES' = 'Emulador de Super Nintendo centrado en precision total.'
+    'SourMesen.Mesen' = 'Emulador de NES/SNES/Game Boy de alta precision con debugger.'
+    'JeffreyPfau.mGBA' = 'Emulador de Game Boy Advance preciso y ligero.'
+    'melonDS.melonDS' = 'Emulador de Nintendo DS moderno con juego en red.'
+    'DeSmuMETeam.DeSmuME' = 'Emulador clasico de Nintendo DS.'
+    'Stenzek.DuckStation' = 'Emulador de PlayStation 1 con mejoras graficas.'
+    'PCSX2Team.PCSX2' = 'Emulador de PlayStation 2 de referencia.'
+    'PPSSPPTeam.PPSSPP' = 'Emulador de PSP con escalado HD y ahorro de bateria.'
+    'Vita3K.Vita3K' = 'Emulador experimental de PS Vita.'
+    'xemu-project.xemu' = 'Emulador de la Xbox original.'
+    'ScummVM.ScummVM' = 'Ejecuta aventuras graficas clasicas (Monkey Island...).'
+    'joncampbell123.DOSBox-X' = 'Emulador de MS-DOS mejorado para juegos y software antiguos.'
+    'Microsoft.VisualStudioCode' = 'El editor de codigo mas popular, con miles de extensiones.'
+    'VSCodium.VSCodium' = 'VS Code sin telemetria de Microsoft, binarios libres.'
+    'Microsoft.VisualStudio.2022.Community' = 'IDE completo gratuito para .NET, C++ y mas.'
+    'Git.Git' = 'Control de versiones imprescindible para cualquier proyecto.'
+    'GitHub.GitHubDesktop' = 'Cliente grafico oficial de GitHub, facil para empezar.'
+    'JesseDuffield.lazygit' = 'Interfaz de Git en el terminal, rapida y adictiva.'
+    'Python.Python.3.12' = 'El lenguaje mas popular para scripts, datos e IA.'
+    'astral-sh.uv' = 'Gestor de paquetes Python ultrarapido (sustituye a pip/venv).'
+    'OpenJS.NodeJS.LTS' = 'JavaScript en el servidor, version estable de soporte largo.'
+    'Yarn.Yarn' = 'Gestor de paquetes JavaScript alternativo a npm.'
+    'GoLang.Go' = 'Lenguaje de Google: simple, compilado y concurrente.'
+    'Rustlang.Rustup' = 'Instala y gestiona el compilador de Rust.'
+    'RubyInstallerTeam.Ruby.3.4' = 'Lenguaje Ruby con DevKit para gemas nativas.'
+    'DEVCOM.Lua' = 'Lenguaje de scripting ligero, popular en videojuegos.'
+    'Amazon.Corretto.8.JDK' = 'JDK 8 de Amazon, libre y con soporte largo.'
+    'Amazon.Corretto.21.JDK' = 'JDK 21 LTS de Amazon para Java moderno.'
+    'Amazon.Corretto.25.JDK' = 'JDK 25 de Amazon, la version mas reciente.'
+    'Kitware.CMake' = 'Sistema de construccion estandar para proyectos C/C++.'
+    'Microsoft.WindowsTerminal' = 'Terminal moderno con pestanas, temas y GPU.'
+    'Microsoft.PowerShell' = 'PowerShell 7 multiplataforma, mas rapido y moderno.'
+    'JanDeDobbeleer.OhMyPosh' = 'Prompts bonitos y utiles para cualquier shell.'
+    'Neovim.Neovim' = 'Vim moderno y extensible con Lua.'
+    'SublimeHQ.SublimeText.4' = 'Editor de texto veloz y elegante para programar.'
+    'ZedIndustries.Zed' = 'Editor de codigo ultrarapido y colaborativo en Rust.'
+    'Anysphere.Cursor' = 'Editor de codigo con IA integrada basado en VS Code.'
+    'Google.Antigravity' = 'Entorno de desarrollo con agentes de IA de Google.'
+    'SST.opencode' = 'Agente de programacion con IA para tu terminal.'
+    'JetBrains.Toolbox' = 'Instala y actualiza todos los IDEs de JetBrains.'
+    'Docker.DockerDesktop' = 'Contenedores Docker con interfaz grafica y Kubernetes.'
+    'Unity.UnityHub' = 'Gestor de versiones y proyectos del motor Unity.'
+    'Canonical.Ubuntu.2404' = 'Ubuntu 24.04 LTS para WSL: Linux dentro de Windows.'
+    'WinsiderSS.SystemInformer' = 'Administrador de tareas avanzado (antes Process Hacker).'
+    'Ollama.Ollama' = 'Ejecuta modelos de IA (LLM) en local con un comando.'
+    'ElementLabs.LMStudio' = 'Descarga y chatea con LLMs locales desde una interfaz grafica.'
+    'Tailscale.Tailscale' = 'VPN de malla facil: conecta tus equipos como una red local.'
+    'WireGuard.WireGuard' = 'VPN moderna, rapida y minimalista; el estandar actual.'
+    'qBittorrent.qBittorrent' = 'Cliente torrent libre, sin anuncios, con buscador integrado.'
+    'eMule.eMule.community' = 'eMule mantenido por la comunidad (red eD2k/Kad), version moderna.'
+    'eMule.eMule' = 'El eMule clasico 0.50a original de la red eD2k.'
+    'Famatech.AdvancedIPScanner' = 'Escanea tu red local y encuentra todos los dispositivos.'
+    'angryziber.AngryIPScanner' = 'Escaner de IPs y puertos libre y multiplataforma.'
+    'Cloudflare.Warp' = 'DNS 1.1.1.1 con tunel WARP: mas privacidad y velocidad.'
+    'AppWork.JDownloader' = 'Gestor de descargas de hosters con captchas y colas.'
+    'MoonlightGameStreamingProject.Moonlight' = 'Juega en remoto a tu PC (NVIDIA/Sunshine) con baja latencia.'
+    'MullvadVPN.MullvadVPN' = 'VPN de pago anonima: sin cuenta, sin registros.'
+    'Insecure.Nmap' = 'El escaner de redes y auditoria de seguridad de referencia.'
+    'OpenVPNTechnologies.OpenVPNConnect' = 'Cliente oficial para conectar a servidores OpenVPN.'
+    'Proton.ProtonVPN' = 'VPN suiza con plan gratuito y sin registros.'
+    'PuTTY.PuTTY' = 'Cliente SSH/Telnet clasico para administrar servidores.'
+    'Henry++.simplewall' = 'Controla que programas acceden a internet (Windows Filtering).'
+    'Ventoy.Ventoy' = 'USB multiarranque: copia varias ISOs y elige al arrancar.'
+    'WinSCP.WinSCP' = 'Transferencia de archivos SFTP/FTP/SCP con doble panel.'
+    'WiresharkFoundation.Wireshark' = 'Analiza el trafico de red paquete a paquete.'
+    'Telegram.TelegramDesktop' = 'Mensajeria rapida con canales, bots y archivos grandes.'
+    '9NKSQGP7F2NH' = 'WhatsApp oficial de escritorio (Microsoft Store).'
+    'Betterbird.Betterbird' = 'Thunderbird mejorado con parches y extras de la comunidad.'
+    'ChatterinoTeam.Chatterino' = 'Chat de Twitch multicuenta, rapido y con emotes de terceros.'
+    'SpikeHD.Dorion' = 'Cliente de Discord ligero y alternativo con temas.'
+    'Element.Element' = 'Mensajeria cifrada y federada sobre el protocolo Matrix.'
+    'Proton.ProtonMail' = 'Correo cifrado de extremo a extremo, hecho en Suiza.'
+    'Tox.qTox' = 'Mensajeria P2P cifrada sin servidores centrales.'
+    'OpenWhisperSystems.Signal' = 'Mensajeria privada de referencia con cifrado total.'
+    'SlackTechnologies.Slack' = 'Chat de equipos por canales, integraciones y llamadas.'
+    'Microsoft.Teams' = 'Reuniones, chat y colaboracion de Microsoft 365.'
+    'TeamSpeakSystems.TeamSpeakClient' = 'Voz de baja latencia para gaming en servidores propios.'
+    'Mozilla.Thunderbird' = 'Cliente de correo libre con calendario y filtros potentes.'
+    'Vencord.Vesktop' = 'Discord con Vencord integrado: mas ligero y personalizable.'
+    'Rakuten.Viber' = 'Llamadas y mensajes gratis entre usuarios de Viber.'
+    'Zoom.Zoom' = 'Videollamadas y reuniones online estandar de empresa.'
+    'CrystalDewWorld.CrystalDiskInfo' = 'Salud SMART de tus discos: anticipa fallos.'
+    'CPUID.CPU-Z' = 'Muestra todos los datos de tu CPU, RAM y placa.'
+    'TechPowerUp.GPU-Z' = 'Toda la informacion de tu tarjeta grafica y sensores.'
+    'REALiX.HWiNFO' = 'El monitor de hardware y sensores mas completo.'
+    'CPUID.HWMonitor' = 'Temperaturas, voltajes y consumos en tiempo real.'
+    'Wagnardsoft.DisplayDriverUninstaller' = 'Elimina drivers graficos a fondo antes de reinstalar (DDU).'
+    'Microsoft.VCRedist.2015+.x64' = 'Librerias Visual C++ x64 que piden muchos juegos y apps.'
+    'Microsoft.VCRedist.2015+.x86' = 'Librerias Visual C++ x86 (32 bits) para apps antiguas.'
+    'Microsoft.DotNet.DesktopRuntime.6' = 'Runtime .NET 6 para ejecutar apps de escritorio.'
+    'Microsoft.DotNet.DesktopRuntime.8' = 'Runtime .NET 8 LTS para apps de escritorio.'
+    'Microsoft.DotNet.DesktopRuntime.9' = 'Runtime .NET 9 para apps de escritorio.'
+    'Microsoft.DotNet.DesktopRuntime.10' = 'Runtime .NET 10 para apps de escritorio.'
+    'Microsoft.NuGet' = 'Gestor de paquetes .NET por linea de comandos.'
+    'Microsoft.DirectX' = 'Runtime DirectX de usuario final para juegos antiguos.'
+    'Microsoft.Sysinternals.Autoruns' = 'Muestra TODO lo que arranca con Windows.'
+    'Microsoft.Sysinternals.ProcessExplorer' = 'Administrador de procesos profundo de Sysinternals.'
+    'Microsoft.Sysinternals.ProcessMonitor' = 'Registra en vivo toda la actividad de archivos y registro.'
+    'Microsoft.Sysinternals.TCPView' = 'Ve todas las conexiones de red abiertas por proceso.'
+    'Microsoft.Sysinternals.RDCMan' = 'Gestiona muchas conexiones de escritorio remoto.'
+    'CodingWondersSoftware.DISMTools.Stable' = 'Interfaz grafica para gestionar imagenes con DISM.'
+    'Nlitesoft.NTLite' = 'Personaliza y aligera imagenes de instalacion de Windows.'
+    'Microsoft.OneDrive' = 'Cliente oficial de la nube OneDrive de Microsoft.'
+    'Adobe.Acrobat.Reader.64-bit' = 'El lector PDF oficial de Adobe, estandar de facto.'
+    'calibre.calibre' = 'Biblioteca de ebooks: convierte formatos y gestiona tu lector.'
+    'TheDocumentFoundation.LibreOffice' = 'Suite ofimatica libre: Writer, Calc e Impress compatibles con Office.'
+    'Obsidian.Obsidian' = 'Notas enlazadas en Markdown: tu segundo cerebro local.'
+    'ONLYOFFICE.DesktopEditors' = 'Suite ofimatica con maxima compatibilidad con formatos de MS Office.'
+    'Jellyfin.JellyfinMediaPlayer' = 'Cliente de escritorio para tu servidor Jellyfin.'
+    'Jellyfin.Server' = 'Tu Netflix personal: servidor multimedia libre.'
+    'XBMCFoundation.Kodi' = 'Centro multimedia completo para peliculas, series y musica.'
+    'LocalSend.LocalSend' = 'Envia archivos entre dispositivos por WiFi, sin nube (tipo AirDrop).'
+    'Netbird.Netbird' = 'Red privada WireGuard punto a punto, autoalojable.'
+    'Plex.Plex' = 'Cliente de Plex para ver tu servidor multimedia.'
+    'Plex.PlexMediaServer' = 'Servidor multimedia Plex para toda tu coleccion.'
+    'AgileBits.1Password' = 'Gestor de contrasenas premium para familias y equipos.'
+    'AnyDesk.AnyDesk' = 'Escritorio remoto ligero y rapido para soporte.'
+    'AutoHotkey.AutoHotkey' = 'Automatiza Windows con scripts: atajos, macros y remapeos.'
+    'Bitwarden.Bitwarden' = 'Gestor de contrasenas libre con sincronizacion segura.'
+    'BleachBit.BleachBit' = 'Limpiador de espacio libre y privacidad, libre.'
+    'Klocman.BulkCrapUninstaller' = 'Desinstala muchos programas a la vez, detecta restos.'
+    'CrystalDewWorld.CrystalDiskMark' = 'Mide la velocidad real de tus discos y SSD.'
+    'Deskflow.Deskflow' = 'Comparte un teclado y raton entre varios ordenadores.'
+    'File-New-Project.EarTrumpet' = 'Control de volumen por aplicacion desde la bandeja.'
+    'ente-io.photos-desktop' = 'Fotos cifradas de extremo a extremo, alternativa a Google Fotos.'
+    'FilesCommunity.Files' = 'Explorador de archivos moderno con pestanas y vista dual.'
+    'flux.flux' = 'Ajusta el color de la pantalla segun la hora para descansar la vista.'
+    'glzr-io.glazewm' = 'Gestor de ventanas en mosaico (tiling) para teclado-adictos.'
+    'Google.GoogleDrive' = 'Sincroniza Google Drive con tu escritorio.'
+    'Hugo.Hugo.Extended' = 'Generador de sitios web estaticos ultrarapido.'
+    'MHNexus.HxD' = 'Editor hexadecimal rapido para archivos y memoria.'
+    'sylikc.JPEGView' = 'Visor de imagenes minimo y fugaz: abre, mira, cierra.'
+    'rcmaehl.MSEdgeRedirect' = 'Redirige los enlaces forzados de Edge a tu navegador favorito.'
+    'Cyanfish.NAPS2' = 'Escanea documentos a PDF con OCR, facil y libre.'
+    'M2Team.NanaZip' = '7-Zip modernizado para Windows 11 con menu contextual nuevo.'
+    'Nilesoft.Shell' = 'Personaliza el menu contextual del Explorador a tu gusto.'
+    'TechPowerUp.NVCleanstall' = 'Instala drivers NVIDIA sin bloatware, a tu medida.'
+    'xM4ddy.OFGB' = 'Quita anuncios e ''sugerencias'' de la interfaz de Windows 11.'
+    'OPAutoClicker.OPAutoClicker' = 'Auto-clicker simple para tareas repetitivas.'
+    'OpenRGB.OpenRGB' = 'Controla la iluminacion RGB de cualquier marca sin bloat.'
+    'Oracle.VirtualBox' = 'Maquinas virtuales gratuitas para probar otros sistemas.'
+    'Parsec.Parsec' = 'Escritorio remoto de latencia ultra baja, ideal para jugar.'
+    'Giorgiotani.Peazip' = 'Compresor libre con soporte de 200+ formatos y cifrado.'
+    'Fleex255.PolicyPlus' = 'Editor de politicas de grupo para TODAS las ediciones de Windows.'
+    'BitSum.ProcessLasso' = 'Optimiza prioridades de CPU para mas fluidez.'
+    'Proton.ProtonAuthenticator' = 'Codigos 2FA de Proton con copia de seguridad cifrada.'
+    'Proton.ProtonDrive' = 'Nube cifrada de extremo a extremo de Proton.'
+    'Proton.ProtonPass' = 'Gestor de contrasenas cifrado del ecosistema Proton.'
+    'RevoUninstaller.RevoUninstaller' = 'Desinstalacion profunda: elimina restos de registro y disco.'
+    'WhirlwindFX.SignalRgb' = 'Sincroniza el RGB de todos tus perifericos con efectos.'
+    'GlennDelahoy.SnappyDriverInstallerOrigin' = 'Instala y actualiza drivers sin conexion, libre.'
+    'TeamViewer.TeamViewer' = 'El escritorio remoto mas conocido para asistencia.'
+    'GlavSoft.TightVNC' = 'Escritorio remoto VNC libre y minimalista.'
+    'Ghisler.TotalCommander' = 'Gestor de archivos de doble panel, veterano y potente.'
+    'CharlesMilette.TranslucentTB' = 'Barra de tareas translucida o transparente, muy ligera.'
+    'JAMSoftware.TreeSize.Free' = 'Analiza el tamano de carpetas con vista de arbol.'
+    'MartiCliment.UniGetUI.Pre-Release' = 'Interfaz grafica para winget, choco y scoop (antes WingetUI).'
+    'WiseCleaner.WiseProgramUninstaller' = 'Desinstala programas y borra sus restos.'
+    'AntibodySoftware.WizTree' = 'Ve que ocupa tu disco en segundos (usa la MFT).'
+    'Malwarebytes.Malwarebytes' = 'Anti-malware de segunda opinion para limpiar infecciones.'
+    'DominikReichl.KeePass' = 'El KeePass original: contrasenas locales con plugins.'
+    'KeePassXCTeam.KeePassXC' = 'Gestor de contrasenas local, sin nube, base cifrada.'
+    'Cryptomator.Cryptomator' = 'Cifra tus archivos ANTES de subirlos a cualquier nube.'
+    'IDRIX.VeraCrypt' = 'Cifra discos y crea contenedores seguros (sucesor de TrueCrypt).'
+    'GnuPG.Gpg4win' = 'Cifrado y firma GPG de correos y archivos en Windows.'
+    'OO-Software.ShutUp10' = 'Desactiva telemetria y ajustes invasivos de Windows 10/11.'
+    'BiniSoft.WindowsFirewallControl' = 'Panel avanzado para el firewall de Windows con avisos.'
+    'Cisco.ClamAV' = 'Antivirus libre por consola, util para escaneos programados.'
+    'Notion.Notion' = 'Espacio todo-en-uno: notas, bases de datos y proyectos.'
+    'Joplin.Joplin' = 'Notas Markdown libres con sincronizacion cifrada.'
+    'Logseq.Logseq' = 'Notas en esquema con enlaces bidireccionales, local y libre.'
+    'AnyAssociation.Anytype' = 'Notas y bases de conocimiento locales, cifradas y sin nube.'
+    'StandardNotes.StandardNotes' = 'Notas cifradas de extremo a extremo, simples y seguras.'
+    'Doist.Todoist' = 'Lista de tareas multiplataforma con proyectos y recordatorios.'
+    'DigitalScholar.Zotero' = 'Gestor de referencias y bibliografia para investigacion.'
+    'Xmind.Xmind' = 'Mapas mentales elegantes para organizar ideas.'
+    'Freeplane.Freeplane' = 'Mapas mentales libres y potentes con scripting.'
+    'JGraph.Draw' = 'Diagramas de flujo y esquemas (draw.io) en el escritorio.'
+    'MarkText.MarkText' = 'Editor Markdown libre en tiempo real, limpio y bonito.'
+    'Zettlr.Zettlr' = 'Editor Markdown academico con citas Zotero integradas.'
+    'appmakes.Typora' = 'Editor Markdown elegante que renderiza mientras escribes.'
+    'Flow-Launcher.Flow-Launcher' = 'Lanzador rapido: busca apps, archivos y comandos con un atajo.'
+    'Ditto.Ditto' = 'Historial de portapapeles: recupera todo lo que copiaste.'
+    'SumatraPDF.SumatraPDF' = 'Lector PDF/ePub minimalista y rapidisimo.'
+    'Foxit.FoxitReader' = 'Lector PDF rapido con anotaciones y firmas.'
+    'geeksoftwareGmbH.PDF24Creator' = 'Caja de herramientas PDF: convierte, comprime, firma e imprime.'
+    'PDFsam.PDFsam' = 'Une, divide y reordena PDFs sin subirlos a internet.'
+    'KDE.Okular' = 'Visor de documentos universal de KDE con anotaciones.'
+    'Duplicati.Duplicati' = 'Backups cifrados programados hacia cualquier nube.'
+    'restic.restic' = 'Copias de seguridad cifradas, deduplicadas y rapidas.'
+    'Rclone.Rclone' = 'Sincroniza y monta 70+ nubes por linea de comandos.'
+    'WinDirStat.WinDirStat' = 'Mapa visual del uso de disco por carpetas.'
+    'Balena.Etcher' = 'Graba ISOs a USB/SD de forma segura y simple.'
+    'Piriform.Recuva' = 'Recupera archivos borrados por accidente.'
+    'Piriform.CCleaner' = 'Limpieza clasica de temporales y registro (usar con cabeza).'
+    'Piriform.Speccy' = 'Resumen visual del hardware de tu equipo.'
+    'Piriform.Defraggler' = 'Desfragmenta discos duros (no usar en SSD).'
+    'Glarysoft.GlaryUtilities' = 'Suite de mantenimiento todo-en-uno con 20+ herramientas.'
+    'WiseCleaner.WiseDiskCleaner' = 'Limpia archivos basura con un clic.'
+    'WiseCleaner.WiseRegistryCleaner' = 'Limpia y desfragmenta el registro de Windows.'
+    'Inkscape.Inkscape' = 'Editor de graficos vectoriales libre (SVG), tipo Illustrator.'
+    'KDE.Krita' = 'Pintura digital profesional libre, ideal para ilustracion.'
+    'darktable.darktable' = 'Revelado RAW libre estilo Lightroom para fotografos.'
+    'Meltytech.Shotcut' = 'Editor de video libre y sencillo, ideal para empezar.'
+    'KDE.Kdenlive' = 'Editor de video libre multipista con efectos y transiciones.'
+    'OpenShot.OpenShot' = 'Editor de video libre muy facil, con animaciones y titulos.'
+    'FreeCAD.FreeCAD' = 'CAD parametrico 3D libre para diseno e ingenieria.'
+    'Ultimaker.Cura' = 'Laminador 3D estandar para preparar impresiones.'
+    'Prusa3D.PrusaSlicer' = 'Laminador 3D de Prusa, potente y para cualquier impresora.'
+    'SoftFever.OrcaSlicer' = 'Laminador 3D moderno con calibraciones integradas.'
+    'PeterPawlowski.foobar2000' = 'Reproductor de audio minimalista, modular y de sonido excelente.'
+    'MediaArea.MediaInfo' = 'Muestra codecs, pistas y metadatos de cualquier archivo multimedia.'
+    'Nikse.SubtitleEdit' = 'Crea, sincroniza y traduce subtitulos con vista de onda.'
+    'Stremio.Stremio' = 'Centro multimedia para organizar y ver video en streaming.'
+    'XnSoft.XnViewMP' = 'Visor y conversor de imagenes con soporte de 500+ formatos.'
+    'NickeManarin.ScreenToGif' = 'Graba pantalla o webcam y exporta a GIF/video con editor.'
+    'Greenshot.Greenshot' = 'Capturas de pantalla con anotaciones y envio rapido.'
+    'Flameshot.Flameshot' = 'Capturas de pantalla potentes con edicion en el momento.'
+    'Postman.Postman' = 'Prueba y documenta APIs REST con colecciones.'
+    'Insomnia.Insomnia' = 'Cliente de APIs REST/GraphQL limpio y rapido.'
+    'HeidiSQL.HeidiSQL' = 'Cliente grafico para MySQL/MariaDB/PostgreSQL/SQL Server.'
+    'DBBrowserForSQLite.DBBrowserForSQLite' = 'Explora y edita bases de datos SQLite visualmente.'
+    'MongoDB.Compass.Full' = 'Interfaz oficial para explorar bases MongoDB.'
+    'Atlassian.Sourcetree' = 'Cliente Git gratuito de Atlassian con vista de arbol.'
+    'Axosoft.GitKraken' = 'Cliente Git visual con grafo de ramas espectacular.'
+    'DenoLand.Deno' = 'Runtime moderno de JavaScript/TypeScript seguro por defecto.'
+    'Microsoft.DotNet.SDK.8' = 'SDK .NET 8 LTS para compilar aplicaciones.'
+    'EclipseAdoptium.Temurin.21.JDK' = 'JDK 21 LTS de Eclipse Adoptium (Temurin).'
+    'MSYS2.MSYS2' = 'Entorno Unix con pacman para compilar en Windows.'
+    'Anaconda.Miniconda3' = 'Conda minimo: instala solo los paquetes que necesites.'
+    'JetBrains.PyCharm.Community' = 'IDE de Python de JetBrains, edicion gratuita.'
+    'JetBrains.IntelliJIDEA.Community' = 'IDE de Java/Kotlin lider, edicion gratuita.'
+    'Google.AndroidStudio' = 'IDE oficial para desarrollar apps Android, con emulador.'
+    'GodotEngine.GodotEngine' = 'Motor de videojuegos libre 2D/3D con lenguaje propio.'
+    'jqlang.jq' = 'Procesa y consulta JSON desde la linea de comandos.'
+    'GitHub.cli' = 'GitHub por consola: PRs, issues y releases sin salir del terminal.'
+    'Hashicorp.Terraform' = 'Infraestructura como codigo para cualquier nube.'
+    'Kubernetes.kubectl' = 'Controla clusteres de Kubernetes desde la consola.'
+    'Helm.Helm' = 'Gestor de paquetes (charts) para Kubernetes.'
+    'Amazon.AWSCLI' = 'Administra AWS desde la linea de comandos.'
+    'Microsoft.AzureCLI' = 'Administra Azure desde la linea de comandos.'
+    'Google.CloudSDK' = 'Herramientas de linea de comandos para Google Cloud.'
+    'WinMerge.WinMerge' = 'Compara y fusiona archivos y carpetas visualmente.'
+    'ImageMagick.ImageMagick' = 'Procesa y convierte imagenes por consola o scripts.'
+    'Gyan.FFmpeg' = 'Navaja suiza de audio/video por consola: convierte casi todo.'
+    'yt-dlp.yt-dlp' = 'Descarga video/audio de YouTube y mil sitios mas (consola).'
+    'Ookla.Speedtest.CLI' = 'Mide tu velocidad de internet desde la consola.'
+    'Rem0o.FanControl' = 'Controla TODOS los ventiladores con curvas personalizadas.'
+    'Logitech.GHUB' = 'Configura raton, teclado y auriculares Logitech G.'
+    'Wox.Wox' = 'Lanzador de apps y busquedas con plugins.'
+    'QL-Win.QuickLook' = 'Vista previa instantanea con la barra espaciadora, como en Mac.'
+    'NexusMods.Vortex' = 'Gestor oficial de mods de Nexus (Skyrim, Fallout...).'
+    'ebkr.r2modman' = 'Gestor de mods para Risk of Rain 2, Lethal Company y mas.'
+    'Ferdium.Ferdium' = 'Todas tus mensajerias (WhatsApp, Slack...) en una sola app.'
+    'Foundry376.Mailspring' = 'Cliente de correo bonito con seguimiento de lecturas.'
+    'Tencent.WeChat' = 'Mensajeria china todo-en-uno con pagos y mini-apps.'
+    'Microsoft.DotNet.SDK.9' = '.NET 9 SDK, la version mas reciente.'
+    'EclipseAdoptium.Temurin.17.JDK' = 'JDK 17 LTS de Eclipse Adoptium (Temurin).'
+    'JernejSimoncic.Wget' = 'Descarga archivos por consola con reintentos y recursividad.'
+    'cURL.cURL' = 'Transferencias HTTP/FTP por consola; imprescindible en scripts.'
+    'Starship.Starship' = 'Prompt minimalista, rapido y personalizable para todo shell.'
+    'sharkdp.bat' = '''cat'' con resaltado de sintaxis y numeros de linea.'
+    'sharkdp.fd' = 'Alternativa simple y rapida al comando ''find''.'
+    'BurntSushi.ripgrep.MSVC' = 'Busca texto en proyectos enteros a velocidad absurda (rg).'
+    'junegunn.fzf' = 'Buscador difuso interactivo para el terminal.'
+    'ajeetdsouza.zoxide' = 'Un ''cd'' inteligente que aprende tus carpetas frecuentes.'
+    'eza-community.eza' = '''ls'' moderno con colores, iconos y arbol.'
+    'dandavison.delta' = 'Diffs de Git preciosos y legibles en el terminal.'
+    'gerardog.gsudo' = '''sudo'' para Windows: eleva comandos sin cambiar de consola.'
+    'Schniz.fnm' = 'Gestor de versiones de Node rapidisimo escrito en Rust.'
+    'CoreyButler.NVMforWindows' = 'Cambia entre versiones de Node.js con un comando.'
+    'Nushell.Nushell' = 'Shell moderna donde todo son datos estructurados.'
+    'Ninja-build.Ninja' = 'Sistema de compilacion minimalista y velocisimo.'
+    'LLVM.LLVM' = 'Compilador Clang/LLVM para C, C++ y mas.'
+    'StrawberryPerl.StrawberryPerl' = 'Perl completo para Windows con compilador incluido.'
+    'Microsoft.SQLServerManagementStudio' = 'La herramienta oficial para administrar SQL Server.'
+    'Anaconda.Anaconda3' = 'Python cientifico con cientos de paquetes preinstalados.'
+    'Microsoft.WindowsADK' = 'Kit oficial para crear y desplegar imagenes de Windows.'
+    'Dropbox.Dropbox' = 'La nube veterana de sincronizacion de archivos.'
+    'Mega.MEGASync' = 'Cliente de MEGA: 20 GB gratis cifrados.'
+    'Nextcloud.NextcloudDesktop' = 'Sincroniza con tu nube privada Nextcloud.'
+    'Syncthing.Syncthing' = 'Sincroniza carpetas entre equipos sin nube, P2P cifrado.'
+}
+$AppDescEn = @{
+    'Brave.Brave' = 'Fast Chromium-based browser with a built-in ad blocker.'
+    'Hibbiki.Chromium' = 'Plain Chromium without Google services; Chrome''s open-source base.'
+    'Mozilla.Firefox' = 'Mozilla''s free browser, focused on privacy and customization.'
+    'Mozilla.Firefox.ESR' = 'Extended-support Firefox: slow-changing, ideal for business use.'
+    'Ablaze.Floorp' = 'Highly customizable Japanese Firefox fork with flexible panels.'
+    'Google.Chrome' = 'The world''s most used browser; syncs with your Google account.'
+    'ImputNet.Helium' = 'Minimal Chromium browser, telemetry-free and very light.'
+    'LibreWolf.LibreWolf' = 'Hardened Firefox: no telemetry, maximum privacy defaults.'
+    'Microsoft.Edge' = 'Microsoft''s Chromium-based browser, integrated with Windows.'
+    'MullvadVPN.MullvadBrowser' = 'Anti-fingerprinting browser by Mullvad and Tor Project, VPN-friendly.'
+    'TorProject.TorBrowser' = 'Browse the Tor network anonymously and bypass censorship.'
+    'Vivaldi.Vivaldi' = 'Ultra-configurable browser with tab tiling and notes.'
+    'Waterfox.Waterfox' = 'Firefox derivative focused on privacy and performance.'
+    'Zen-Team.Zen-Browser' = 'Modern Firefox with a minimal interface and workspaces.'
+    '7zip.7zip' = 'Free archiver: ZIP, 7z, RAR and many more formats.'
+    'RARLab.WinRAR' = 'The classic RAR/ZIP archiver with a simple interface.'
+    'Notepad++.Notepad++' = 'Light text and code editor with highlighting and tabs.'
+    'voidtools.Everything' = 'Finds files by name across the whole disk instantly.'
+    'Microsoft.PowerToys' = 'Official power utilities: FancyZones, bulk rename, OCR and more.'
+    'Rufus.Rufus' = 'Creates bootable Windows/Linux USB drives in seconds.'
+    'AIMP.AIMP' = 'Light music player with a quality equalizer.'
+    'ClassicOldSong.Apollo' = 'GameStream server compatible with Moonlight for remote play.'
+    'Audacity.Audacity' = 'Free audio editor: record, cut and apply effects.'
+    'AviSynth.AviSynthPlus' = 'Script-based video processing engine for advanced editing.'
+    'BlenderFoundation.Blender' = 'Free 3D suite: modeling, animation, rendering and video editing.'
+    'ByteDance.CapCut' = 'Easy, popular video editor for social media.'
+    'GIMP.GIMP' = 'Free Photoshop-style image editor with layers and filters.'
+    'HandBrake.HandBrake' = 'Converts and compresses video to MP4/MKV with ready presets.'
+    'DuongDieuPhap.ImageGlass' = 'Modern, lightweight, open-source image viewer.'
+    'IrfanSkiljan.IrfanView' = 'Veteran image viewer, extremely fast, with batch processing.'
+    'Apple.iTunes' = 'Apple''s media manager; needed for older iPhone/iPad devices.'
+    'CodecGuide.K-LiteCodecPack.Mega' = 'Complete codec pack to play virtually any format.'
+    'GuinpinSoft.MakeMKV' = 'Rips Blu-ray/DVD discs to MKV files without re-encoding.'
+    'MoritzBunkus.MKVToolNix' = 'Merge, split and edit tracks in MKV files.'
+    'clsid2.mpc-hc' = 'Classic, minimal, highly compatible video player (MPC-HC).'
+    'mpc-qt.mpc-qt' = 'MPC-style player powered by the modern mpv engine.'
+    'OBSProject.OBSStudio' = 'Record and live-stream with scenes and sources.'
+    'dotPDN.PaintDotNet' = 'Light image editor with layers, between Paint and Photoshop.'
+    'ShareX.ShareX' = 'Screen capture and recording with auto-upload; feature-packed.'
+    'Spotify.Spotify' = 'Streaming music and podcasts with playlists and discovery.'
+    'VideoLAN.VLC' = 'The player that plays everything, no extra codecs needed.'
+    'Valve.Steam' = 'The biggest PC game store and library.'
+    'Discord.Discord' = 'Voice, video and text for communities and friends.'
+    'EpicGames.EpicGamesLauncher' = 'Epic''s store with free games every week.'
+    'Playnite.Playnite' = 'Unifies ALL your game libraries in one interface.'
+    'beeradmoore.dlss-swapper' = 'Update your games'' DLSS to the latest version.'
+    'ElectronicArts.EADesktop' = 'EA''s official launcher (formerly Origin).'
+    'Nvidia.GeForceNow' = 'Play on NVIDIA''s cloud without a powerful PC.'
+    'GOG.Galaxy' = 'GOG''s launcher: DRM-free games and unified libraries.'
+    'HeroicGamesLauncher.HeroicGamesLauncher' = 'Open launcher for Epic, GOG and Amazon games.'
+    'ItchIo.Itch' = 'Store for indie and experimental games.'
+    'Modrinth.ModrinthApp' = 'Install Minecraft mods and modpacks from Modrinth.'
+    'Orbmu2k.nvidiaProfileInspector' = 'Edit hidden per-game NVIDIA driver profiles.'
+    'PrismLauncher.PrismLauncher' = 'Minecraft launcher with easy instances and mods.'
+    'LizardByte.Sunshine' = 'Open GameStream server for Moonlight on any GPU.'
+    'Ubisoft.Connect' = 'Ubisoft''s official launcher with achievements and rewards.'
+    'VirtualDesktop.Streamer' = 'Streams PC VR to Quest headsets over WiFi.'
+    'Blizzard.BattleNet' = 'Blizzard''s launcher: WoW, Diablo, Overwatch...'
+    'Ryochan7.DS4Windows' = 'Use PlayStation controllers on Windows as Xbox pads.'
+    'ViGEm.ViGEmBus' = 'Virtual gamepad driver required by DS4Windows and others.'
+    'Nefarius.HidHide' = 'Hide duplicated physical controllers from games.'
+    'SpecialK.SpecialK' = 'Game-enhancing injector: FPS caps, HDR and fixes.'
+    'Guru3D.Afterburner' = 'The reference GPU overclocking and monitoring tool (MSI).'
+    'Guru3D.RTSS' = 'Cap FPS and show an in-game OSD (Afterburner''s companion).'
+    'CXWorld.CapFrameX' = 'Analyze game frametimes with detailed charts.'
+    'Libretro.RetroArch' = 'Multi-system emulator with cores for nearly every console.'
+    'TASEmulators.BizHawk' = 'Multi-console emulator focused on TAS and accuracy.'
+    'DolphinEmulator.Dolphin' = 'Mature, compatible GameCube and Wii emulator.'
+    'Cemu.Cemu' = 'Wii U emulator with strong compatibility.'
+    'Project64.Project64' = 'Veteran Nintendo 64 emulator.'
+    'bsnes-emu.BSNES' = 'Super Nintendo emulator focused on total accuracy.'
+    'SourMesen.Mesen' = 'High-accuracy NES/SNES/Game Boy emulator with a debugger.'
+    'JeffreyPfau.mGBA' = 'Accurate, light Game Boy Advance emulator.'
+    'melonDS.melonDS' = 'Modern Nintendo DS emulator with netplay.'
+    'DeSmuMETeam.DeSmuME' = 'Classic Nintendo DS emulator.'
+    'Stenzek.DuckStation' = 'PlayStation 1 emulator with graphical enhancements.'
+    'PCSX2Team.PCSX2' = 'The reference PlayStation 2 emulator.'
+    'PPSSPPTeam.PPSSPP' = 'PSP emulator with HD upscaling.'
+    'Vita3K.Vita3K' = 'Experimental PS Vita emulator.'
+    'xemu-project.xemu' = 'Original Xbox emulator.'
+    'ScummVM.ScummVM' = 'Runs classic adventure games (Monkey Island...).'
+    'joncampbell123.DOSBox-X' = 'Enhanced MS-DOS emulator for old games and software.'
+    'Microsoft.VisualStudioCode' = 'The most popular code editor, with thousands of extensions.'
+    'VSCodium.VSCodium' = 'VS Code without Microsoft telemetry, free binaries.'
+    'Microsoft.VisualStudio.2022.Community' = 'Full free IDE for .NET, C++ and more.'
+    'Git.Git' = 'Essential version control for any project.'
+    'GitHub.GitHubDesktop' = 'GitHub''s official GUI client, beginner-friendly.'
+    'JesseDuffield.lazygit' = 'Terminal UI for Git, fast and addictive.'
+    'Python.Python.3.12' = 'The most popular language for scripting, data and AI.'
+    'astral-sh.uv' = 'Ultra-fast Python package manager (replaces pip/venv).'
+    'OpenJS.NodeJS.LTS' = 'Server-side JavaScript, stable long-term-support version.'
+    'Yarn.Yarn' = 'Alternative JavaScript package manager to npm.'
+    'GoLang.Go' = 'Google''s language: simple, compiled, concurrent.'
+    'Rustlang.Rustup' = 'Install and manage the Rust toolchain.'
+    'RubyInstallerTeam.Ruby.3.4' = 'Ruby language with DevKit for native gems.'
+    'DEVCOM.Lua' = 'Light scripting language, popular in games.'
+    'Amazon.Corretto.8.JDK' = 'Amazon''s free long-support JDK 8.'
+    'Amazon.Corretto.21.JDK' = 'Amazon''s JDK 21 LTS for modern Java.'
+    'Amazon.Corretto.25.JDK' = 'Amazon''s JDK 25, the latest version.'
+    'Kitware.CMake' = 'Standard build system for C/C++ projects.'
+    'Microsoft.WindowsTerminal' = 'Modern terminal with tabs, themes and GPU rendering.'
+    'Microsoft.PowerShell' = 'Cross-platform PowerShell 7, faster and modern.'
+    'JanDeDobbeleer.OhMyPosh' = 'Beautiful, useful prompts for any shell.'
+    'Neovim.Neovim' = 'Modern, Lua-extensible Vim.'
+    'SublimeHQ.SublimeText.4' = 'Fast, elegant text editor for coding.'
+    'ZedIndustries.Zed' = 'Ultra-fast collaborative code editor built in Rust.'
+    'Anysphere.Cursor' = 'AI-powered code editor built on VS Code.'
+    'Google.Antigravity' = 'Google''s AI-agent development environment.'
+    'SST.opencode' = 'AI coding agent for your terminal.'
+    'JetBrains.Toolbox' = 'Install and update every JetBrains IDE.'
+    'Docker.DockerDesktop' = 'Docker containers with a GUI and Kubernetes.'
+    'Unity.UnityHub' = 'Version and project manager for the Unity engine.'
+    'Canonical.Ubuntu.2404' = 'Ubuntu 24.04 LTS for WSL: Linux inside Windows.'
+    'WinsiderSS.SystemInformer' = 'Advanced task manager (formerly Process Hacker).'
+    'Ollama.Ollama' = 'Run local AI models (LLMs) with one command.'
+    'ElementLabs.LMStudio' = 'Download and chat with local LLMs from a GUI.'
+    'Tailscale.Tailscale' = 'Easy mesh VPN: connect your devices like a LAN.'
+    'WireGuard.WireGuard' = 'Modern, fast, minimal VPN; today''s standard.'
+    'qBittorrent.qBittorrent' = 'Free, ad-free torrent client with a built-in search.'
+    'eMule.eMule.community' = 'Community-maintained eMule (eD2k/Kad network), modern build.'
+    'eMule.eMule' = 'The original classic eMule 0.50a for the eD2k network.'
+    'Famatech.AdvancedIPScanner' = 'Scan your LAN and find every device.'
+    'angryziber.AngryIPScanner' = 'Free cross-platform IP and port scanner.'
+    'Cloudflare.Warp' = '1.1.1.1 DNS with WARP tunnel: more privacy and speed.'
+    'AppWork.JDownloader' = 'Download manager for hosters with captchas and queues.'
+    'MoonlightGameStreamingProject.Moonlight' = 'Stream games from your PC (NVIDIA/Sunshine) with low latency.'
+    'MullvadVPN.MullvadVPN' = 'Anonymous paid VPN: no account, no logs.'
+    'Insecure.Nmap' = 'The reference network scanner and security auditing tool.'
+    'OpenVPNTechnologies.OpenVPNConnect' = 'Official client for connecting to OpenVPN servers.'
+    'Proton.ProtonVPN' = 'Swiss VPN with a free tier and no logs.'
+    'PuTTY.PuTTY' = 'Classic SSH/Telnet client for server administration.'
+    'Henry++.simplewall' = 'Control which programs access the internet (Windows Filtering).'
+    'Ventoy.Ventoy' = 'Multiboot USB: copy several ISOs and pick at boot.'
+    'WinSCP.WinSCP' = 'SFTP/FTP/SCP file transfer with dual-pane UI.'
+    'WiresharkFoundation.Wireshark' = 'Analyze network traffic packet by packet.'
+    'Telegram.TelegramDesktop' = 'Fast messaging with channels, bots and large files.'
+    '9NKSQGP7F2NH' = 'Official WhatsApp desktop app (Microsoft Store).'
+    'Betterbird.Betterbird' = 'Thunderbird improved with community patches and extras.'
+    'ChatterinoTeam.Chatterino' = 'Fast multi-account Twitch chat with third-party emotes.'
+    'SpikeHD.Dorion' = 'Light alternative Discord client with themes.'
+    'Element.Element' = 'Encrypted, federated messaging on the Matrix protocol.'
+    'Proton.ProtonMail' = 'End-to-end encrypted email, made in Switzerland.'
+    'Tox.qTox' = 'Encrypted P2P messaging without central servers.'
+    'OpenWhisperSystems.Signal' = 'The reference private messenger with full encryption.'
+    'SlackTechnologies.Slack' = 'Team chat with channels, integrations and calls.'
+    'Microsoft.Teams' = 'Microsoft 365 meetings, chat and collaboration.'
+    'TeamSpeakSystems.TeamSpeakClient' = 'Low-latency gaming voice on self-hosted servers.'
+    'Mozilla.Thunderbird' = 'Free email client with calendar and powerful filters.'
+    'Vencord.Vesktop' = 'Discord with built-in Vencord: lighter and customizable.'
+    'Rakuten.Viber' = 'Free calls and messages between Viber users.'
+    'Zoom.Zoom' = 'Standard business video calls and online meetings.'
+    'CrystalDewWorld.CrystalDiskInfo' = 'SMART health of your drives: anticipate failures.'
+    'CPUID.CPU-Z' = 'Shows every detail of your CPU, RAM and motherboard.'
+    'TechPowerUp.GPU-Z' = 'Everything about your graphics card and its sensors.'
+    'REALiX.HWiNFO' = 'The most complete hardware and sensor monitor.'
+    'CPUID.HWMonitor' = 'Real-time temperatures, voltages and power draw.'
+    'Wagnardsoft.DisplayDriverUninstaller' = 'Deep-removes GPU drivers before reinstalling (DDU).'
+    'Microsoft.VCRedist.2015+.x64' = 'Visual C++ x64 runtimes required by many games and apps.'
+    'Microsoft.VCRedist.2015+.x86' = 'Visual C++ x86 (32-bit) runtimes for older apps.'
+    'Microsoft.DotNet.DesktopRuntime.6' = 'Desktop runtime for .NET 6 apps.'
+    'Microsoft.DotNet.DesktopRuntime.8' = 'LTS desktop runtime for .NET 8 apps.'
+    'Microsoft.DotNet.DesktopRuntime.9' = 'Desktop runtime for .NET 9 apps.'
+    'Microsoft.DotNet.DesktopRuntime.10' = 'Desktop runtime for .NET 10 apps.'
+    'Microsoft.NuGet' = 'Command-line .NET package manager.'
+    'Microsoft.DirectX' = 'End-user DirectX runtime for older games.'
+    'Microsoft.Sysinternals.Autoruns' = 'Shows EVERYTHING that starts with Windows.'
+    'Microsoft.Sysinternals.ProcessExplorer' = 'Sysinternals'' deep process manager.'
+    'Microsoft.Sysinternals.ProcessMonitor' = 'Live-logs all file and registry activity.'
+    'Microsoft.Sysinternals.TCPView' = 'See all open network connections per process.'
+    'Microsoft.Sysinternals.RDCMan' = 'Manage many remote desktop connections.'
+    'CodingWondersSoftware.DISMTools.Stable' = 'GUI for managing Windows images with DISM.'
+    'Nlitesoft.NTLite' = 'Customize and slim down Windows installation images.'
+    'Microsoft.OneDrive' = 'Official client for Microsoft''s OneDrive cloud.'
+    'Adobe.Acrobat.Reader.64-bit' = 'Adobe''s official PDF reader, the de facto standard.'
+    'calibre.calibre' = 'Ebook library: converts formats and manages your e-reader.'
+    'TheDocumentFoundation.LibreOffice' = 'Free office suite: Writer, Calc, Impress, Office-compatible.'
+    'Obsidian.Obsidian' = 'Linked Markdown notes: your local second brain.'
+    'ONLYOFFICE.DesktopEditors' = 'Office suite with top compatibility with MS Office formats.'
+    'Jellyfin.JellyfinMediaPlayer' = 'Desktop client for your Jellyfin server.'
+    'Jellyfin.Server' = 'Your personal Netflix: free media server.'
+    'XBMCFoundation.Kodi' = 'Complete media center for movies, shows and music.'
+    'LocalSend.LocalSend' = 'Send files between devices over WiFi, cloud-free (AirDrop-like).'
+    'Netbird.Netbird' = 'Self-hostable point-to-point WireGuard private network.'
+    'Plex.Plex' = 'Plex client to watch your media server.'
+    'Plex.PlexMediaServer' = 'Plex media server for your whole collection.'
+    'AgileBits.1Password' = 'Premium password manager for families and teams.'
+    'AnyDesk.AnyDesk' = 'Light, fast remote desktop for support.'
+    'AutoHotkey.AutoHotkey' = 'Automate Windows with scripts: hotkeys, macros and remaps.'
+    'Bitwarden.Bitwarden' = 'Free password manager with secure sync.'
+    'BleachBit.BleachBit' = 'Free disk-space and privacy cleaner.'
+    'Klocman.BulkCrapUninstaller' = 'Uninstall many programs at once, detects leftovers.'
+    'CrystalDewWorld.CrystalDiskMark' = 'Benchmark the real speed of your disks and SSDs.'
+    'Deskflow.Deskflow' = 'Share one keyboard and mouse across several computers.'
+    'File-New-Project.EarTrumpet' = 'Per-app volume control from the system tray.'
+    'ente-io.photos-desktop' = 'End-to-end encrypted photos, a Google Photos alternative.'
+    'FilesCommunity.Files' = 'Modern file explorer with tabs and dual pane.'
+    'flux.flux' = 'Adjusts screen color by time of day to rest your eyes.'
+    'glzr-io.glazewm' = 'Tiling window manager for keyboard lovers.'
+    'Google.GoogleDrive' = 'Sync Google Drive with your desktop.'
+    'Hugo.Hugo.Extended' = 'Ultra-fast static site generator.'
+    'MHNexus.HxD' = 'Fast hex editor for files and memory.'
+    'sylikc.JPEGView' = 'Tiny, instant image viewer: open, look, close.'
+    'rcmaehl.MSEdgeRedirect' = 'Redirects forced Edge links to your favorite browser.'
+    'Cyanfish.NAPS2' = 'Scan documents to PDF with OCR, easy and free.'
+    'M2Team.NanaZip' = 'Modernized 7-Zip for Windows 11 with the new context menu.'
+    'Nilesoft.Shell' = 'Customize the Explorer context menu to your liking.'
+    'TechPowerUp.NVCleanstall' = 'Install NVIDIA drivers without bloat, tailored.'
+    'xM4ddy.OFGB' = 'Removes ads and ''suggestions'' from the Windows 11 UI.'
+    'OPAutoClicker.OPAutoClicker' = 'Simple auto-clicker for repetitive tasks.'
+    'OpenRGB.OpenRGB' = 'Control RGB lighting from any brand without bloat.'
+    'Oracle.VirtualBox' = 'Free virtual machines to try other systems.'
+    'Parsec.Parsec' = 'Ultra-low-latency remote desktop, great for gaming.'
+    'Giorgiotani.Peazip' = 'Free archiver supporting 200+ formats and encryption.'
+    'Fleex255.PolicyPlus' = 'Group Policy editor for ALL Windows editions.'
+    'BitSum.ProcessLasso' = 'Optimizes CPU priorities for smoother performance.'
+    'Proton.ProtonAuthenticator' = 'Proton 2FA codes with encrypted backup.'
+    'Proton.ProtonDrive' = 'Proton''s end-to-end encrypted cloud storage.'
+    'Proton.ProtonPass' = 'Encrypted password manager from the Proton ecosystem.'
+    'RevoUninstaller.RevoUninstaller' = 'Deep uninstall: removes registry and disk leftovers.'
+    'WhirlwindFX.SignalRgb' = 'Sync RGB across all your peripherals with effects.'
+    'GlennDelahoy.SnappyDriverInstallerOrigin' = 'Install and update drivers offline, free.'
+    'TeamViewer.TeamViewer' = 'The best-known remote desktop for assistance.'
+    'GlavSoft.TightVNC' = 'Free, minimal VNC remote desktop.'
+    'Ghisler.TotalCommander' = 'Veteran, powerful dual-pane file manager.'
+    'CharlesMilette.TranslucentTB' = 'Translucent or transparent taskbar, very light.'
+    'JAMSoftware.TreeSize.Free' = 'Analyze folder sizes with a tree view.'
+    'MartiCliment.UniGetUI.Pre-Release' = 'GUI for winget, choco and scoop (formerly WingetUI).'
+    'WiseCleaner.WiseProgramUninstaller' = 'Uninstall programs and remove leftovers.'
+    'AntibodySoftware.WizTree' = 'See what fills your disk in seconds (reads the MFT).'
+    'Malwarebytes.Malwarebytes' = 'Second-opinion anti-malware to clean infections.'
+    'DominikReichl.KeePass' = 'The original KeePass: local passwords with plugins.'
+    'KeePassXCTeam.KeePassXC' = 'Local password manager, no cloud, encrypted database.'
+    'Cryptomator.Cryptomator' = 'Encrypt your files BEFORE uploading them to any cloud.'
+    'IDRIX.VeraCrypt' = 'Encrypt disks and create secure containers (TrueCrypt successor).'
+    'GnuPG.Gpg4win' = 'GPG encryption and signing of email and files on Windows.'
+    'OO-Software.ShutUp10' = 'Disable Windows 10/11 telemetry and invasive settings.'
+    'BiniSoft.WindowsFirewallControl' = 'Advanced panel for Windows Firewall with notifications.'
+    'Cisco.ClamAV' = 'Free command-line antivirus, useful for scheduled scans.'
+    'Notion.Notion' = 'All-in-one workspace: notes, databases and projects.'
+    'Joplin.Joplin' = 'Free Markdown notes with encrypted sync.'
+    'Logseq.Logseq' = 'Outline notes with bi-directional links, local and open.'
+    'AnyAssociation.Anytype' = 'Local, encrypted notes and knowledge bases, cloud-free.'
+    'StandardNotes.StandardNotes' = 'End-to-end encrypted notes, simple and secure.'
+    'Doist.Todoist' = 'Cross-platform to-do list with projects and reminders.'
+    'DigitalScholar.Zotero' = 'Reference and bibliography manager for research.'
+    'Xmind.Xmind' = 'Elegant mind maps to organize ideas.'
+    'Freeplane.Freeplane' = 'Free, powerful mind mapping with scripting.'
+    'JGraph.Draw' = 'Flowcharts and diagrams (draw.io) on the desktop.'
+    'MarkText.MarkText' = 'Free real-time Markdown editor, clean and beautiful.'
+    'Zettlr.Zettlr' = 'Academic Markdown editor with built-in Zotero citations.'
+    'appmakes.Typora' = 'Elegant Markdown editor that renders as you type.'
+    'Flow-Launcher.Flow-Launcher' = 'Quick launcher: search apps, files and commands with a hotkey.'
+    'Ditto.Ditto' = 'Clipboard history: recover everything you copied.'
+    'SumatraPDF.SumatraPDF' = 'Minimal, extremely fast PDF/ePub reader.'
+    'Foxit.FoxitReader' = 'Fast PDF reader with annotations and signing.'
+    'geeksoftwareGmbH.PDF24Creator' = 'PDF toolbox: convert, compress, sign and print.'
+    'PDFsam.PDFsam' = 'Merge, split and reorder PDFs without uploading them.'
+    'KDE.Okular' = 'KDE''s universal document viewer with annotations.'
+    'Duplicati.Duplicati' = 'Scheduled encrypted backups to any cloud.'
+    'restic.restic' = 'Fast, encrypted, deduplicated backups.'
+    'Rclone.Rclone' = 'Sync and mount 70+ clouds from the command line.'
+    'WinDirStat.WinDirStat' = 'Visual map of disk usage by folder.'
+    'Balena.Etcher' = 'Flash ISOs to USB/SD safely and simply.'
+    'Piriform.Recuva' = 'Recover accidentally deleted files.'
+    'Piriform.CCleaner' = 'Classic temp/registry cleaner (use judiciously).'
+    'Piriform.Speccy' = 'Visual summary of your PC''s hardware.'
+    'Piriform.Defraggler' = 'Defragment hard drives (do not use on SSDs).'
+    'Glarysoft.GlaryUtilities' = 'All-in-one maintenance suite with 20+ tools.'
+    'WiseCleaner.WiseDiskCleaner' = 'Clean junk files in one click.'
+    'WiseCleaner.WiseRegistryCleaner' = 'Clean and defragment the Windows registry.'
+    'Inkscape.Inkscape' = 'Free vector graphics editor (SVG), Illustrator-style.'
+    'KDE.Krita' = 'Free professional digital painting, great for illustration.'
+    'darktable.darktable' = 'Free Lightroom-style RAW developer for photographers.'
+    'Meltytech.Shotcut' = 'Free, simple video editor, ideal for beginners.'
+    'KDE.Kdenlive' = 'Free multi-track video editor with effects and transitions.'
+    'OpenShot.OpenShot' = 'Very easy free video editor with animations and titles.'
+    'FreeCAD.FreeCAD' = 'Free parametric 3D CAD for design and engineering.'
+    'Ultimaker.Cura' = 'Standard 3D slicer to prepare prints.'
+    'Prusa3D.PrusaSlicer' = 'Prusa''s powerful 3D slicer for any printer.'
+    'SoftFever.OrcaSlicer' = 'Modern 3D slicer with built-in calibrations.'
+    'PeterPawlowski.foobar2000' = 'Minimalist, modular audio player with excellent sound.'
+    'MediaArea.MediaInfo' = 'Shows codecs, tracks and metadata of any media file.'
+    'Nikse.SubtitleEdit' = 'Create, sync and translate subtitles with waveform view.'
+    'Stremio.Stremio' = 'Media hub to organize and watch streaming video.'
+    'XnSoft.XnViewMP' = 'Image viewer and converter supporting 500+ formats.'
+    'NickeManarin.ScreenToGif' = 'Record screen or webcam and export to GIF/video with an editor.'
+    'Greenshot.Greenshot' = 'Screenshots with annotations and quick export.'
+    'Flameshot.Flameshot' = 'Powerful screenshots with on-the-spot editing.'
+    'Postman.Postman' = 'Test and document REST APIs with collections.'
+    'Insomnia.Insomnia' = 'Clean, fast REST/GraphQL API client.'
+    'HeidiSQL.HeidiSQL' = 'GUI client for MySQL/MariaDB/PostgreSQL/SQL Server.'
+    'DBBrowserForSQLite.DBBrowserForSQLite' = 'Browse and edit SQLite databases visually.'
+    'MongoDB.Compass.Full' = 'Official GUI to explore MongoDB databases.'
+    'Atlassian.Sourcetree' = 'Atlassian''s free Git client with tree view.'
+    'Axosoft.GitKraken' = 'Visual Git client with a gorgeous branch graph.'
+    'DenoLand.Deno' = 'Modern, secure-by-default JavaScript/TypeScript runtime.'
+    'Microsoft.DotNet.SDK.8' = 'LTS .NET 8 SDK for building applications.'
+    'EclipseAdoptium.Temurin.21.JDK' = 'Eclipse Adoptium''s JDK 21 LTS (Temurin).'
+    'MSYS2.MSYS2' = 'Unix environment with pacman for building on Windows.'
+    'Anaconda.Miniconda3' = 'Minimal conda: install only the packages you need.'
+    'JetBrains.PyCharm.Community' = 'JetBrains'' Python IDE, free edition.'
+    'JetBrains.IntelliJIDEA.Community' = 'Leading Java/Kotlin IDE, free edition.'
+    'Google.AndroidStudio' = 'Official IDE for Android apps, with an emulator.'
+    'GodotEngine.GodotEngine' = 'Free 2D/3D game engine with its own language.'
+    'jqlang.jq' = 'Process and query JSON from the command line.'
+    'GitHub.cli' = 'GitHub from the console: PRs, issues and releases in the terminal.'
+    'Hashicorp.Terraform' = 'Infrastructure as code for any cloud.'
+    'Kubernetes.kubectl' = 'Control Kubernetes clusters from the console.'
+    'Helm.Helm' = 'Package manager (charts) for Kubernetes.'
+    'Amazon.AWSCLI' = 'Manage AWS from the command line.'
+    'Microsoft.AzureCLI' = 'Manage Azure from the command line.'
+    'Google.CloudSDK' = 'Command-line tools for Google Cloud.'
+    'WinMerge.WinMerge' = 'Compare and merge files and folders visually.'
+    'ImageMagick.ImageMagick' = 'Process and convert images from the console or scripts.'
+    'Gyan.FFmpeg' = 'Command-line audio/video swiss army knife: converts almost anything.'
+    'yt-dlp.yt-dlp' = 'Download video/audio from YouTube and 1000+ sites (CLI).'
+    'Ookla.Speedtest.CLI' = 'Measure your internet speed from the console.'
+    'Rem0o.FanControl' = 'Control ALL your fans with custom curves.'
+    'Logitech.GHUB' = 'Configure Logitech G mice, keyboards and headsets.'
+    'Wox.Wox' = 'App and search launcher with plugins.'
+    'QL-Win.QuickLook' = 'Instant preview with the spacebar, Mac-style.'
+    'NexusMods.Vortex' = 'Nexus'' official mod manager (Skyrim, Fallout...).'
+    'ebkr.r2modman' = 'Mod manager for Risk of Rain 2, Lethal Company and more.'
+    'Ferdium.Ferdium' = 'All your messengers (WhatsApp, Slack...) in one app.'
+    'Foundry376.Mailspring' = 'Beautiful email client with read tracking.'
+    'Tencent.WeChat' = 'Chinese all-in-one messenger with payments and mini-apps.'
+    'Microsoft.DotNet.SDK.9' = 'The latest .NET 9 SDK.'
+    'EclipseAdoptium.Temurin.17.JDK' = 'Eclipse Adoptium''s JDK 17 LTS (Temurin).'
+    'JernejSimoncic.Wget' = 'Download files from the console with retries and recursion.'
+    'cURL.cURL' = 'HTTP/FTP transfers from the console; a scripting staple.'
+    'Starship.Starship' = 'Minimal, fast, customizable prompt for any shell.'
+    'sharkdp.bat' = '''cat'' with syntax highlighting and line numbers.'
+    'sharkdp.fd' = 'Simple, fast alternative to the ''find'' command.'
+    'BurntSushi.ripgrep.MSVC' = 'Search text across whole projects absurdly fast (rg).'
+    'junegunn.fzf' = 'Interactive fuzzy finder for the terminal.'
+    'ajeetdsouza.zoxide' = 'A smarter ''cd'' that learns your frequent folders.'
+    'eza-community.eza' = 'Modern ''ls'' with colors, icons and tree view.'
+    'dandavison.delta' = 'Beautiful, readable Git diffs in the terminal.'
+    'gerardog.gsudo' = '''sudo'' for Windows: elevate commands without a new console.'
+    'Schniz.fnm' = 'Blazing-fast Node version manager written in Rust.'
+    'CoreyButler.NVMforWindows' = 'Switch between Node.js versions with one command.'
+    'Nushell.Nushell' = 'Modern shell where everything is structured data.'
+    'Ninja-build.Ninja' = 'Minimal, extremely fast build system.'
+    'LLVM.LLVM' = 'Clang/LLVM compiler for C, C++ and more.'
+    'StrawberryPerl.StrawberryPerl' = 'Complete Perl for Windows with a bundled compiler.'
+    'Microsoft.SQLServerManagementStudio' = 'The official tool to manage SQL Server.'
+    'Anaconda.Anaconda3' = 'Scientific Python with hundreds of preinstalled packages.'
+    'Microsoft.WindowsADK' = 'Official kit to build and deploy Windows images.'
+    'Dropbox.Dropbox' = 'The veteran file-sync cloud.'
+    'Mega.MEGASync' = 'MEGA''s client: 20 GB free, encrypted.'
+    'Nextcloud.NextcloudDesktop' = 'Sync with your private Nextcloud.'
+    'Syncthing.Syncthing' = 'Sync folders across devices without a cloud, encrypted P2P.'
+}
+# Devuelve la descripcion de una app en el idioma activo ('' si no hay).
+function Get-AppDesc([string]$id) {
+    if ($script:Lang -eq 'en') { $d = $script:AppDescEn[$id] } else { $d = $script:AppDesc[$id] }
+    if ($d) { return [string]$d } else { return '' }
+}
+
 
 # ---- CATALOGO EXTERNO EDITABLE (catalogo.json junto al script) ----
 # Si existe un catalogo.json valido al lado del .ps1, SUSTITUYE al
@@ -992,14 +1914,14 @@ $TweaksCatalog = @(
        Code=@'
 try {
     Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
-    Checkpoint-Computer -Description "WPI Moderno - antes de tweaks" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
-    W ok "Punto de restauracion creado correctamente."
+    Checkpoint-Computer -Description "Winzard - antes de tweaks" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+    W ok (L2 "Punto de restauracion creado correctamente." "Restore point created successfully.")
 } catch {
-    W warn ("No se pudo crear el punto de restauracion: {0} (Windows limita a 1 cada 24h)." -f $_.Exception.Message)
+    W warn ((L2 "No se pudo crear el punto de restauracion: {0} (Windows limita a 1 cada 24h)." "Could not create the restore point: {0} (Windows limits it to 1 every 24h).") -f $_.Exception.Message)
 }
 '@
        Undo=@'
-W dim "Crear un punto de restauracion no tiene reversion (puedes borrarlo desde Propiedades del sistema)."
+W dim (L2 "Crear un punto de restauracion no tiene reversion (puedes borrarlo desde Propiedades del sistema)." "Creating a restore point has no undo (you can delete it from System Properties).")
 '@ }
     @{ Name='Limpieza profunda de temporales'; Cat='Sistema'; Risk='Seguro'
        Desc='%TEMP%, Windows\Temp, papelera de reciclaje y cache DNS.'
@@ -1010,10 +1932,10 @@ Remove-Item "$env:SystemRoot\Temp\*" -Recurse -Force -ErrorAction SilentlyContin
 Clear-RecycleBin -Force -ErrorAction SilentlyContinue
 ipconfig /flushdns | Out-Null
 $freed = [math]::Round(((Get-PSDrive C).Free - $before) / 1MB, 1)
-W ok ("Limpieza completada. Espacio liberado aprox.: {0} MB." -f [math]::Max($freed,0))
+W ok ((L2 "Limpieza completada. Espacio liberado aprox.: {0} MB." "Cleanup finished. Approx. space freed: {0} MB.") -f [math]::Max($freed,0))
 '@
        Undo=@'
-W dim "Una limpieza de temporales no se puede deshacer."
+W dim (L2 "Una limpieza de temporales no se puede deshacer." "A temp-files cleanup cannot be undone.")
 '@ }
     @{ Name='Plan de energia Maximo Rendimiento'; Cat='Sistema'; Risk='Seguro'
        Desc='Activa el plan Ultimate Performance (ideal para GPUs de gama alta).'
@@ -1022,26 +1944,31 @@ W dim "Una limpieza de temporales no se puede deshacer."
 $dup = (powercfg -duplicatescheme e9a42b02-d5df-448d-aa66-ad3aa851f8f7 2>&1 | Out-String)
 if ($dup -match '([a-f0-9-]{36})') {
     powercfg /setactive $Matches[1] | Out-Null
-    W ok "Plan Ultimate Performance creado y activado."
+    if ($LASTEXITCODE -ne 0) { throw ((L2 "powercfg /setactive fallo (codigo {0})." "powercfg /setactive failed (code {0}).") -f $LASTEXITCODE) }
+    W ok (L2 "Plan Ultimate Performance creado y activado." "Ultimate Performance plan created and activated.")
 } else {
     powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c | Out-Null
-    W ok "Ultimate no disponible en esta edicion; activado plan Alto Rendimiento."
+    if ($LASTEXITCODE -ne 0) { throw ((L2 "powercfg /setactive fallo (codigo {0})." "powercfg /setactive failed (code {0}).") -f $LASTEXITCODE) }
+    W ok (L2 "Ultimate no disponible en esta edicion; activado plan Alto Rendimiento." "Ultimate not available in this edition; High Performance plan activated.")
 }
 '@
        Undo=@'
 powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e | Out-Null
-W ok "Plan de energia Equilibrado restaurado."
+if ($LASTEXITCODE -ne 0) { throw ((L2 "powercfg /setactive fallo (codigo {0})." "powercfg /setactive failed (code {0}).") -f $LASTEXITCODE) }
+W ok (L2 "Plan de energia Equilibrado restaurado." "Balanced power plan restored.")
 '@ }
     @{ Name='Desactivar hibernacion (libera hiberfil.sys)'; Cat='Sistema'; Risk='Seguro'
        Desc='Recupera varios GB del disco. Mantiene suspension normal.'
        Caveat='es un portatil o usas "Hibernar" para guardar la sesion al apagar.'
        Code=@'
-powercfg /hibernate off | Out-Null
-W ok "Hibernacion desactivada (hiberfil.sys eliminado)."
+$pcOut = (powercfg /hibernate off 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) { throw ((L2 "powercfg /hibernate off fallo (codigo {0}): {1}. Causas tipicas: sin permisos de administrador, o el equipo no soporta hibernacion." "powercfg /hibernate off failed (code {0}): {1}. Typical causes: missing administrator rights, or the machine does not support hibernation.") -f $LASTEXITCODE, $pcOut) }
+W ok (L2 "Hibernacion desactivada (hiberfil.sys eliminado)." "Hibernation disabled (hiberfil.sys removed).")
 '@
        Undo=@'
-powercfg /hibernate on | Out-Null
-W ok "Hibernacion reactivada."
+$pcOut = (powercfg /hibernate on 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) { throw ((L2 "powercfg /hibernate on fallo (codigo {0}): {1}. Causas tipicas: sin permisos de administrador, o el equipo no soporta hibernacion (p.ej. maquinas virtuales)." "powercfg /hibernate on failed (code {0}): {1}. Typical causes: missing administrator rights, or the machine does not support hibernation (e.g. virtual machines).") -f $LASTEXITCODE, $pcOut) }
+W ok (L2 "Hibernacion reactivada." "Hibernation re-enabled.")
 '@ }
 
     # ---------------------- PRIVACIDAD -----------------------
@@ -1049,7 +1976,7 @@ W ok "Hibernacion reactivada."
        Desc='Servicio DiagTrack, tareas CEIP/Compatibilidad y AllowTelemetry=0.'
        Code=@'
 Stop-Service DiagTrack -Force -ErrorAction SilentlyContinue
-Set-Service  DiagTrack -StartupType Disabled -ErrorAction SilentlyContinue
+Set-Service  DiagTrack -StartupType Disabled -ErrorAction Stop
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection" /v AllowTelemetry /t REG_DWORD /d 0 /f | Out-Null
 $tasks = @(
     "\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser",
@@ -1058,10 +1985,10 @@ $tasks = @(
     "\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticDataCollector"
 )
 foreach ($t in $tasks) { schtasks /Change /TN $t /Disable 2>&1 | Out-Null }
-W ok "Telemetria basica desactivada (DiagTrack + tareas programadas)."
+W ok (L2 "Telemetria basica desactivada (DiagTrack + tareas programadas)." "Basic telemetry disabled (DiagTrack + scheduled tasks).")
 '@
        Undo=@'
-Set-Service DiagTrack -StartupType Automatic -ErrorAction SilentlyContinue
+Set-Service DiagTrack -StartupType Automatic -ErrorAction Stop
 Start-Service DiagTrack -ErrorAction SilentlyContinue
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection" /v AllowTelemetry /f 2>$null | Out-Null
 $tasks = @(
@@ -1070,7 +1997,7 @@ $tasks = @(
     "\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip"
 )
 foreach ($t in $tasks) { schtasks /Change /TN $t /Enable 2>$null | Out-Null }
-W ok "Telemetria reactivada a los valores de Windows."
+W ok (L2 "Telemetria reactivada a los valores de Windows." "Telemetry restored to Windows defaults.")
 '@ }
     @{ Name='Desactivar Bing, sugerencias y apps promocionadas'; Cat='Privacidad'; Risk='Seguro'
        Desc='Quita la web de la busqueda de Inicio y el contenido patrocinado.'
@@ -1080,13 +2007,13 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" 
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SilentInstalledAppsEnabled   /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SubscribedContent-338388Enabled /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo" /v Enabled /t REG_DWORD /d 0 /f | Out-Null
-W ok "Bing/sugerencias/ID de publicidad desactivados."
+W ok (L2 "Bing/sugerencias/ID de publicidad desactivados." "Bing/suggestions/advertising ID disabled.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Search" /v BingSearchEnabled /t REG_DWORD /d 1 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SystemPaneSuggestionsEnabled /t REG_DWORD /d 1 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo" /v Enabled /t REG_DWORD /d 1 /f | Out-Null
-W ok "Bing y sugerencias reactivados."
+W ok (L2 "Bing y sugerencias reactivados." "Bing and suggestions re-enabled.")
 '@ }
     @{ Name='Desactivar historial de actividad (Timeline)'; Cat='Privacidad'; Risk='Seguro'
        Desc='Windows deja de recopilar y enviar tu actividad reciente.'
@@ -1094,13 +2021,13 @@ W ok "Bing y sugerencias reactivados."
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v EnableActivityFeed /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v PublishUserActivities /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v UploadUserActivities /t REG_DWORD /d 0 /f | Out-Null
-W ok "Historial de actividad desactivado."
+W ok (L2 "Historial de actividad desactivado." "Activity history disabled.")
 '@
        Undo=@'
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v EnableActivityFeed /f 2>$null | Out-Null
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v PublishUserActivities /f 2>$null | Out-Null
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v UploadUserActivities /f 2>$null | Out-Null
-W ok "Historial de actividad restaurado."
+W ok (L2 "Historial de actividad restaurado." "Activity history restored.")
 '@ }
     @{ Name='Quitar anuncios de la pantalla de bloqueo e Inicio'; Cat='Privacidad'; Risk='Seguro'
        Desc='Desactiva el contenido rotativo y los "datos curiosos" patrocinados.'
@@ -1109,12 +2036,12 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" 
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SubscribedContent-338387Enabled /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SubscribedContent-338389Enabled /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SubscribedContent-353698Enabled /t REG_DWORD /d 0 /f | Out-Null
-W ok "Anuncios de pantalla de bloqueo e Inicio desactivados."
+W ok (L2 "Anuncios de pantalla de bloqueo e Inicio desactivados." "Lock screen and Start ads disabled.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v RotatingLockScreenOverlayEnabled /t REG_DWORD /d 1 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SubscribedContent-338387Enabled /t REG_DWORD /d 1 /f | Out-Null
-W ok "Contenido de pantalla de bloqueo restaurado."
+W ok (L2 "Contenido de pantalla de bloqueo restaurado." "Lock screen content restored.")
 '@ }
     @{ Name='Desactivar sugerencias en Configuracion'; Cat='Privacidad'; Risk='Seguro'
        Desc='Quita las "recomendaciones" patrocinadas dentro de Ajustes.'
@@ -1122,33 +2049,33 @@ W ok "Contenido de pantalla de bloqueo restaurado."
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SubscribedContent-338393Enabled /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SubscribedContent-353694Enabled /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SubscribedContent-353696Enabled /t REG_DWORD /d 0 /f | Out-Null
-W ok "Sugerencias de Configuracion desactivadas."
+W ok (L2 "Sugerencias de Configuracion desactivadas." "Settings suggestions disabled.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SubscribedContent-338393Enabled /t REG_DWORD /d 1 /f | Out-Null
-W ok "Sugerencias de Configuracion restauradas."
+W ok (L2 "Sugerencias de Configuracion restauradas." "Settings suggestions restored.")
 '@ }
     @{ Name='Desactivar Copilot por politica'; Cat='Privacidad'; Risk='Seguro'
        Desc='Apaga el boton/atajo de Copilot. (No desinstala la app: usa Debloat.)'
        Code=@'
 reg add "HKCU\Software\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f | Out-Null
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f | Out-Null
-W ok "Copilot desactivado por politica."
+W ok (L2 "Copilot desactivado por politica." "Copilot disabled by policy.")
 '@
        Undo=@'
 reg delete "HKCU\Software\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /f 2>$null | Out-Null
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /f 2>$null | Out-Null
-W ok "Copilot reactivado."
+W ok (L2 "Copilot reactivado." "Copilot re-enabled.")
 '@ }
     @{ Name='Desactivar analisis de IA / Recall'; Cat='Privacidad'; Risk='Avanzado'
        Desc='Bloquea la recopilacion de datos para funciones de IA (Recall).'
        Code=@'
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" /v DisableAIDataAnalysis /t REG_DWORD /d 1 /f | Out-Null
-W ok "Analisis de IA (Recall) desactivado por politica."
+W ok (L2 "Analisis de IA (Recall) desactivado por politica." "AI analysis (Recall) disabled by policy.")
 '@
        Undo=@'
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" /v DisableAIDataAnalysis /f 2>$null | Out-Null
-W ok "Analisis de IA restaurado."
+W ok (L2 "Analisis de IA restaurado." "AI analysis restored.")
 '@ }
 
     # ----------------------- INTERFAZ ------------------------
@@ -1158,13 +2085,13 @@ W ok "Analisis de IA restaurado."
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v HideFileExt /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Hidden      /t REG_DWORD /d 1 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v LaunchTo    /t REG_DWORD /d 1 /f | Out-Null
-W ok "Explorador configurado (reinicia el Explorador o la sesion para verlo)."
+W ok (L2 "Explorador configurado (reinicia el Explorador o la sesion para verlo)." "File Explorer configured (restart Explorer or sign out to see it).")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v HideFileExt /t REG_DWORD /d 1 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Hidden      /t REG_DWORD /d 2 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v LaunchTo    /t REG_DWORD /d 2 /f | Out-Null
-W ok "Explorador restaurado a valores de Windows."
+W ok (L2 "Explorador restaurado a valores de Windows." "File Explorer restored to Windows defaults.")
 '@ }
     @{ Name='Menu contextual clasico (Windows 11)'; Cat='Interfaz'; Risk='Avanzado'
        Desc='Restaura el menu de clic derecho completo de Windows 10.'
@@ -1173,74 +2100,85 @@ reg add "HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\Inpr
 Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
 if (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }
-W ok "Menu contextual clasico activado (Explorador reiniciado)."
+W ok (L2 "Menu contextual clasico activado (Explorador reiniciado)." "Classic context menu enabled (Explorer restarted).")
 '@
        Undo=@'
 reg delete "HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}" /f 2>$null | Out-Null
 Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
 if (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }
-W ok "Menu contextual moderno de Windows 11 restaurado."
+W ok (L2 "Menu contextual moderno de Windows 11 restaurado." "Modern Windows 11 context menu restored.")
 '@ }
     @{ Name='Barra de tareas alineada a la izquierda (Windows 11)'; Cat='Interfaz'; Risk='Seguro'
        Desc='Mueve el boton Inicio a la esquina clasica.'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarAl /t REG_DWORD /d 0 /f | Out-Null
-W ok "Barra de tareas alineada a la izquierda."
+W ok (L2 "Barra de tareas alineada a la izquierda." "Taskbar aligned to the left.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarAl /t REG_DWORD /d 1 /f | Out-Null
-W ok "Barra de tareas centrada (valor por defecto)."
+W ok (L2 "Barra de tareas centrada (valor por defecto)." "Taskbar centered (default).")
 '@ }
     @{ Name='Mostrar segundos en el reloj de la barra'; Cat='Interfaz'; Risk='Seguro'
        Desc='Anade los segundos al reloj de la barra de tareas.'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowSecondsInSystemClock /t REG_DWORD /d 1 /f | Out-Null
-W ok "Segundos activados en el reloj (reinicia el Explorador)."
+W ok (L2 "Segundos activados en el reloj (reinicia el Explorador)." "Seconds shown in the clock (restart Explorer).")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowSecondsInSystemClock /t REG_DWORD /d 0 /f | Out-Null
-W ok "Segundos ocultos en el reloj."
+W ok (L2 "Segundos ocultos en el reloj." "Seconds hidden in the clock.")
 '@ }
     @{ Name='Quitar el boton de Widgets'; Cat='Interfaz'; Risk='Seguro'
        Desc='Oculta el icono de Widgets de la barra de tareas.'
        Code=@'
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarDa /t REG_DWORD /d 0 /f | Out-Null
-W ok "Boton de Widgets oculto."
+# En builds recientes Windows BLOQUEA la escritura directa de TaskbarDa
+# (proteccion UCPD): si falla, se aplica la directiva equivalente (mismo
+# efecto: el boton de Widgets desaparece), verificado en VM build 26100+.
+try {
+    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarDa /t REG_DWORD /d 0 /f | Out-Null
+    W ok (L2 "Boton de Widgets oculto." "Widgets button hidden.")
+} catch {
+    reg add "HKLM\SOFTWARE\Policies\Microsoft\Dsh" /v AllowNewsAndInterests /t REG_DWORD /d 0 /f | Out-Null
+    W ok (L2 "Windows bloquea el ajuste directo (UCPD); Widgets ocultos por directiva (mismo efecto)." "Windows blocks the direct setting (UCPD); Widgets hidden via policy (same effect).")
+}
 '@
        Undo=@'
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarDa /t REG_DWORD /d 1 /f | Out-Null
-W ok "Boton de Widgets restaurado."
+try {
+    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarDa /t REG_DWORD /d 1 /f | Out-Null
+} catch {}
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Dsh" /v AllowNewsAndInterests /f 2>$null | Out-Null
+W ok (L2 "Boton de Widgets restaurado (ajuste directo si Windows lo permite y directiva retirada)." "Widgets button restored (direct setting where allowed and policy removed).")
 '@ }
     @{ Name='Quitar el boton de Chat/Teams de la barra'; Cat='Interfaz'; Risk='Seguro'
        Desc='Oculta el icono de Chat (Teams de consumo).'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarMn /t REG_DWORD /d 0 /f | Out-Null
-W ok "Boton de Chat oculto."
+W ok (L2 "Boton de Chat oculto." "Chat button hidden.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarMn /t REG_DWORD /d 1 /f | Out-Null
-W ok "Boton de Chat restaurado."
+W ok (L2 "Boton de Chat restaurado." "Chat button restored.")
 '@ }
     @{ Name='Quitar el boton Vista de tareas'; Cat='Interfaz'; Risk='Seguro'
        Desc='Oculta el icono de Task View de la barra de tareas.'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowTaskViewButton /t REG_DWORD /d 0 /f | Out-Null
-W ok "Boton Vista de tareas oculto."
+W ok (L2 "Boton Vista de tareas oculto." "Task View button hidden.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowTaskViewButton /t REG_DWORD /d 1 /f | Out-Null
-W ok "Boton Vista de tareas restaurado."
+W ok (L2 "Boton Vista de tareas restaurado." "Task View button restored.")
 '@ }
     @{ Name='Anadir "Finalizar tarea" al boton derecho de la barra'; Cat='Interfaz'; Risk='Seguro'
        Desc='Permite matar una app desde la barra de tareas (clic derecho).'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings" /v TaskbarEndTask /t REG_DWORD /d 1 /f | Out-Null
-W ok "Opcion 'Finalizar tarea' activada en la barra de tareas."
+W ok (L2 "Opcion 'Finalizar tarea' activada en la barra de tareas." "'End task' option enabled on the taskbar.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings" /v TaskbarEndTask /t REG_DWORD /d 0 /f | Out-Null
-W ok "Opcion 'Finalizar tarea' desactivada."
+W ok (L2 "Opcion 'Finalizar tarea' desactivada." "'End task' option disabled.")
 '@ }
 
     # ---------------------- RENDIMIENTO ----------------------
@@ -1248,32 +2186,32 @@ W ok "Opcion 'Finalizar tarea' desactivada."
        Desc='Activa Hardware-Accelerated GPU Scheduling. Requiere reiniciar.'
        Code=@'
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v HwSchMode /t REG_DWORD /d 2 /f | Out-Null
-W ok "HAGS activado. Reinicia el equipo para aplicarlo."
+W ok (L2 "HAGS activado. Reinicia el equipo para aplicarlo." "HAGS enabled. Restart the PC to apply it.")
 '@
        Undo=@'
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v HwSchMode /t REG_DWORD /d 1 /f | Out-Null
-W ok "HAGS desactivado (valor por defecto). Reinicia el equipo."
+W ok (L2 "HAGS desactivado (valor por defecto). Reinicia el equipo." "HAGS disabled (default). Restart the PC.")
 '@ }
     @{ Name='Ajustar efectos visuales para mejor rendimiento'; Cat='Rendimiento'; Risk='Seguro'
        Desc='Reduce animaciones y sombras para una respuesta mas agil.'
        Caveat='prefieres una interfaz con animaciones y sombras (es solo estetico).'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f | Out-Null
-W ok "Efectos visuales ajustados a 'mejor rendimiento' (reinicia la sesion)."
+W ok (L2 "Efectos visuales ajustados a 'mejor rendimiento' (reinicia la sesion)." "Visual effects set to 'best performance' (sign out and back in).")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 0 /f | Out-Null
-W ok "Efectos visuales: Windows decide (valor por defecto)."
+W ok (L2 "Efectos visuales: Windows decide (valor por defecto)." "Visual effects: let Windows decide (default).")
 '@ }
     @{ Name='Menus instantaneos (sin retardo)'; Cat='Rendimiento'; Risk='Seguro'
        Desc='Quita el retardo al abrir menus.'
        Code=@'
 reg add "HKCU\Control Panel\Desktop" /v MenuShowDelay /t REG_SZ /d 0 /f | Out-Null
-W ok "Retardo de menus a 0 ms (reinicia la sesion)."
+W ok (L2 "Retardo de menus a 0 ms (reinicia la sesion)." "Menu delay set to 0 ms (sign out and back in).")
 '@
        Undo=@'
 reg add "HKCU\Control Panel\Desktop" /v MenuShowDelay /t REG_SZ /d 400 /f | Out-Null
-W ok "Retardo de menus a 400 ms (valor por defecto)."
+W ok (L2 "Retardo de menus a 400 ms (valor por defecto)." "Menu delay set to 400 ms (default).")
 '@ }
 
     # ----------------------- SEGURIDAD -----------------------
@@ -1282,22 +2220,22 @@ W ok "Retardo de menus a 400 ms (valor por defecto)."
        Code=@'
 try {
     Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction Stop
-    W ok "Restauracion del sistema activada en $env:SystemDrive."
-} catch { W warn ("No se pudo activar: {0}" -f $_.Exception.Message) }
+    W ok (L2 "Restauracion del sistema activada en $env:SystemDrive." "System Restore enabled on $env:SystemDrive.")
+} catch { W warn ((L2 "No se pudo activar: {0}" "Could not enable it: {0}") -f $_.Exception.Message) }
 '@
        Undo=@'
-try { Disable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction Stop; W ok "Restauracion del sistema desactivada." }
-catch { W warn ("No se pudo desactivar: {0}" -f $_.Exception.Message) }
+try { Disable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction Stop; W ok (L2 "Restauracion del sistema desactivada." "System Restore disabled.") }
+catch { W warn ((L2 "No se pudo desactivar: {0}" "Could not disable it: {0}") -f $_.Exception.Message) }
 '@ }
     @{ Name='Desactivar ejecucion automatica de USB/medios'; Cat='Seguridad'; Risk='Seguro'
        Desc='Evita que USBs y discos lancen programas solos (Autorun).'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v NoDriveTypeAutoRun /t REG_DWORD /d 255 /f | Out-Null
-W ok "Autorun/Autoplay desactivado para todas las unidades."
+W ok (L2 "Autorun/Autoplay desactivado para todas las unidades." "Autorun/Autoplay disabled for all drives.")
 '@
        Undo=@'
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v NoDriveTypeAutoRun /f 2>$null | Out-Null
-W ok "Autorun/Autoplay restaurado al valor de Windows."
+W ok (L2 "Autorun/Autoplay restaurado al valor de Windows." "Autorun/Autoplay restored to the Windows default.")
 '@ }
 
     # -------------------------- RED --------------------------
@@ -1306,12 +2244,12 @@ W ok "Autorun/Autoplay restaurado al valor de Windows."
        Code=@'
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 4294967295 /f | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v SystemResponsiveness /t REG_DWORD /d 0 /f | Out-Null
-W ok "Network throttling desactivado y respuesta del sistema priorizada."
+W ok (L2 "Network throttling desactivado y respuesta del sistema priorizada." "Network throttling disabled and system responsiveness prioritized.")
 '@
        Undo=@'
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 10 /f | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v SystemResponsiveness /t REG_DWORD /d 20 /f | Out-Null
-W ok "Valores de red/multimedia restaurados (10 / 20)."
+W ok (L2 "Valores de red/multimedia restaurados (10 / 20)." "Network/multimedia values restored (10 / 20).")
 '@ }
 
     # ------------------------- GAMING ------------------------
@@ -1320,11 +2258,11 @@ W ok "Valores de red/multimedia restaurados (10 / 20)."
        Code=@'
 reg add "HKCU\Software\Microsoft\GameBar" /v AutoGameModeEnabled /t REG_DWORD /d 1 /f | Out-Null
 reg add "HKCU\Software\Microsoft\GameBar" /v AllowAutoGameMode /t REG_DWORD /d 1 /f | Out-Null
-W ok "Modo Juego activado."
+W ok (L2 "Modo Juego activado." "Game Mode enabled.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\GameBar" /v AutoGameModeEnabled /t REG_DWORD /d 0 /f | Out-Null
-W ok "Modo Juego desactivado."
+W ok (L2 "Modo Juego desactivado." "Game Mode disabled.")
 '@ }
     @{ Name='Desactivar Game Bar y grabacion en segundo plano'; Cat='Gaming'; Risk='Seguro'
        Desc='Apaga Xbox Game Bar y la captura DVR (ahorra recursos).'
@@ -1333,13 +2271,15 @@ W ok "Modo Juego desactivado."
 reg add "HKCU\System\GameConfigStore" /v GameDVR_Enabled /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR" /v AllowGameDVR /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR" /v AppCaptureEnabled /t REG_DWORD /d 0 /f | Out-Null
-W ok "Game Bar y grabacion DVR desactivadas."
+reg add "HKCU\Software\Microsoft\GameBar" /v UseNexusForGameBarEnabled /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Game Bar y grabacion DVR desactivadas." "Game Bar and DVR capture disabled.")
 '@
        Undo=@'
 reg add "HKCU\System\GameConfigStore" /v GameDVR_Enabled /t REG_DWORD /d 1 /f | Out-Null
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR" /v AllowGameDVR /f 2>$null | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR" /v AppCaptureEnabled /t REG_DWORD /d 1 /f | Out-Null
-W ok "Game Bar y grabacion DVR restauradas."
+reg add "HKCU\Software\Microsoft\GameBar" /v UseNexusForGameBarEnabled /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Game Bar y grabacion DVR restauradas." "Game Bar and DVR capture restored.")
 '@ }
     @{ Name='Desactivar aceleracion del raton (precision para juegos)'; Cat='Gaming'; Risk='Avanzado'
        Desc='Movimiento de raton 1:1, ideal para shooters. Reinicia la sesion.'
@@ -1348,25 +2288,25 @@ W ok "Game Bar y grabacion DVR restauradas."
 reg add "HKCU\Control Panel\Mouse" /v MouseSpeed /t REG_SZ /d 0 /f | Out-Null
 reg add "HKCU\Control Panel\Mouse" /v MouseThreshold1 /t REG_SZ /d 0 /f | Out-Null
 reg add "HKCU\Control Panel\Mouse" /v MouseThreshold2 /t REG_SZ /d 0 /f | Out-Null
-W ok "Aceleracion del raton desactivada (reinicia la sesion)."
+W ok (L2 "Aceleracion del raton desactivada (reinicia la sesion)." "Mouse acceleration disabled (sign out and back in).")
 '@
        Undo=@'
 reg add "HKCU\Control Panel\Mouse" /v MouseSpeed /t REG_SZ /d 1 /f | Out-Null
 reg add "HKCU\Control Panel\Mouse" /v MouseThreshold1 /t REG_SZ /d 6 /f | Out-Null
 reg add "HKCU\Control Panel\Mouse" /v MouseThreshold2 /t REG_SZ /d 10 /f | Out-Null
-W ok "Aceleracion del raton restaurada (valores por defecto)."
+W ok (L2 "Aceleracion del raton restaurada (valores por defecto)." "Mouse acceleration restored (defaults).")
 '@ }
     @{ Name='Desactivar notificaciones del sistema'; Cat='Privacidad'; Risk='Seguro'
        Desc='Apaga las notificaciones toast y los avisos emergentes de Windows.'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\PushNotifications" /v ToastEnabled /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings" /v NOC_GLOBAL_SETTING_TOASTS_ENABLED /t REG_DWORD /d 0 /f | Out-Null
-W ok "Notificaciones del sistema desactivadas."
+W ok (L2 "Notificaciones del sistema desactivadas." "System notifications disabled.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\PushNotifications" /v ToastEnabled /t REG_DWORD /d 1 /f | Out-Null
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings" /v NOC_GLOBAL_SETTING_TOASTS_ENABLED /f 2>$null | Out-Null
-W ok "Notificaciones del sistema reactivadas."
+W ok (L2 "Notificaciones del sistema reactivadas." "System notifications re-enabled.")
 '@ }
 
     # --------- AMPLIACION v4.1 (mas tweaks de alto consenso) ---------
@@ -1375,21 +2315,21 @@ W ok "Notificaciones del sistema reactivadas."
        Caveat='valoras unos segundos menos de arranque por encima de un apagado completo y limpio.'
        Code=@'
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power" /v HiberbootEnabled /t REG_DWORD /d 0 /f | Out-Null
-W ok "Inicio rapido desactivado (arranque limpio)."
+W ok (L2 "Inicio rapido desactivado (arranque limpio)." "Fast Startup disabled (clean boot).")
 '@
        Undo=@'
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power" /v HiberbootEnabled /t REG_DWORD /d 1 /f | Out-Null
-W ok "Inicio rapido reactivado (valor por defecto)."
+W ok (L2 "Inicio rapido reactivado (valor por defecto)." "Fast Startup re-enabled (default).")
 '@ }
     @{ Name='Mostrar mensajes detallados al iniciar/apagar'; Cat='Sistema'; Risk='Seguro'
        Desc='Muestra que esta haciendo Windows al encender o apagar (util para diagnosticar cuelgues).'
        Code=@'
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v VerboseStatus /t REG_DWORD /d 1 /f | Out-Null
-W ok "Mensajes detallados de inicio/apagado activados."
+W ok (L2 "Mensajes detallados de inicio/apagado activados." "Verbose startup/shutdown messages enabled.")
 '@
        Undo=@'
 reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v VerboseStatus /f 2>$null | Out-Null
-W ok "Mensajes detallados desactivados (valor por defecto)."
+W ok (L2 "Mensajes detallados desactivados (valor por defecto)." "Verbose messages disabled (default).")
 '@ }
     @{ Name='Acelerar el apagado del sistema'; Cat='Sistema'; Risk='Avanzado'
        Desc='Reduce el tiempo de espera para cerrar servicios y apps al apagar. Apagado mas rapido.'
@@ -1397,90 +2337,90 @@ W ok "Mensajes detallados desactivados (valor por defecto)."
 reg add "HKLM\SYSTEM\CurrentControlSet\Control" /v WaitToKillServiceTimeout /t REG_SZ /d 2000 /f | Out-Null
 reg add "HKCU\Control Panel\Desktop" /v WaitToKillAppTimeout /t REG_SZ /d 2000 /f | Out-Null
 reg add "HKCU\Control Panel\Desktop" /v HungAppTimeout /t REG_SZ /d 2000 /f | Out-Null
-W ok "Tiempos de apagado reducidos a 2 s."
+W ok (L2 "Tiempos de apagado reducidos a 2 s." "Shutdown timeouts reduced to 2 s.")
 '@
        Undo=@'
 reg add "HKLM\SYSTEM\CurrentControlSet\Control" /v WaitToKillServiceTimeout /t REG_SZ /d 5000 /f | Out-Null
 reg delete "HKCU\Control Panel\Desktop" /v WaitToKillAppTimeout /f 2>$null | Out-Null
 reg delete "HKCU\Control Panel\Desktop" /v HungAppTimeout /f 2>$null | Out-Null
-W ok "Tiempos de apagado restaurados (valores por defecto)."
+W ok (L2 "Tiempos de apagado restaurados (valores por defecto)." "Shutdown timeouts restored (defaults).")
 '@ }
     @{ Name='Desactivar Cortana'; Cat='Privacidad'; Risk='Seguro'
        Desc='Impide que Cortana se ejecute por politica del sistema.'
        Code=@'
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Search" /v AllowCortana /t REG_DWORD /d 0 /f | Out-Null
-W ok "Cortana desactivada por politica."
+W ok (L2 "Cortana desactivada por politica." "Cortana disabled by policy.")
 '@
        Undo=@'
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Search" /v AllowCortana /f 2>$null | Out-Null
-W ok "Cortana restaurada (valor por defecto)."
+W ok (L2 "Cortana restaurada (valor por defecto)." "Cortana restored (default).")
 '@ }
     @{ Name='Desactivar seguimiento de ubicacion'; Cat='Privacidad'; Risk='Avanzado'
        Desc='Deniega el acceso global a la ubicacion. Algunas apps de mapas/clima dejaran de localizarte.'
        Code=@'
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location" /v Value /t REG_SZ /d Deny /f | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\lfsvc\Service\Configuration" /v Status /t REG_DWORD /d 0 /f | Out-Null
-W ok "Seguimiento de ubicacion desactivado."
+W ok (L2 "Seguimiento de ubicacion desactivado." "Location tracking disabled.")
 '@
        Undo=@'
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location" /v Value /t REG_SZ /d Allow /f | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\lfsvc\Service\Configuration" /v Status /t REG_DWORD /d 1 /f | Out-Null
-W ok "Seguimiento de ubicacion reactivado."
+W ok (L2 "Seguimiento de ubicacion reactivado." "Location tracking re-enabled.")
 '@ }
     @{ Name='Desactivar apps en segundo plano'; Cat='Privacidad'; Risk='Avanzado'
        Desc='Impide que las apps de la Store se ejecuten en segundo plano (ahorra RAM y bateria).'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" /v GlobalUserDisabled /t REG_DWORD /d 1 /f | Out-Null
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy" /v LetAppsRunInBackground /t REG_DWORD /d 2 /f | Out-Null
-W ok "Apps en segundo plano desactivadas."
+W ok (L2 "Apps en segundo plano desactivadas." "Background apps disabled.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" /v GlobalUserDisabled /t REG_DWORD /d 0 /f | Out-Null
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy" /v LetAppsRunInBackground /f 2>$null | Out-Null
-W ok "Apps en segundo plano reactivadas."
+W ok (L2 "Apps en segundo plano reactivadas." "Background apps re-enabled.")
 '@ }
     @{ Name='Activar tema oscuro de Windows'; Cat='Interfaz'; Risk='Seguro'
        Desc='Pone el modo oscuro en el sistema y en las aplicaciones.'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v AppsUseLightTheme /t REG_DWORD /d 0 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v SystemUsesLightTheme /t REG_DWORD /d 0 /f | Out-Null
-W ok "Tema oscuro activado."
+W ok (L2 "Tema oscuro activado." "Dark theme enabled.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v AppsUseLightTheme /t REG_DWORD /d 1 /f | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v SystemUsesLightTheme /t REG_DWORD /d 1 /f | Out-Null
-W ok "Tema claro restaurado."
+W ok (L2 "Tema claro restaurado." "Light theme restored.")
 '@ }
     @{ Name='Desactivar transparencia (rendimiento)'; Cat='Interfaz'; Risk='Seguro'
        Desc='Quita los efectos de transparencia de la barra y menus. Algo mas de rendimiento.'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v EnableTransparency /t REG_DWORD /d 0 /f | Out-Null
-W ok "Transparencia desactivada."
+W ok (L2 "Transparencia desactivada." "Transparency disabled.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v EnableTransparency /t REG_DWORD /d 1 /f | Out-Null
-W ok "Transparencia reactivada."
+W ok (L2 "Transparencia reactivada." "Transparency re-enabled.")
 '@ }
     @{ Name='Quitar el cuadro de busqueda de la barra'; Cat='Interfaz'; Risk='Seguro'
        Desc='Oculta la caja de busqueda de la barra de tareas (queda mas limpia).'
        Code=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Search" /v SearchboxTaskbarMode /t REG_DWORD /d 0 /f | Out-Null
-W ok "Cuadro de busqueda oculto en la barra de tareas."
+W ok (L2 "Cuadro de busqueda oculto en la barra de tareas." "Search box hidden on the taskbar.")
 '@
        Undo=@'
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Search" /v SearchboxTaskbarMode /t REG_DWORD /d 1 /f | Out-Null
-W ok "Cuadro de busqueda restaurado."
+W ok (L2 "Cuadro de busqueda restaurado." "Search box restored.")
 '@ }
     @{ Name='Desactivar la pantalla de bloqueo'; Cat='Interfaz'; Risk='Seguro'
        Desc='Salta directamente a la pantalla de inicio de sesion sin la pantalla de bloqueo previa.'
        Caveat='te gusta ver el reloj y las notificaciones en la pantalla de bloqueo.'
        Code=@'
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization" /v NoLockScreen /t REG_DWORD /d 1 /f | Out-Null
-W ok "Pantalla de bloqueo desactivada."
+W ok (L2 "Pantalla de bloqueo desactivada." "Lock screen disabled.")
 '@
        Undo=@'
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization" /v NoLockScreen /f 2>$null | Out-Null
-W ok "Pantalla de bloqueo restaurada."
+W ok (L2 "Pantalla de bloqueo restaurada." "Lock screen restored.")
 '@ }
     @{ Name='Desactivar teclas especiales (Sticky/Filter/Toggle)'; Cat='Gaming'; Risk='Seguro'
        Desc='Evita los avisos al pulsar 5 veces Shift o mantener Shift. Imprescindible para juegos.'
@@ -1488,26 +2428,629 @@ W ok "Pantalla de bloqueo restaurada."
 reg add "HKCU\Control Panel\Accessibility\StickyKeys" /v Flags /t REG_SZ /d 506 /f | Out-Null
 reg add "HKCU\Control Panel\Accessibility\Keyboard Response" /v Flags /t REG_SZ /d 122 /f | Out-Null
 reg add "HKCU\Control Panel\Accessibility\ToggleKeys" /v Flags /t REG_SZ /d 58 /f | Out-Null
-W ok "Teclas especiales (sticky/filter/toggle) desactivadas."
+W ok (L2 "Teclas especiales (sticky/filter/toggle) desactivadas." "Accessibility key prompts (sticky/filter/toggle) disabled.")
 '@
        Undo=@'
 reg add "HKCU\Control Panel\Accessibility\StickyKeys" /v Flags /t REG_SZ /d 510 /f | Out-Null
 reg add "HKCU\Control Panel\Accessibility\Keyboard Response" /v Flags /t REG_SZ /d 126 /f | Out-Null
 reg add "HKCU\Control Panel\Accessibility\ToggleKeys" /v Flags /t REG_SZ /d 62 /f | Out-Null
-W ok "Teclas especiales restauradas (valores por defecto)."
+W ok (L2 "Teclas especiales restauradas (valores por defecto)." "Accessibility key prompts restored (defaults).")
 '@ }
     @{ Name='Desactivar la indexacion de busqueda (Windows Search)'; Cat='Rendimiento'; Risk='Avanzado'
        Desc='Detiene el servicio de indexado. Reduce uso de disco; la busqueda en el menu Inicio sera mas lenta.'
        Caveat='buscas archivos a menudo desde el menu Inicio (sera mas lento).'
        Code=@'
 Stop-Service WSearch -Force -ErrorAction SilentlyContinue
-Set-Service  WSearch -StartupType Disabled -ErrorAction SilentlyContinue
-W ok "Servicio de indexacion (Windows Search) detenido y desactivado."
+Set-Service  WSearch -StartupType Disabled -ErrorAction Stop
+W ok (L2 "Servicio de indexacion (Windows Search) detenido y desactivado." "Search indexing service (Windows Search) stopped and disabled.")
 '@
        Undo=@'
-Set-Service   WSearch -StartupType Automatic -ErrorAction SilentlyContinue
-Start-Service WSearch -ErrorAction SilentlyContinue
-W ok "Servicio de indexacion (Windows Search) reactivado."
+Set-Service   WSearch -StartupType Automatic -ErrorAction Stop
+Start-Service WSearch -ErrorAction Stop
+W ok (L2 "Servicio de indexacion (Windows Search) reactivado." "Search indexing service (Windows Search) re-enabled.")
+'@ }
+
+    # --------- AMPLIACION v7.5 (paridad WinUtil/Sophia/Winhance, todo con verificacion real) ---------
+    @{ Name='Desactivar servicios prescindibles (perfil seguro)'; Cat='Rendimiento'; Risk='Avanzado'
+       Desc='Deshabilita servicios que la mayoria no usa: MapsBroker, SysMain, TrkWks, dmwappushservice, RetailDemo y RemoteRegistry. Cada uno se verifica tras aplicarlo.'
+       Caveat='usas un disco duro mecanico (SysMain ayuda en HDD) o apps de mapas sin conexion.'
+       Code=@'
+$plan = @(
+    @{ N='MapsBroker'; D=(L2 'mapas sin conexion' 'offline maps') },
+    @{ N='SysMain'; D=(L2 'prefetch/superfetch' 'prefetch/superfetch') },
+    @{ N='TrkWks'; D=(L2 'seguimiento de vinculos' 'link tracking') },
+    @{ N='dmwappushservice'; D=(L2 'mensajes push WAP' 'WAP push messages') },
+    @{ N='RetailDemo'; D=(L2 'modo demo de tienda' 'retail demo mode') },
+    @{ N='RemoteRegistry'; D=(L2 'registro remoto' 'remote registry') }
+)
+$hechos = 0; $fallos = 0
+foreach ($sv in $plan) {
+    $s0 = Get-Service -Name $sv.N -ErrorAction SilentlyContinue
+    if (-not $s0) { W dim ((L2 '  {0}: no existe en esta edicion.' '  {0}: not present in this edition.') -f $sv.N); continue }
+    try {
+        Stop-Service $sv.N -Force -ErrorAction SilentlyContinue
+        Set-Service $sv.N -StartupType Disabled -ErrorAction Stop
+        if ((Get-Service $sv.N).StartType -ne 'Disabled') { throw (L2 'sin efecto' 'no effect') }
+        $hechos++
+        W ok ((L2 '  {0} ({1}): deshabilitado y verificado.' '  {0} ({1}): disabled and verified.') -f $sv.N, $sv.D)
+    } catch { $fallos++; W warn ((L2 '  {0}: no se pudo deshabilitar ({1}).' '  {0}: could not be disabled ({1}).') -f $sv.N, $_.Exception.Message) }
+}
+if ($fallos -gt 0) { throw ((L2 'Perfil de servicios con {0} fallo(s): revisa el log.' 'Services profile finished with {0} failure(s): check the log.') -f $fallos) }
+W ok ((L2 'Perfil seguro de servicios aplicado: {0} servicio(s) deshabilitados y verificados.' 'Safe services profile applied: {0} service(s) disabled and verified.') -f $hechos)
+'@
+       Undo=@'
+$restaurar = @{ MapsBroker='Automatic'; SysMain='Automatic'; TrkWks='Automatic'; dmwappushservice='Manual'; RetailDemo='Manual'; RemoteRegistry='Disabled' }
+foreach ($n in $restaurar.Keys) {
+    if (-not (Get-Service -Name $n -ErrorAction SilentlyContinue)) { continue }
+    try { Set-Service $n -StartupType $restaurar[$n] -ErrorAction Stop; W ok ((L2 '  {0}: restaurado a {1}.' '  {0}: restored to {1}.') -f $n, $restaurar[$n]) }
+    catch { W warn ((L2 '  {0}: no se pudo restaurar ({1}).' '  {0}: could not be restored ({1}).') -f $n, $_.Exception.Message) }
+}
+W ok (L2 'Perfil de servicios restaurado a los valores tipicos de Windows.' 'Services profile restored to typical Windows defaults.')
+'@ }
+    @{ Name='Denegar acceso global a la camara'; Cat='Privacidad'; Risk='Avanzado'
+       Desc='Bloquea el acceso a la camara para todas las apps (interruptor global de Windows).'
+       Caveat='usas la camara en videollamadas: tendras que reactivarla.'
+       Code=@'
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam" /v Value /t REG_SZ /d Deny /f | Out-Null
+W ok (L2 "Acceso global a la camara DENEGADO." "Global camera access DENIED.")
+'@
+       Undo=@'
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam" /v Value /t REG_SZ /d Allow /f | Out-Null
+W ok (L2 "Acceso global a la camara permitido de nuevo." "Global camera access allowed again.")
+'@ }
+    @{ Name='Denegar acceso global al microfono'; Cat='Privacidad'; Risk='Avanzado'
+       Desc='Bloquea el acceso al microfono para todas las apps (interruptor global de Windows).'
+       Caveat='usas el microfono en llamadas o juegos: tendras que reactivarlo.'
+       Code=@'
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone" /v Value /t REG_SZ /d Deny /f | Out-Null
+W ok (L2 "Acceso global al microfono DENEGADO." "Global microphone access DENIED.")
+'@
+       Undo=@'
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone" /v Value /t REG_SZ /d Allow /f | Out-Null
+W ok (L2 "Acceso global al microfono permitido de nuevo." "Global microphone access allowed again.")
+'@ }
+    @{ Name='Desactivar experiencias personalizadas (diagnostico)'; Cat='Privacidad'; Risk='Seguro'
+       Desc='Windows deja de usar tus datos de diagnostico para consejos, anuncios y recomendaciones personalizadas.'
+       Code=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Privacy" /v TailoredExperiencesWithDiagnosticDataEnabled /t REG_DWORD /d 0 /f | Out-Null
+reg add "HKCU\Software\Policies\Microsoft\Windows\CloudContent" /v DisableTailoredExperiencesWithDiagnosticData /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Experiencias personalizadas con datos de diagnostico desactivadas." "Tailored experiences with diagnostic data disabled.")
+'@
+       Undo=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Privacy" /v TailoredExperiencesWithDiagnosticDataEnabled /t REG_DWORD /d 1 /f | Out-Null
+reg delete "HKCU\Software\Policies\Microsoft\Windows\CloudContent" /v DisableTailoredExperiencesWithDiagnosticData /f 2>$null | Out-Null
+W ok (L2 "Experiencias personalizadas restauradas." "Tailored experiences restored.")
+'@ }
+    @{ Name='Quitar recomendaciones del menu Inicio'; Cat='Interfaz'; Risk='Seguro'
+       Desc='Oculta la seccion "Recomendado" (archivos y apps sugeridos) del menu Inicio de Windows 11.'
+       Code=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Start_IrisRecommendations /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Recomendaciones del menu Inicio ocultas (reinicia el Explorador)." "Start menu recommendations hidden (restart Explorer).")
+'@
+       Undo=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Start_IrisRecommendations /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Recomendaciones del menu Inicio restauradas." "Start menu recommendations restored.")
+'@ }
+    @{ Name='Desactivar Widgets por politica (a fondo)'; Cat='Interfaz'; Risk='Seguro'
+       Desc='Apaga los Widgets a nivel de sistema (politica Dsh). Complementa el ocultar el boton de la barra.'
+       Code=@'
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Dsh" /v AllowNewsAndInterests /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Widgets desactivados por politica de sistema." "Widgets disabled by system policy.")
+'@
+       Undo=@'
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Dsh" /v AllowNewsAndInterests /f 2>$null | Out-Null
+W ok (L2 "Politica de Widgets eliminada (vuelven a estar disponibles)." "Widgets policy removed (available again).")
+'@ }
+    @{ Name='Quitar "Compartir" del menu contextual'; Cat='Interfaz'; Risk='Seguro'
+       Desc='Elimina la entrada "Compartir" del clic derecho de archivos (menos ruido en el menu).'
+       Code=@'
+reg delete "HKLM\SOFTWARE\Classes\*\shellex\ContextMenuHandlers\ModernSharing" /f 2>$null | Out-Null
+if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\*\shellex\ContextMenuHandlers\ModernSharing') { throw (L2 'La entrada Compartir sigue presente.' 'The Share entry is still present.') }
+W ok (L2 "Entrada 'Compartir' quitada del menu contextual (verificado)." "'Share' entry removed from the context menu (verified).")
+'@
+       Undo=@'
+reg add "HKLM\SOFTWARE\Classes\*\shellex\ContextMenuHandlers\ModernSharing" /ve /t REG_SZ /d "{e2bf9676-5f8f-435c-97eb-11607a5bedf7}" /f | Out-Null
+W ok (L2 "Entrada 'Compartir' restaurada en el menu contextual." "'Share' entry restored to the context menu.")
+'@ }
+    @{ Name='Activar historial del portapapeles (Win+V)'; Cat='Sistema'; Risk='Seguro'
+       Desc='Guarda un historial de lo copiado, accesible con Win+V. Muy util para trabajar.'
+       Code=@'
+reg add "HKCU\Software\Microsoft\Clipboard" /v EnableClipboardHistory /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Historial del portapapeles activado (Win+V)." "Clipboard history enabled (Win+V).")
+'@
+       Undo=@'
+reg add "HKCU\Software\Microsoft\Clipboard" /v EnableClipboardHistory /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Historial del portapapeles desactivado." "Clipboard history disabled.")
+'@ }
+    @{ Name='Activar rutas largas (LongPaths)'; Cat='Sistema'; Risk='Seguro'
+       Desc='Permite rutas de mas de 260 caracteres (imprescindible para desarrollo, node_modules, etc.).'
+       Code=@'
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Rutas largas activadas (LongPathsEnabled=1)." "Long paths enabled (LongPathsEnabled=1).")
+'@
+       Undo=@'
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Rutas largas desactivadas (valor por defecto)." "Long paths disabled (default).")
+'@ }
+    @{ Name='Tecla Impr Pant abre Recortes'; Cat='Interfaz'; Risk='Seguro'
+       Desc='La tecla Imprimir Pantalla abre la herramienta Recortes en vez de solo copiar al portapapeles.'
+       Code=@'
+reg add "HKCU\Control Panel\Keyboard" /v PrintScreenKeyForSnippingEnabled /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Impr Pant ahora abre la herramienta Recortes." "Print Screen now opens the Snipping Tool.")
+'@
+       Undo=@'
+reg add "HKCU\Control Panel\Keyboard" /v PrintScreenKeyForSnippingEnabled /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Impr Pant vuelve al comportamiento clasico." "Print Screen back to the classic behavior.")
+'@ }
+    @{ Name='Activar NumLock al iniciar sesion'; Cat='Sistema'; Risk='Seguro'
+       Desc='El teclado numerico arranca encendido en la pantalla de inicio de sesion y el escritorio.'
+       Code=@'
+reg add "HKU\.DEFAULT\Control Panel\Keyboard" /v InitialKeyboardIndicators /t REG_SZ /d 2 /f | Out-Null
+reg add "HKCU\Control Panel\Keyboard" /v InitialKeyboardIndicators /t REG_SZ /d 2 /f | Out-Null
+W ok (L2 "NumLock activado al iniciar sesion." "NumLock enabled at sign-in.")
+'@
+       Undo=@'
+reg add "HKU\.DEFAULT\Control Panel\Keyboard" /v InitialKeyboardIndicators /t REG_SZ /d 2147483648 /f | Out-Null
+reg add "HKCU\Control Panel\Keyboard" /v InitialKeyboardIndicators /t REG_SZ /d 2147483648 /f | Out-Null
+W ok (L2 "NumLock restaurado al valor por defecto." "NumLock restored to default.")
+'@ }
+    @{ Name='Quitar avisos de sincronizacion del Explorador'; Cat='Interfaz'; Risk='Seguro'
+       Desc='Oculta los anuncios/avisos del proveedor de sincronizacion (OneDrive y similares) dentro del Explorador.'
+       Code=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowSyncProviderNotifications /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Avisos de sincronizacion del Explorador ocultos." "File Explorer sync provider notifications hidden.")
+'@
+       Undo=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowSyncProviderNotifications /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Avisos de sincronizacion del Explorador restaurados." "File Explorer sync provider notifications restored.")
+'@ }
+    @{ Name='Activar Sentido de almacenamiento (limpieza automatica)'; Cat='Sistema'; Risk='Seguro'
+       Desc='Windows limpia temporales y papelera automaticamente cuando falta espacio (Storage Sense).'
+       Code=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy" /v 01 /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Sentido de almacenamiento ACTIVADO (limpieza automatica)." "Storage Sense ENABLED (automatic cleanup).")
+'@
+       Undo=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy" /v 01 /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Sentido de almacenamiento desactivado." "Storage Sense disabled.")
+'@ }
+
+    # ============ FASE A GAMING/AVANZADOS (auditados de winutil/Sophia/Winhance,
+    # ============ claves verificadas contra fuente; ver PLAN_GAMING_PREMIUM.md)
+    @{ Name='Desactivar MPO (superposicion multiplano)'; Cat='Gaming'; Risk='Avanzado'; GpuAware=$true
+       Desc='Apaga el Multi-Plane Overlay del escritorio. Es un ARREGLO para parpadeos, pantallas negras o tirones con algunas GPU y monitores, no un acelerador.'
+       Caveat='no tienes sintomas de parpadeo o tirones: sin ellos no aporta nada.'
+       Warn='Este ajuste es un ARREGLO para parpadeos o tirones de imagen con algunas GPU, no un acelerador. Aplicalo solo si tienes esos sintomas. Continuar?'
+       Code=@'
+$gpu = $null
+try { $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.CurrentHorizontalResolution -gt 0 } | Select-Object -First 1 } catch {}
+if ($gpu) { W dim ((L2 "  GPU activa: {0}." "  Active GPU: {0}.") -f [string]$gpu.Name) }
+reg add "HKLM\SOFTWARE\Microsoft\Windows\Dwm" /v OverlayTestMode /t REG_DWORD /d 5 /f | Out-Null
+W ok (L2 "MPO desactivado (OverlayTestMode=5). Reinicia para aplicarlo del todo." "MPO disabled (OverlayTestMode=5). Reboot to fully apply.")
+'@
+       Undo=@'
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\Dwm" /v OverlayTestMode /f 2>$null | Out-Null
+W ok (L2 "MPO restaurado al valor por defecto de Windows." "MPO restored to the Windows default.")
+'@ }
+    @{ Name='Desactivar optimizaciones de pantalla completa (FSO)'; Cat='Gaming'; Risk='Avanzado'; GpuAware=$true
+       Desc='Fuerza la pantalla completa exclusiva clasica en vez de la optimizada. El efecto DEPENDE de cada juego: puede bajar la latencia o dar problemas con alt-tab y HDR.'
+       Caveat='usas HDR o gestion de color: la pantalla completa exclusiva los puede desactivar.'
+       Warn='El efecto depende de CADA juego: en unos baja la latencia y en otros da problemas con alt-tab o HDR. Pruebalo juego a juego. Continuar?'
+       Code=@'
+reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehaviorMode /t REG_DWORD /d 2 /f | Out-Null
+reg add "HKCU\System\GameConfigStore" /v GameDVR_HonorUserFSEBehaviorMode /t REG_DWORD /d 1 /f | Out-Null
+reg add "HKCU\System\GameConfigStore" /v GameDVR_DXGIHonorFSEWindowsCompatible /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Optimizaciones de pantalla completa desactivadas (juego de 3 valores)." "Fullscreen Optimizations disabled (set of 3 values).")
+'@
+       Undo=@'
+reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehaviorMode /t REG_DWORD /d 0 /f | Out-Null
+reg add "HKCU\System\GameConfigStore" /v GameDVR_HonorUserFSEBehaviorMode /t REG_DWORD /d 0 /f | Out-Null
+reg add "HKCU\System\GameConfigStore" /v GameDVR_DXGIHonorFSEWindowsCompatible /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Optimizaciones de pantalla completa restauradas (valores por defecto)." "Fullscreen Optimizations restored (default values).")
+'@ }
+    @{ Name='Perfil multimedia prioritario para juegos (MMCSS)'; Cat='Gaming'; Risk='Avanzado'
+       Desc='Sube la prioridad del perfil "Games" que Windows aplica a los juegos (CPU, GPU y E/S). Afina prioridades en equipos cargados; no fabrica rendimiento.'
+       Code=@'
+$k = "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games"
+reg add "$k" /v "GPU Priority" /t REG_DWORD /d 8 /f | Out-Null
+reg add "$k" /v Priority /t REG_DWORD /d 6 /f | Out-Null
+reg add "$k" /v "Scheduling Category" /t REG_SZ /d High /f | Out-Null
+reg add "$k" /v "SFIO Priority" /t REG_SZ /d High /f | Out-Null
+W ok (L2 "Perfil Games elevado: Priority=6, Scheduling=High, SFIO=High." "Games profile raised: Priority=6, Scheduling=High, SFIO=High.")
+'@
+       Undo=@'
+$k = "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games"
+reg add "$k" /v "GPU Priority" /t REG_DWORD /d 8 /f | Out-Null
+reg add "$k" /v Priority /t REG_DWORD /d 2 /f | Out-Null
+reg add "$k" /v "Scheduling Category" /t REG_SZ /d Medium /f | Out-Null
+reg add "$k" /v "SFIO Priority" /t REG_SZ /d Normal /f | Out-Null
+W ok (L2 "Perfil Games restaurado (Priority=2, Medium, Normal)." "Games profile restored (Priority=2, Medium, Normal).")
+'@ }
+    @{ Name='Optimizaciones para juegos en ventana (flip model)'; Cat='Gaming'; Risk='Seguro'
+       Desc='Activa el modelo de presentacion moderno para juegos DX10/11 en ventana o sin bordes (menor latencia). Es el mismo interruptor oficial de Configuracion > Pantalla > Graficos.'
+       Code=@'
+$k = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+if (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }
+$cur = [string](Get-ItemProperty -Path $k -Name DirectXUserGlobalSettings -ErrorAction SilentlyContinue).DirectXUserGlobalSettings
+$tokens = @($cur -split ';' | Where-Object { $_ -and ($_ -notmatch '^SwapEffectUpgradeEnable=') })
+$tokens += 'SwapEffectUpgradeEnable=1'
+Set-ItemProperty -Path $k -Name DirectXUserGlobalSettings -Value (($tokens -join ';') + ';') -Type String
+W ok (L2 "Optimizaciones para juegos en ventana ACTIVADAS (flip model); se conservan tus otros ajustes de graficos." "Optimizations for windowed games ENABLED (flip model); your other graphics settings are preserved.")
+'@
+       Undo=@'
+$k = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+if (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }
+$cur = [string](Get-ItemProperty -Path $k -Name DirectXUserGlobalSettings -ErrorAction SilentlyContinue).DirectXUserGlobalSettings
+$tokens = @($cur -split ';' | Where-Object { $_ -and ($_ -notmatch '^SwapEffectUpgradeEnable=') })
+$tokens += 'SwapEffectUpgradeEnable=0'
+Set-ItemProperty -Path $k -Name DirectXUserGlobalSettings -Value (($tokens -join ';') + ';') -Type String
+W ok (L2 "Optimizaciones para juegos en ventana desactivadas." "Optimizations for windowed games disabled.")
+'@ }
+    @{ Name='Retardo de confirmaciones TCP off (algoritmo de Nagle)'; Cat='Red'; Risk='Avanzado'
+       Desc='Envia las confirmaciones TCP sin agrupar (TcpAckFrequency=1) en las interfaces de red activas. Puede bajar la latencia en algunos juegos online; en descargas grandes no ayuda.'
+       Caveat='tu prioridad son las descargas/transferencias grandes, no la latencia.'
+       Code=@'
+$base = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'
+$hechas = 0
+foreach ($if in @(Get-ChildItem $base -ErrorAction SilentlyContinue)) {
+    $p = Get-ItemProperty -Path $if.PSPath -ErrorAction SilentlyContinue
+    $conIp = ($p.DhcpIPAddress -and $p.DhcpIPAddress -ne '0.0.0.0') -or (@($p.IPAddress | Where-Object { $_ -and $_ -ne '0.0.0.0' }).Count -gt 0)
+    if (-not $conIp) { continue }
+    Set-ItemProperty -Path $if.PSPath -Name TcpAckFrequency -Value 1 -Type DWord
+    Set-ItemProperty -Path $if.PSPath -Name TCPNoDelay -Value 1 -Type DWord
+    $hechas++
+}
+if ($hechas -eq 0) { W warn (L2 "Ninguna interfaz activa detectada: no se cambio nada." "No active network interface detected: nothing changed.") }
+else { W ok ((L2 "Confirmaciones TCP inmediatas en {0} interfaz(es). Reinicia para aplicarlo." "Immediate TCP acknowledgements on {0} interface(s). Reboot to apply.") -f $hechas) }
+'@
+       Undo=@'
+$base = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'
+$quitadas = 0
+foreach ($if in @(Get-ChildItem $base -ErrorAction SilentlyContinue)) {
+    $p = Get-ItemProperty -Path $if.PSPath -ErrorAction SilentlyContinue
+    if ($null -ne $p.TcpAckFrequency) { Remove-ItemProperty -Path $if.PSPath -Name TcpAckFrequency -ErrorAction SilentlyContinue; $quitadas++ }
+    if ($null -ne $p.TCPNoDelay) { Remove-ItemProperty -Path $if.PSPath -Name TCPNoDelay -ErrorAction SilentlyContinue }
+}
+W ok ((L2 "Valores retirados de {0} interfaz(es): Windows vuelve a su gestion por defecto." "Values removed from {0} interface(s): Windows returns to its default handling.") -f $quitadas)
+'@ }
+    @{ Name='Preferir IPv4 y apagar tuneles IPv6 (Teredo)'; Cat='Red'; Risk='Avanzado'
+       Desc='Prioriza IPv4 sobre IPv6 y apaga los tuneles (Teredo/ISATAP/6to4). Menos latencia en redes sin IPv6 real. Guarda tu valor previo y lo restaura al revertir.'
+       Caveat='juegas multijugador de Xbox Live: Teredo puede ser necesario para sus salas.'
+       Code=@'
+$k = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+$bk = 'HKLM:\SOFTWARE\Winzard\TweakBackup'
+if (-not (Test-Path $bk)) { New-Item -Path $bk -Force | Out-Null }
+$prev = (Get-ItemProperty -Path $k -Name DisabledComponents -ErrorAction SilentlyContinue).DisabledComponents
+$marca = $(if ($null -eq $prev) { 'ninguno' } else { [string][uint32]$prev })
+Set-ItemProperty -Path $bk -Name DisabledComponentsPrevio -Value $marca -Type String
+Set-ItemProperty -Path $k -Name DisabledComponents -Value 0x21 -Type DWord
+netsh interface teredo set state disabled | Out-Null
+W ok (L2 "IPv4 preferido y tuneles IPv6 apagados (DisabledComponents=0x21, Teredo off). Reinicia para aplicarlo." "IPv4 preferred and IPv6 tunnels off (DisabledComponents=0x21, Teredo off). Reboot to apply.")
+'@
+       Undo=@'
+$k = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+$bk = 'HKLM:\SOFTWARE\Winzard\TweakBackup'
+$marca = [string](Get-ItemProperty -Path $bk -Name DisabledComponentsPrevio -ErrorAction SilentlyContinue).DisabledComponentsPrevio
+if (-not $marca -or $marca -eq 'ninguno') { Remove-ItemProperty -Path $k -Name DisabledComponents -ErrorAction SilentlyContinue }
+else { Set-ItemProperty -Path $k -Name DisabledComponents -Value ([uint32]$marca) -Type DWord }
+Remove-ItemProperty -Path $bk -Name DisabledComponentsPrevio -ErrorAction SilentlyContinue
+netsh interface teredo set state default | Out-Null
+W ok (L2 "Configuracion IPv6 restaurada a tu estado previo real (no a un valor fijo)." "IPv6 configuration restored to your real previous state (not a fixed literal).")
+'@ }
+    @{ Name='Impedir programas del fabricante al arrancar (WPBT)'; Cat='Seguridad'; Risk='Avanzado'
+       Desc='Windows deja de ejecutar el software que el firmware del fabricante incrusta en cada arranque (tabla WPBT): evita bloatware persistente de fabrica.'
+       Caveat='usas un anti-robo del fabricante (p.ej. Computrace): depende de este mecanismo.'
+       Code=@'
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager" /v DisableWpbtExecution /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "WPBT desactivado: el firmware ya no puede lanzar software en el arranque. Reinicia para aplicarlo." "WPBT disabled: firmware can no longer launch software at boot. Reboot to apply.")
+'@
+       Undo=@'
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager" /v DisableWpbtExecution /f 2>$null | Out-Null
+W ok (L2 "WPBT restaurado al comportamiento por defecto de Windows." "WPBT restored to the default Windows behavior.")
+'@ }
+    @{ Name='Edge sin extras (debloat por politicas)'; Cat='Privacidad'; Risk='Seguro'
+       Desc='Apaga por politica los extras de Microsoft Edge: Rewards, asistente de compras, Collections, widget, recomendaciones, encuestas y telemetria de personalizacion. No desinstala Edge.'
+       Code=@'
+$k = "HKLM\SOFTWARE\Policies\Microsoft\Edge"
+$pol = [ordered]@{ CreateDesktopShortcutDefault=0; PersonalizationReportingEnabled=0; ShowRecommendationsEnabled=0;
+          HideFirstRunExperience=1; UserFeedbackAllowed=0; ConfigureDoNotTrack=1; AlternateErrorPagesEnabled=0;
+          EdgeCollectionsEnabled=0; EdgeShoppingAssistantEnabled=0; MicrosoftEdgeInsiderPromotionEnabled=0;
+          ShowMicrosoftRewards=0; WebWidgetAllowed=0; DiagnosticData=0; EdgeAssetDeliveryServiceEnabled=0;
+          WalletDonationEnabled=0; DefaultBrowserSettingsCampaignEnabled=0 }
+foreach ($n in $pol.Keys) { reg add "$k" /v "$n" /t REG_DWORD /d $pol[$n] /f | Out-Null }
+W ok ((L2 "Edge debloat aplicado: {0} politicas." "Edge debloat applied: {0} policies.") -f $pol.Count)
+'@
+       Undo=@'
+$k = "HKLM\SOFTWARE\Policies\Microsoft\Edge"
+$names = @('CreateDesktopShortcutDefault','PersonalizationReportingEnabled','ShowRecommendationsEnabled','HideFirstRunExperience','UserFeedbackAllowed','ConfigureDoNotTrack','AlternateErrorPagesEnabled','EdgeCollectionsEnabled','EdgeShoppingAssistantEnabled','MicrosoftEdgeInsiderPromotionEnabled','ShowMicrosoftRewards','WebWidgetAllowed','DiagnosticData','EdgeAssetDeliveryServiceEnabled','WalletDonationEnabled','DefaultBrowserSettingsCampaignEnabled')
+foreach ($n in $names) { reg delete "$k" /v "$n" /f 2>$null | Out-Null }
+W ok (L2 "Politicas de Edge retiradas: Edge vuelve a sus valores de fabrica." "Edge policies removed: Edge returns to its factory defaults.")
+'@ }
+    @{ Name='Reloj del sistema en UTC (para dual-boot)'; Cat='Sistema'; Risk='Avanzado'
+       Desc='El reloj hardware pasa a UTC, como esperan Linux y macOS: corrige el desfase de hora al alternar sistemas en dual-boot.'
+       Caveat='NO tienes dual-boot: sin otro sistema no aporta nada.'
+       Code=@'
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" /v RealTimeIsUniversal /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Reloj hardware en UTC (RealTimeIsUniversal=1)." "Hardware clock set to UTC (RealTimeIsUniversal=1).")
+'@
+       Undo=@'
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" /v RealTimeIsUniversal /f 2>$null | Out-Null
+W ok (L2 "Reloj hardware restaurado a hora local (por defecto de Windows)." "Hardware clock restored to local time (Windows default).")
+'@ }
+    @{ Name='Agrupar procesos de servicio segun tu RAM (svchost)'; Cat='Rendimiento'; Risk='Avanzado'
+       Desc='Sube el umbral de division de svchost al tamano real de tu RAM: Windows agrupa servicios y reduce el numero de procesos residentes. Efecto modesto y visible en el Administrador de tareas.'
+       Code=@'
+$ramKB = 0
+try { $ramKB = [int64]((Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue | Measure-Object Capacity -Sum).Sum / 1KB) } catch {}
+if ($ramKB -le 0) { try { $ramKB = [int64]([uint64](Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).TotalPhysicalMemory / 1KB) } catch {} }
+if ($ramKB -le 0) { throw (L2 "No se pudo leer la RAM instalada." "Could not read installed RAM.") }
+Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name SvcHostSplitThresholdInKB -Value ([int]$ramKB) -Type DWord
+W ok ((L2 "Umbral svchost fijado a {0} MB (tu RAM). Se aplica al reiniciar." "svchost threshold set to {0} MB (your RAM). Applies after reboot.") -f [int]($ramKB/1024))
+'@
+       Undo=@'
+Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name SvcHostSplitThresholdInKB -Value 380000 -Type DWord
+W ok (L2 "Umbral svchost restaurado al valor por defecto de Windows (380000 KB)." "svchost threshold restored to the Windows default (380000 KB).")
+'@ }
+    @{ Name='Desactivar Reanudar entre dispositivos (Cross-Device)'; Cat='Privacidad'; Risk='Seguro'
+       Desc='Apaga la funcion de Windows 11 24H2+ que permite reanudar en el PC actividades del movil (y comparte estado entre dispositivos).'
+       Code=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\CrossDeviceResume\Configuration" /v IsResumeAllowed /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Reanudar entre dispositivos desactivado." "Cross-Device Resume disabled.")
+'@
+       Undo=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\CrossDeviceResume\Configuration" /v IsResumeAllowed /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Reanudar entre dispositivos restaurado (activo)." "Cross-Device Resume restored (enabled).")
+'@ }
+    @{ Name='Desactivar telemetria de PowerShell 7'; Cat='Privacidad'; Risk='Seguro'
+       Desc='Fija la variable de entorno oficial de exclusion (POWERSHELL_TELEMETRY_OPTOUT=1). Solo afecta a PowerShell 7+; inofensiva si no lo tienes.'
+       Code=@'
+[Environment]::SetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT','1','Machine')
+W ok (L2 "Telemetria de PowerShell 7 desactivada (variable de maquina)." "PowerShell 7 telemetry disabled (machine variable).")
+'@
+       Undo=@'
+[Environment]::SetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT',$null,'Machine')
+W ok (L2 "Variable de exclusion retirada: PowerShell 7 vuelve a su valor por defecto." "Opt-out variable removed: PowerShell 7 returns to its default.")
+'@ }
+    @{ Name='Barras de desplazamiento siempre visibles'; Cat='Interfaz'; Risk='Seguro'
+       Desc='Windows deja de encoger y ocultar las barras de desplazamiento en las apps modernas (accesibilidad y comodidad).'
+       Code=@'
+reg add "HKCU\Control Panel\Accessibility" /v DynamicScrollbars /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Barras de desplazamiento siempre visibles (reinicia la sesion)." "Scrollbars always visible (sign out and back in).")
+'@
+       Undo=@'
+reg add "HKCU\Control Panel\Accessibility" /v DynamicScrollbars /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Barras de desplazamiento en modo automatico (por defecto)." "Scrollbars back to automatic mode (default).")
+'@ }
+    # ============ SESION 10 / v7.6: auditoria contra WinUtil (claves verificadas
+    # ============ en winutil.ps1; ver tabla en INFORME_PROGRESO) ============
+    @{ Name='Desactivar Optimizacion de entrega (updates P2P)'; Cat='Privacidad'; Risk='Seguro'
+       Desc='Impide que tu PC comparta y reciba actualizaciones de otros equipos por P2P (solo descargara de Microsoft). Ahorra ancho de banda de subida.'
+       Code=@'
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" /v DODownloadMode /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Optimizacion de entrega desactivada (DODownloadMode=0, solo HTTP de Microsoft)." "Delivery Optimization disabled (DODownloadMode=0, Microsoft HTTP only).")
+'@
+       Undo=@'
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" /v DODownloadMode /f 2>$null | Out-Null
+W ok (L2 "Optimizacion de entrega restaurada al valor por defecto de Windows." "Delivery Optimization restored to the Windows default.")
+'@ }
+    @{ Name='Mostrar pantalla azul detallada (BSoD clasico)'; Cat='Sistema'; Risk='Seguro'
+       Desc='La pantalla azul de error vuelve a mostrar los parametros tecnicos del fallo (util para diagnosticar cuelgues) en vez de solo la carita.'
+       Code=@'
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\CrashControl" /v DisplayParameters /t REG_DWORD /d 1 /f | Out-Null
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\CrashControl" /v DisableEmoticon /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Pantalla azul detallada activada (parametros visibles)." "Detailed BSoD enabled (parameters visible).")
+'@
+       Undo=@'
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\CrashControl" /v DisplayParameters /f 2>$null | Out-Null
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\CrashControl" /v DisableEmoticon /f 2>$null | Out-Null
+W ok (L2 "Pantalla azul restaurada al formato por defecto de Windows." "BSoD restored to the Windows default format.")
+'@ }
+    @{ Name='Quitar desenfoque de la pantalla de inicio de sesion'; Cat='Interfaz'; Risk='Seguro'
+       Desc='Elimina el desenfoque (acrylic) del fondo en la pantalla de inicio de sesion: veras tu fondo nitido. Solo estetico y reversible.'
+       Code=@'
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v DisableAcrylicBackgroundOnLogon /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Desenfoque de inicio de sesion quitado (fondo nitido)." "Logon screen blur removed (sharp background).")
+'@
+       Undo=@'
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v DisableAcrylicBackgroundOnLogon /f 2>$null | Out-Null
+W ok (L2 "Desenfoque de inicio de sesion restaurado (por defecto)." "Logon screen blur restored (default).")
+'@ }
+    @{ Name='Ocultar la pagina Principal de Configuracion'; Cat='Interfaz'; Risk='Seguro'
+       Desc='Oculta la pagina "Principal" (con recomendaciones y tarjetas) de la app Configuracion; se abrira directamente en Sistema. Reversible.'
+       Code=@'
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v SettingsPageVisibility /t REG_SZ /d "hide:home" /f | Out-Null
+W ok (L2 "Pagina Principal de Configuracion oculta (se abre en Sistema)." "Settings Home page hidden (opens on System).")
+'@
+       Undo=@'
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v SettingsPageVisibility /f 2>$null | Out-Null
+W ok (L2 "Pagina Principal de Configuracion visible de nuevo (por defecto)." "Settings Home page visible again (default).")
+'@ }
+    @{ Name='Quitar Inicio y Galeria del Explorador'; Cat='Interfaz'; Risk='Avanzado'
+       Desc='Desancla las vistas "Inicio" y "Galeria" del panel lateral del Explorador de archivos (quedan las carpetas de siempre). Reversible; reinicia el Explorador para verlo.'
+       Code=@'
+reg add "HKCU\Software\Classes\CLSID\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}" /v System.IsPinnedToNameSpaceTree /t REG_DWORD /d 0 /f | Out-Null
+reg add "HKCU\Software\Classes\CLSID\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}" /v System.IsPinnedToNameSpaceTree /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Inicio y Galeria desanclados del Explorador (reinicia el Explorador)." "Home and Gallery unpinned from Explorer (restart Explorer).")
+'@
+       Undo=@'
+reg delete "HKCU\Software\Classes\CLSID\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}" /v System.IsPinnedToNameSpaceTree /f 2>$null | Out-Null
+reg delete "HKCU\Software\Classes\CLSID\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}" /v System.IsPinnedToNameSpaceTree /f 2>$null | Out-Null
+W ok (L2 "Inicio y Galeria restaurados en el Explorador (por defecto)." "Home and Gallery restored in Explorer (default).")
+'@ }
+    @{ Name='Quitar avisos al abrir archivos RDP sin firmar'; Cat='Sistema'; Risk='Avanzado'
+       Desc='Suprime los avisos nuevos de Windows al abrir archivos .rdp sin firmar (para quien usa Escritorio remoto a menudo). Solo si sabes que tus .rdp son de confianza.'
+       Code=@'
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client" /v RedirectionWarningDialogVersion /t REG_DWORD /d 1 /f | Out-Null
+reg add "HKCU\SOFTWARE\Microsoft\Terminal Server Client" /v RdpLaunchConsentAccepted /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Avisos de archivos RDP sin firmar quitados." "Unsigned RDP file warnings removed.")
+'@
+       Undo=@'
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client" /v RedirectionWarningDialogVersion /f 2>$null | Out-Null
+reg delete "HKCU\SOFTWARE\Microsoft\Terminal Server Client" /v RdpLaunchConsentAccepted /f 2>$null | Out-Null
+W ok (L2 "Avisos de archivos RDP restaurados (por defecto)." "RDP file warnings restored (default).")
+'@ }
+    @{ Name='Desactivar almacenamiento reservado (Reserved Storage)'; Cat='Sistema'; Risk='Avanzado'
+       Desc='Libera los ~7 GB que Windows reserva para sus actualizaciones. Windows puede tardar un momento en aplicarlo y no lo permite con una actualizacion a medias (se avisa honesto).'
+       Code=@'
+$st = (Get-WindowsReservedStorageState -ErrorAction Stop).ReservedStorageState
+if ([string]$st -eq 'Disabled') { W warn (L2 "El almacenamiento reservado ya estaba desactivado." "Reserved storage was already disabled.") }
+else {
+    Set-WindowsReservedStorageState -State Disabled -ErrorAction Stop | Out-Null
+    $now = (Get-WindowsReservedStorageState -ErrorAction Stop).ReservedStorageState
+    if ([string]$now -ne 'Disabled') { throw (L2 'Windows no aplico el cambio (puede haber una actualizacion en curso).' 'Windows did not apply the change (an update may be in progress).') }
+    W ok (L2 "Almacenamiento reservado desactivado y verificado (~7 GB liberados)." "Reserved storage disabled and verified (~7 GB freed).")
+}
+'@
+       Undo=@'
+Set-WindowsReservedStorageState -State Enabled -ErrorAction Stop | Out-Null
+$now = (Get-WindowsReservedStorageState -ErrorAction Stop).ReservedStorageState
+if ([string]$now -ne 'Enabled') { throw (L2 'Windows no aplico la reactivacion todavia.' 'Windows did not apply the re-enable yet.') }
+W ok (L2 "Almacenamiento reservado reactivado y verificado (por defecto)." "Reserved storage re-enabled and verified (default).")
+'@ }
+    @{ Name='Bloquear instalacion automatica de software de fabricantes (Razer y similares)'; Cat='Seguridad'; Risk='Avanzado'
+       Desc='Impide que Windows instale solo el software promocional del fabricante al conectar perifericos (Razer Synapse y similares); el hardware sigue funcionando con los drivers base. Tambien desactiva la busqueda de drivers promocionales.'
+       Code=@'
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching" /v SearchOrderConfig /t REG_DWORD /d 0 /f | Out-Null
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Installer" /v DisableCoInstallers /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Instalacion automatica de software de fabricante bloqueada (drivers base intactos)." "Automatic vendor software installation blocked (base drivers intact).")
+'@
+       Undo=@'
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching" /v SearchOrderConfig /t REG_DWORD /d 1 /f | Out-Null
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Installer" /v DisableCoInstallers /f 2>$null | Out-Null
+W ok (L2 "Instalacion automatica de software de fabricante restaurada (por defecto)." "Automatic vendor software installation restored (default).")
+'@ }
+    @{ Name='Desactivar deteccion automatica de tipo de carpeta'; Cat='Rendimiento'; Risk='Avanzado'
+       Desc='El Explorador deja de adivinar el tipo de cada carpeta por su contenido (causa lentitud al abrir carpetas grandes). OJO: tambien resetea las vistas guardadas y la agrupacion. Cierra sesion para aplicarlo.'
+       Code=@'
+$bags = 'HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags'
+$bagMRU = 'HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU'
+if (Test-Path $bags) { Remove-Item -Path $bags -Recurse -Force -ErrorAction SilentlyContinue }
+if (Test-Path $bagMRU) { Remove-Item -Path $bagMRU -Recurse -Force -ErrorAction SilentlyContinue }
+$allF = 'HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell'
+if (-not (Test-Path $allF)) { New-Item -Path $allF -Force | Out-Null }
+New-ItemProperty -Path $allF -Name FolderType -Value 'NotSpecified' -PropertyType String -Force | Out-Null
+W ok (L2 "Deteccion de tipo de carpeta desactivada (vista generica; cierra sesion para verlo)." "Folder type discovery disabled (generic view; sign out to see it).")
+'@
+       Undo=@'
+$bags = 'HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags'
+$bagMRU = 'HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU'
+if (Test-Path $bags) { Remove-Item -Path $bags -Recurse -Force -ErrorAction SilentlyContinue }
+if (Test-Path $bagMRU) { Remove-Item -Path $bagMRU -Recurse -Force -ErrorAction SilentlyContinue }
+W ok (L2 "Deteccion de tipo de carpeta restaurada (Windows vuelve a decidir por contenido)." "Folder type discovery restored (Windows decides by content again).")
+'@ }
+    # ============ SESION 10-bis: auditoria contra Win11Debloat (claves
+    # ============ verificadas en sus Regfiles; tabla en INFORME_PROGRESO) ======
+    @{ Name='Impedir el cifrado automatico de BitLocker'; Cat='Seguridad'; Risk='Avanzado'
+       Desc='Evita que Windows cifre el disco por su cuenta en equipos nuevos o reinstalados (y te deje sin la clave a mano). NO descifra nada ya cifrado: solo impide el cifrado automatico futuro.'
+       Code=@'
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\BitLocker" /v PreventDeviceEncryption /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Cifrado automatico de BitLocker impedido (lo ya cifrado no se toca)." "BitLocker automatic encryption prevented (already-encrypted drives untouched).")
+'@
+       Undo=@'
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\BitLocker" /v PreventDeviceEncryption /f 2>$null | Out-Null
+W ok (L2 "Cifrado automatico de BitLocker restaurado (por defecto de Windows)." "BitLocker automatic encryption restored (Windows default).")
+'@ }
+    @{ Name='Desactivar Encontrar mi dispositivo (Find My Device)'; Cat='Privacidad'; Risk='Seguro'
+       Desc='Apaga el rastreo de ubicacion del equipo asociado a tu cuenta Microsoft. En un PC de sobremesa no aporta nada y deja de enviarse la ubicacion.'
+       Code=@'
+reg add "HKLM\SOFTWARE\Policies\Microsoft\FindMyDevice" /v AllowFindMyDevice /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Encontrar mi dispositivo desactivado." "Find My Device disabled.")
+'@
+       Undo=@'
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\FindMyDevice" /v AllowFindMyDevice /f 2>$null | Out-Null
+W ok (L2 "Encontrar mi dispositivo restaurado (por defecto)." "Find My Device restored (default).")
+'@ }
+    @{ Name='Desactivar Windows Spotlight en el escritorio'; Cat='Interfaz'; Risk='Seguro'
+       Desc='Evita que el fondo de escritorio pase a Spotlight (imagenes de Microsoft con iconos y sugerencias). Tu fondo elegido se queda quieto.'
+       Code=@'
+reg add "HKCU\Software\Policies\Microsoft\Windows\CloudContent" /v DisableSpotlightCollectionOnDesktop /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Windows Spotlight del escritorio desactivado." "Desktop Windows Spotlight disabled.")
+'@
+       Undo=@'
+reg delete "HKCU\Software\Policies\Microsoft\Windows\CloudContent" /v DisableSpotlightCollectionOnDesktop /f 2>$null | Out-Null
+W ok (L2 "Windows Spotlight del escritorio disponible de nuevo (por defecto)." "Desktop Windows Spotlight available again (default).")
+'@ }
+    @{ Name='Desactivar la IA de Paint (Cocreator y relleno generativo)'; Cat='Privacidad'; Risk='Seguro'
+       Desc='Apaga por politica las funciones de IA de Paint: Cocreator, Image Creator, relleno y borrado generativo y quitar fondo. Paint sigue funcionando como siempre.'
+       Code=@'
+foreach ($v in 'DisableCocreator','DisableGenerativeFill','DisableImageCreator','DisableGenerativeErase','DisableRemoveBackground') {
+    reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Paint" /v $v /t REG_DWORD /d 1 /f | Out-Null
+}
+W ok (L2 "IA de Paint desactivada (5 funciones por politica)." "Paint AI disabled (5 features by policy).")
+'@
+       Undo=@'
+foreach ($v in 'DisableCocreator','DisableGenerativeFill','DisableImageCreator','DisableGenerativeErase','DisableRemoveBackground') {
+    reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Paint" /v $v /f 2>$null | Out-Null
+}
+W ok (L2 "IA de Paint restaurada (por defecto)." "Paint AI restored (default).")
+'@ }
+    @{ Name='Desactivar la IA del Bloc de notas (Notepad)'; Cat='Privacidad'; Risk='Seguro'
+       Desc='Apaga por politica la funcion de reescritura con IA del Bloc de notas moderno. El editor sigue igual para todo lo demas.'
+       Code=@'
+reg add "HKLM\SOFTWARE\Policies\WindowsNotepad" /v DisableAIFeatures /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "IA del Bloc de notas desactivada." "Notepad AI disabled.")
+'@
+       Undo=@'
+reg delete "HKLM\SOFTWARE\Policies\WindowsNotepad" /v DisableAIFeatures /f 2>$null | Out-Null
+W ok (L2 "IA del Bloc de notas restaurada (por defecto)." "Notepad AI restored (default).")
+'@ }
+    @{ Name='Desactivar Click to Do (analisis de pantalla con IA)'; Cat='Privacidad'; Risk='Seguro'
+       Desc='Apaga Click to Do (24H2+ con Copilot), que analiza con IA el contenido de tu pantalla para sugerir acciones sobre texto e imagenes.'
+       Code=@'
+reg add "HKCU\Software\Policies\Microsoft\Windows\WindowsAI" /v DisableClickToDo /t REG_DWORD /d 1 /f | Out-Null
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" /v DisableClickToDo /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Click to Do desactivado (usuario y equipo)." "Click to Do disabled (user and machine).")
+'@
+       Undo=@'
+reg delete "HKCU\Software\Policies\Microsoft\Windows\WindowsAI" /v DisableClickToDo /f 2>$null | Out-Null
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" /v DisableClickToDo /f 2>$null | Out-Null
+W ok (L2 "Click to Do restaurado (por defecto)." "Click to Do restored (default).")
+'@ }
+    @{ Name='Impedir arranque automatico del servicio de IA (WSAIFabricSvc)'; Cat='Privacidad'; Risk='Avanzado'
+       Desc='El servicio de IA de Windows pasa de arranque automatico a manual: no correra de fondo salvo que algo lo pida. En ediciones sin ese servicio se avisa y no se toca nada.'
+       Code=@'
+if (-not (Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Services\WSAIFabricSvc')) {
+    W warn (L2 "El servicio WSAIFabricSvc no existe en esta edicion de Windows (nada que cambiar)." "The WSAIFabricSvc service does not exist on this Windows edition (nothing to change).")
+} else {
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\WSAIFabricSvc" /v Start /t REG_DWORD /d 3 /f | Out-Null
+    W ok (L2 "Servicio de IA en arranque MANUAL (ya no se inicia solo)." "AI service set to MANUAL start (no longer starts by itself).")
+}
+'@
+       Undo=@'
+if (Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Services\WSAIFabricSvc') {
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\WSAIFabricSvc" /v Start /t REG_DWORD /d 2 /f | Out-Null
+    W ok (L2 "Servicio de IA restaurado a arranque automatico (por defecto)." "AI service restored to automatic start (default).")
+} else { W warn (L2 "El servicio WSAIFabricSvc no existe (nada que restaurar)." "The WSAIFabricSvc service does not exist (nothing to restore).") }
+'@ }
+    @{ Name='Evitar reinicios automaticos tras actualizaciones (con sesion abierta)'; Cat='Sistema'; Risk='Seguro'
+       Desc='Windows Update no reiniciara el equipo solo mientras haya una sesion iniciada. Los reinicios pendientes te los pedira, no te los impondra.'
+       Code=@'
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Reinicios automaticos tras updates evitados (con sesion abierta)." "Automatic post-update reboots prevented (while signed in).")
+'@
+       Undo=@'
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /f 2>$null | Out-Null
+W ok (L2 "Politica de reinicios de Windows Update restaurada (por defecto)." "Windows Update reboot policy restored (default).")
+'@ }
+    @{ Name='Desactivar resaltados de busqueda (Search Highlights)'; Cat='Interfaz'; Risk='Seguro'
+       Desc='Quita el contenido dinamico y promocional (iconitos, efemerides, tendencias) del cuadro de busqueda de Windows. La busqueda sigue funcionando igual.'
+       Code=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\SearchSettings" /v IsDynamicSearchBoxEnabled /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Resaltados de busqueda desactivados." "Search Highlights disabled.")
+'@
+       Undo=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\SearchSettings" /v IsDynamicSearchBoxEnabled /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Resaltados de busqueda restaurados (por defecto)." "Search Highlights restored (default).")
+'@ }
+    @{ Name='Quitar el movil (Phone Link) del menu Inicio'; Cat='Interfaz'; Risk='Seguro'
+       Desc='Oculta el panel lateral del movil (Phone Link) integrado en el menu Inicio. La app Phone Link sigue disponible si la usas.'
+       Code=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Start\Companions\Microsoft.YourPhone_8wekyb3d8bbwe" /v IsEnabled /t REG_DWORD /d 0 /f | Out-Null
+W ok (L2 "Panel del movil quitado del menu Inicio." "Phone panel removed from the Start menu.")
+'@
+       Undo=@'
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Start\Companions\Microsoft.YourPhone_8wekyb3d8bbwe" /v IsEnabled /t REG_DWORD /d 1 /f | Out-Null
+W ok (L2 "Panel del movil restaurado en el menu Inicio (por defecto)." "Phone panel restored in the Start menu (default).")
 '@ }
 )
 # ============================================================
@@ -1556,6 +3099,9 @@ $DebloatCatalog = @(
     # --- Ampliacion 25H2 (nombres validos estilo Chris Titus WinUtil) ---
     @{ Name = 'Alarmas y reloj';                Pkg = 'Microsoft.WindowsAlarms*';        Desc = 'Alarmas, temporizador y reloj. Reinstalable desde la Store.' }
     @{ Name = 'Noticias Bing (Finanzas/Deportes)'; Pkg = 'Microsoft.BingFinance*|Microsoft.BingSports*'; Desc = 'Apps de finanzas y deportes de Bing.' }
+    # --- Paridad con WinUtil (Chris Titus): las 2 que a WPI le faltaban ---
+    @{ Name = 'Notas rapidas (Sticky Notes)';   Pkg = 'Microsoft.MicrosoftStickyNotes*'; Desc = 'Notas adhesivas del escritorio. Reinstalable desde la Store (WinUtil tambien la quita).' }
+    @{ Name = 'Start Experiences (Inicio)';     Pkg = 'Microsoft.StartExperiencesApp*';  Desc = 'Componente de recomendaciones/anuncios del menu Inicio (WinUtil tambien lo quita).' }
 )
 
 # Devuelve los patrones individuales de un campo Pkg del catalogo, que puede
@@ -1621,6 +3167,11 @@ foreach ($svc in $svcDefaults.Keys) {
     Set-Service $svc -StartupType $stype -ErrorAction SilentlyContinue
 }
 foreach ($svc in 'BITS','wuauserv','UsoSvc') { Start-Service $svc -ErrorAction SilentlyContinue }
+# Iniciar BITS (servicio con trigger) promueve su Start a 2 (Automatic). Se RE-FIJA el tipo de
+# arranque por registro DESPUES de arrancar, para dejarlo en el valor de fabrica (BITS=3 Manual).
+foreach ($svc in $svcDefaults.Keys) {
+    reg add ("HKLM\SYSTEM\CurrentControlSet\Services\{0}" -f $svc) /v Start /t REG_DWORD /d $svcDefaults[$svc] /f 2>$null | Out-Null
+}
 W dim (L2 '  servicios BITS/wuauserv/UsoSvc/DoSvc/WaaSMedicSvc restaurados.' '  services BITS/wuauserv/UsoSvc/DoSvc/WaaSMedicSvc restored.')
 # Re-habilitar tareas programadas de Windows Update
 foreach ($tp in '\Microsoft\Windows\WindowsUpdate\','\Microsoft\Windows\UpdateOrchestrator\','\Microsoft\Windows\WaaSMedic\') {
@@ -1668,60 +3219,215 @@ $RepairTools = @(
     @{ Name='Comprobar archivos del sistema (SFC)'; Risk='Seguro'
        Desc='Ejecuta sfc /scannow para reparar archivos de Windows danados. Puede tardar.'
        Code=@'
-W info "Ejecutando sfc /scannow (puede tardar varios minutos)..."
+W info (L2 "Ejecutando sfc /scannow (puede tardar varios minutos)..." "Running sfc /scannow (this can take several minutes)...")
 $o = (& sfc /scannow 2>&1 | Out-String)
 foreach ($ln in ($o -split "[`r`n]+")) { $ln=$ln.Trim(); if ($ln) { W dim ('  '+$ln) } }
-W ok "SFC terminado."
+if ($LASTEXITCODE -ne 0) { throw ((L2 "SFC devolvio el codigo {0}. Revisa el detalle de arriba." "SFC returned code {0}. Check the details above.") -f $LASTEXITCODE) }
+W ok (L2 "SFC terminado." "SFC finished.")
 '@ }
     @{ Name='Reparar imagen de Windows (DISM RestoreHealth)'; Risk='Seguro'
        Desc='DISM /Online /Cleanup-Image /RestoreHealth. Repara el almacen de componentes. Puede tardar.'
        Code=@'
-W info "Ejecutando DISM RestoreHealth (puede tardar)..."
+W info (L2 "Ejecutando DISM RestoreHealth (puede tardar)..." "Running DISM RestoreHealth (this can take a while)...")
 $o = (& dism /online /cleanup-image /restorehealth 2>&1 | Out-String)
 foreach ($ln in ($o -split "[`r`n]+")) { $ln=$ln.Trim(); if ($ln) { W dim ('  '+$ln) } }
-W ok "DISM terminado."
+if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw ((L2 "DISM devolvio el codigo {0}. Revisa el detalle de arriba." "DISM returned code {0}. Check the details above.") -f $LASTEXITCODE) }
+W ok (L2 "DISM terminado." "DISM finished.")
 '@ }
     @{ Name='Restablecer la red (Winsock/TCP-IP/DNS)'; Risk='Avanzado'
        Warn='Esto reinicia la pila de red. Perderas la conexion un momento y conviene REINICIAR despues. Continuar?'
        Desc='netsh winsock reset + int ip reset + flush DNS + renovar IP. Requiere reiniciar.'
        Code=@'
 netsh winsock reset | Out-Null
+if ($LASTEXITCODE -ne 0) { throw ((L2 "netsh winsock reset fallo (codigo {0})." "netsh winsock reset failed (code {0}).") -f $LASTEXITCODE) }
 netsh int ip reset | Out-Null
+if ($LASTEXITCODE -ne 0) { W warn (L2 "netsh int ip reset devolvio avisos (algunas claves protegidas no se restablecen; suele ser normal)." "netsh int ip reset returned warnings (some protected keys are not reset; this is usually normal).") }
 ipconfig /flushdns | Out-Null
 ipconfig /release | Out-Null
 ipconfig /renew | Out-Null
-W ok "Pila de red restablecida. REINICIA el equipo para terminar."
+W ok (L2 "Pila de red restablecida. REINICIA el equipo para terminar." "Network stack reset. RESTART the PC to finish.")
 '@ }
     @{ Name='Reparar Windows Update (limpiar cache)'; Risk='Seguro'
        Desc='Para los servicios, renombra SoftwareDistribution y catroot2, y reinicia. Arregla updates atascadas.'
        Code=@'
 foreach ($s in 'wuauserv','cryptSvc','bits','msiserver') { Stop-Service $s -Force -ErrorAction SilentlyContinue }
 $sd="$env:SystemRoot\SoftwareDistribution"; $cr="$env:SystemRoot\System32\catroot2"
-if (Test-Path $sd) { Rename-Item $sd ($sd+'.old') -Force -ErrorAction SilentlyContinue }
-if (Test-Path $cr) { Rename-Item $cr ($cr+'.old') -Force -ErrorAction SilentlyContinue }
+if (Test-Path ($sd+'.old')) { Remove-Item ($sd+'.old') -Recurse -Force -ErrorAction SilentlyContinue }
+if (Test-Path ($cr+'.old')) { Remove-Item ($cr+'.old') -Recurse -Force -ErrorAction SilentlyContinue }
+if (Test-Path $sd) { Rename-Item $sd ($sd+'.old') -Force -ErrorAction Stop }
+if (Test-Path $cr) { Rename-Item $cr ($cr+'.old') -Force -ErrorAction Stop }
 foreach ($s in 'wuauserv','cryptSvc','bits','msiserver') { Start-Service $s -ErrorAction SilentlyContinue }
-W ok "Cache de Windows Update limpiada. Vuelve a buscar actualizaciones."
+W ok (L2 "Cache de Windows Update limpiada. Vuelve a buscar actualizaciones." "Windows Update cache cleared. Check for updates again.")
 '@ }
     @{ Name='Limpiar la cache de Microsoft Store'; Risk='Seguro'
        Desc='Ejecuta wsreset para arreglar la Store y descargas atascadas.'
        Code=@'
-Start-Process wsreset.exe -WindowStyle Hidden
-W ok "wsreset lanzado: la Store se limpiara en unos segundos."
+Start-Process wsreset.exe -WindowStyle Hidden -ErrorAction Stop
+W ok (L2 "wsreset lanzado: la Store se limpiara en unos segundos." "wsreset launched: the Store cache will be cleared in a few seconds.")
 '@ }
     @{ Name='Reconstruir el indice de busqueda'; Risk='Seguro'
        Desc='Fuerza a Windows a reindexar (arregla la busqueda lenta o sin resultados).'
        Code=@'
 reg add "HKLM\SOFTWARE\Microsoft\Windows Search" /v SetupCompletedSuccessfully /t REG_DWORD /d 0 /f | Out-Null
-Restart-Service WSearch -Force -ErrorAction SilentlyContinue
-W ok "Reindexado iniciado. Puede tardar un rato en completarse en segundo plano."
+Restart-Service WSearch -Force -ErrorAction Stop
+W ok (L2 "Reindexado iniciado. Puede tardar un rato en completarse en segundo plano." "Reindexing started. It may take a while to complete in the background.")
 '@ }
     @{ Name='Reparar/Resetear winget'; Risk='Seguro'
        Desc='Resetea las fuentes de winget y acepta acuerdos. Arregla errores de catalogo y descargas.'
        Code=@'
-try { winget source reset --force 2>&1 | Out-Null } catch {}
+winget source reset --force 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw ((L2 "winget source reset fallo (codigo {0})." "winget source reset failed (code {0}).") -f $LASTEXITCODE) }
 try { winget source update 2>&1 | Out-Null } catch {}
 try { winget list --accept-source-agreements 2>&1 | Out-Null } catch {}
-W ok "Fuentes de winget reseteadas y actualizadas."
+W ok (L2 "Fuentes de winget reseteadas y actualizadas." "winget sources reset and updated.")
+'@ }
+    @{ Name='Programar mantenimiento mensual (limpieza + informe)'; Risk='Seguro'
+       Desc='Crea una tarea programada que, una vez al mes, limpia temporales/papelera, vacia la cache DNS y deja un informe. Se verifica que la tarea queda creada.'
+       Code=@'
+$dir = Join-Path $env:ProgramData 'WPI'
+$logs = Join-Path $dir 'logs'
+if (-not (Test-Path $logs)) { New-Item -ItemType Directory -Path $logs -Force | Out-Null }
+$scriptPath = Join-Path $dir 'wpi_mantenimiento.ps1'
+$body = @(
+    '# Mantenimiento mensual WPI (generado). Limpieza segura + informe.',
+    '$ErrorActionPreference = ''SilentlyContinue''',
+    '$logs = Join-Path $env:ProgramData ''WPI\logs''',
+    'if (-not (Test-Path $logs)) { New-Item -ItemType Directory -Path $logs -Force | Out-Null }',
+    '$rep = Join-Path $logs (''mantenimiento_'' + (Get-Date -Format ''yyyyMMdd_HHmmss'') + ''.log'')',
+    '$before = (Get-PSDrive C).Free',
+    'Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue',
+    'Remove-Item "$env:SystemRoot\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue',
+    'Clear-RecycleBin -Force -ErrorAction SilentlyContinue',
+    'ipconfig /flushdns | Out-Null',
+    '$freed = [math]::Round((((Get-PSDrive C).Free - $before)/1MB),1)',
+    '$msg = ("[{0}] Mantenimiento mensual OK. Espacio liberado aprox.: {1} MB." -f (Get-Date -Format ''yyyy-MM-dd HH:mm''), [math]::Max($freed,0))',
+    'Set-Content -Path $rep -Value $msg -Encoding UTF8'
+)
+Set-Content -Path $scriptPath -Value ($body -join "`r`n") -Encoding UTF8
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $scriptPath)
+$trigger = New-ScheduledTaskTrigger -Weekly -WeeksInterval 4 -DaysOfWeek Sunday -At 12pm
+$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName 'WPI_Mantenimiento_Mensual' -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
+if (-not (Get-ScheduledTask -TaskName 'WPI_Mantenimiento_Mensual' -ErrorAction SilentlyContinue)) { throw (L2 'La tarea no quedo registrada.' 'The task was not registered.') }
+W ok (L2 'Mantenimiento mensual programado y verificado (tarea WPI_Mantenimiento_Mensual, cada 4 semanas).' 'Monthly maintenance scheduled and verified (task WPI_Mantenimiento_Mensual, every 4 weeks).')
+'@
+       Undo=@'
+$t = Get-ScheduledTask -TaskName 'WPI_Mantenimiento_Mensual' -ErrorAction SilentlyContinue
+if (-not $t) { W warn (L2 'No habia mantenimiento programado (nada que quitar).' 'No scheduled maintenance found (nothing to remove).') }
+else {
+    Unregister-ScheduledTask -TaskName 'WPI_Mantenimiento_Mensual' -Confirm:$false -ErrorAction Stop
+    if (Get-ScheduledTask -TaskName 'WPI_Mantenimiento_Mensual' -ErrorAction SilentlyContinue) { throw (L2 'La tarea sigue presente.' 'The task is still present.') }
+    W ok (L2 'Mantenimiento mensual programado eliminado y verificado.' 'Scheduled monthly maintenance removed and verified.')
+}
+'@ }
+    @{ Name='DNS: cambiar a Cloudflare (1.1.1.1)'; Risk='Seguro'
+       Desc='Configura los servidores DNS del adaptador de red activo a Cloudflare (1.1.1.1 / 1.0.0.1). Reversible con "DNS: volver a automatico".'
+       Code=@'
+$serv = @('1.1.1.1','1.0.0.1'); $prov = 'Cloudflare'
+$adap = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+if (@($adap).Count -eq 0) { throw (L2 'No hay ningun adaptador de red activo.' 'No active network adapter.') }
+foreach ($a in $adap) {
+    Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $serv -ErrorAction Stop
+    $now = @((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses)
+    if (-not ($now -contains $serv[0])) { throw ((L2 'Verificacion fallida en {0}.' 'Verification failed on {0}.') -f $a.Name) }
+    W ok ((L2 '  {0}: DNS = {1} ({2}) verificado.' '  {0}: DNS = {1} ({2}) verified.') -f $a.Name, ($serv -join ', '), $prov)
+}
+Clear-DnsClientCache -ErrorAction SilentlyContinue
+W ok (L2 'DNS cambiado a Cloudflare y verificado en el/los adaptador(es) activo(s).' 'DNS changed to Cloudflare and verified on the active adapter(s).')
+'@ }
+    @{ Name='DNS: cambiar a Quad9 (9.9.9.9, con filtro de malware)'; Risk='Seguro'
+       Desc='Configura el DNS del adaptador activo a Quad9 (9.9.9.9 / 149.112.112.112), que bloquea dominios maliciosos conocidos. Reversible.'
+       Code=@'
+$serv = @('9.9.9.9','149.112.112.112'); $prov = 'Quad9'
+$adap = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+if (@($adap).Count -eq 0) { throw (L2 'No hay ningun adaptador de red activo.' 'No active network adapter.') }
+foreach ($a in $adap) {
+    Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $serv -ErrorAction Stop
+    $now = @((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses)
+    if (-not ($now -contains $serv[0])) { throw ((L2 'Verificacion fallida en {0}.' 'Verification failed on {0}.') -f $a.Name) }
+    W ok ((L2 '  {0}: DNS = {1} ({2}) verificado.' '  {0}: DNS = {1} ({2}) verified.') -f $a.Name, ($serv -join ', '), $prov)
+}
+Clear-DnsClientCache -ErrorAction SilentlyContinue
+W ok (L2 'DNS cambiado a Quad9 y verificado.' 'DNS changed to Quad9 and verified.')
+'@ }
+    @{ Name='DNS: cambiar a Google (8.8.8.8)'; Risk='Seguro'
+       Desc='Configura el DNS del adaptador activo a Google (8.8.8.8 / 8.8.4.4). Reversible con "DNS: volver a automatico".'
+       Code=@'
+$serv = @('8.8.8.8','8.8.4.4'); $prov = 'Google'
+$adap = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+if (@($adap).Count -eq 0) { throw (L2 'No hay ningun adaptador de red activo.' 'No active network adapter.') }
+foreach ($a in $adap) {
+    Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $serv -ErrorAction Stop
+    $now = @((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses)
+    if (-not ($now -contains $serv[0])) { throw ((L2 'Verificacion fallida en {0}.' 'Verification failed on {0}.') -f $a.Name) }
+    W ok ((L2 '  {0}: DNS = {1} ({2}) verificado.' '  {0}: DNS = {1} ({2}) verified.') -f $a.Name, ($serv -join ', '), $prov)
+}
+Clear-DnsClientCache -ErrorAction SilentlyContinue
+W ok (L2 'DNS cambiado a Google y verificado.' 'DNS changed to Google and verified.')
+'@ }
+    @{ Name='DNS: cambiar a OpenDNS (con filtro familiar opcional)'; Risk='Seguro'
+       Desc='Configura el DNS del adaptador activo a OpenDNS (208.67.222.222 / 208.67.220.220), de Cisco. Reversible con "DNS: volver a automatico".'
+       Code=@'
+$serv = @('208.67.222.222','208.67.220.220'); $prov = 'OpenDNS'
+$adap = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+if (@($adap).Count -eq 0) { throw (L2 'No hay ningun adaptador de red activo.' 'No active network adapter.') }
+foreach ($a in $adap) {
+    Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $serv -ErrorAction Stop
+    $now = @((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses)
+    if (-not ($now -contains $serv[0])) { throw ((L2 'Verificacion fallida en {0}.' 'Verification failed on {0}.') -f $a.Name) }
+    W ok ((L2 '  {0}: DNS = {1} ({2}) verificado.' '  {0}: DNS = {1} ({2}) verified.') -f $a.Name, ($serv -join ', '), $prov)
+}
+Clear-DnsClientCache -ErrorAction SilentlyContinue
+W ok (L2 'DNS cambiado a OpenDNS y verificado.' 'DNS changed to OpenDNS and verified.')
+'@ }
+    @{ Name='DNS: volver a automatico (DHCP del router)'; Risk='Seguro'
+       Desc='Restablece el DNS del adaptador activo a automatico (lo que asigne el router por DHCP). Deshace cualquier cambio de DNS anterior.'
+       Code=@'
+$adap = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+if (@($adap).Count -eq 0) { throw (L2 'No hay ningun adaptador de red activo.' 'No active network adapter.') }
+foreach ($a in $adap) {
+    Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ResetServerAddresses -ErrorAction Stop
+    W ok ((L2 '  {0}: DNS restablecido a automatico (DHCP).' '  {0}: DNS reset to automatic (DHCP).') -f $a.Name)
+}
+Clear-DnsClientCache -ErrorAction SilentlyContinue
+W ok (L2 'DNS restablecido a automatico en el/los adaptador(es) activo(s).' 'DNS reset to automatic on the active adapter(s).')
+'@ }
+    @{ Name='Silenciar Microsoft Edge (arranque automatico y accesos)'; Risk='Seguro'
+       Desc='Evita que Edge se abra solo al iniciar sesion y quita sus accesos directos del Escritorio y la barra. NO desinstala Edge (sigue disponible): es totalmente reversible.'
+       Code=@'
+$huboAlgo = $false
+# 1) Quitar entradas de arranque automatico de Edge (Run) en HKCU y HKLM.
+foreach ($root in 'HKCU','HKLM') {
+    $key = ('{0}:\Software\Microsoft\Windows\CurrentVersion\Run' -f $root)
+    if (Test-Path $key) {
+        foreach ($vn in @('MicrosoftEdgeAutoLaunch*','Microsoft Edge Update*')) {
+            foreach ($p in @(Get-Item $key).Property) {
+                if ($p -like $vn) {
+                    try { Remove-ItemProperty -Path $key -Name $p -Force -ErrorAction Stop; $huboAlgo = $true; W info ((L2 '  arranque automatico quitado: {0}' '  auto-launch removed: {0}') -f $p) } catch {}
+                }
+            }
+        }
+    }
+}
+# 2) Politica: no relanzar Edge tras actualizar / no arranque en segundo plano.
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Edge" /v StartupBoostEnabled /t REG_DWORD /d 0 /f | Out-Null
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Edge" /v BackgroundModeEnabled /t REG_DWORD /d 0 /f | Out-Null
+W info (L2 '  StartupBoost y modo segundo plano de Edge desactivados por politica.' '  Edge StartupBoost and background mode disabled by policy.')
+# 3) Quitar accesos directos de Edge del Escritorio (usuario y publico).
+foreach ($dt in @([Environment]::GetFolderPath('Desktop'), (Join-Path $env:PUBLIC 'Desktop'))) {
+    if ([string]::IsNullOrWhiteSpace($dt)) { continue }
+    foreach ($lnk in @('Microsoft Edge.lnk','Edge.lnk')) {
+        $full = Join-Path $dt $lnk
+        if (Test-Path $full) { try { Remove-Item $full -Force -ErrorAction Stop; $huboAlgo = $true; W info ((L2 '  acceso directo quitado: {0}' '  shortcut removed: {0}') -f $full) } catch {} }
+    }
+}
+if ($huboAlgo) { W ok (L2 'Edge silenciado: sin arranque automatico ni accesos directos (reversible; Edge sigue instalado).' 'Edge silenced: no auto-launch and no shortcuts (reversible; Edge stays installed).') }
+else { W ok (L2 'Edge ya estaba silenciado (nada que cambiar).' 'Edge was already silenced (nothing to change).') }
+'@
+       Undo=@'
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Edge" /v StartupBoostEnabled /f 2>$null | Out-Null
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Edge" /v BackgroundModeEnabled /f 2>$null | Out-Null
+W ok (L2 'Politicas de arranque de Edge restauradas (los accesos directos se recrean al usar Edge).' 'Edge startup policies restored (shortcuts are recreated when you use Edge).')
 '@ }
 )
 # ============================================================
@@ -1748,9 +3454,10 @@ $FeaturesCatalog = @(
     @{ Name='Sandbox de Windows'; Kind='feature'; Id='Containers-DisposableClientVM'; Risk='Avanzado'; Reboot=$true
        Desc='Escritorio desechable y aislado para probar software (solo Pro/Enterprise). Pide reinicio.' }
     @{ Name='WordPad'; Kind='capability'; Id='Microsoft.Windows.WordPad~~~~0.0.1.0'; Risk='Seguro'; Reboot=$false
-       Desc='Editor de texto enriquecido clasico de Windows.' }
+       Desc='Editor de texto enriquecido clasico. AVISO: Microsoft lo retiro de Windows 11 24H2+ (queda en NotPresent y ya no se puede instalar en esas versiones; verificado en VM build 26100).' }
     @{ Name='Bloc de notas (clasico)'; Kind='capability'; Id='Microsoft.Windows.Notepad.System~~~~0.0.1.0'; Risk='Seguro'; Reboot=$false
-       Desc='Version de sistema del Bloc de notas.' }
+       Appx='Microsoft.WindowsNotepad'; WingetId='9MSMLRH6LZF3'
+       Desc='Version de sistema del Bloc de notas. Deshabilitar quita TAMBIEN la app moderna del Bloc de notas (Store), que es la que abre Windows 11.' }
     @{ Name='Cliente OpenSSH'; Kind='capability'; Id='OpenSSH.Client~~~~0.0.1.0'; Risk='Seguro'; Reboot=$false
        Desc='Cliente SSH oficial para conexiones seguras desde la consola.' }
 )
@@ -1768,6 +3475,11 @@ $SystemPanels = @(
     @{ Name='Editor de directivas (gpedit)'; Cmd='gpedit.msc' }
     @{ Name='Liberador de espacio'; Cmd='cleanmgr' }
     @{ Name='Informacion del sistema'; Cmd='msinfo32' }
+    # FASE A: applets clasicos que faltaban (los va escondiendo Configuracion)
+    @{ Name='Region y formatos'; Cmd='intl.cpl' }
+    @{ Name='Pantalla (resolucion clasica)'; Cmd='desk.cpl' }
+    @{ Name='Raton (propiedades clasicas)'; Cmd='main.cpl' }
+    @{ Name='Visor de eventos'; Cmd='eventvwr.msc' }
 )
 # ============================================================
 
@@ -1798,6 +3510,9 @@ PCSX2 NECESITA la BIOS de tu propia PS2.
 Recomendado: renderer Vulkan o Direct3D 12 si tu GPU lo soporta.
 '@ }
   'RPCS3.RPCS3' = @{ Title = 'RPCS3 (PlayStation 3)'; Win = $true; Steps = @'
+AVISO: RPCS3 ya NO esta en winget (su manifiesto fue retirado), asi que
+no aparece en el catalogo de apps. Descargalo SOLO de su web oficial
+(rpcs3.net, boton "Abrir web oficial" aqui debajo).
 RPCS3 necesita el firmware OFICIAL de PS3.
 1) Descarga "PS3UPDAT.PUP" desde la web oficial de PlayStation.
 2) En RPCS3: File > Install Firmware > selecciona el .PUP.
@@ -2025,6 +3740,7 @@ function Invoke-SelfUpdate {
                 Copy-Item -Path $PSCommandPath -Destination "$PSCommandPath.bak" -Force
                 Set-WpiContent -Path $PSCommandPath -Value $remote -Bom
                 Write-Host '[OK] WPI actualizado. Reiniciando...' -ForegroundColor Green
+                try { Close-WpiSplash } catch {}
                 Start-Process powershell -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath)
                 exit 0
             } else {
@@ -2050,17 +3766,105 @@ function Invoke-WingetInstall {
         Write-Host '[~] No hay aplicaciones seleccionadas.' -ForegroundColor Yellow
         return
     }
+    # P0 (VT2): red FAIL-CLOSED. Bajo -DryRun este mutador se niega a instalar, lo
+    # llame quien lo llame (fase -Preset, perfil maestro, respaldo del diferido de
+    # -FirstBoot o cualquier camino futuro). Las fases imprimen su propio plan; esto
+    # es el cinturon de seguridad por si alguna ruta se lo salta.
+    if ($DryRun) {
+        Write-Host ((L2 '[DRY-RUN] BLOQUEADO Invoke-WingetInstall: {0} app(s) NO se instalan.' '[DRY-RUN] BLOCKED Invoke-WingetInstall: {0} app(s) are NOT installed.') -f @($Ids).Count) -ForegroundColor Yellow
+        foreach ($idDry in @($Ids)) { Write-Host ('   - ' + $idDry) -ForegroundColor DarkYellow }
+        return
+    }
+    # WATCHDOG VT2 (hueco cazado EN VIVO en el fuego: winget se quedo CLAVADO instalando
+    # la dependencia VCRedist de LibreOffice y congelo la fase entera 20+ min sin salida).
+    # El worker GUI ya tenia watchdog (F3-B2); este es su equivalente del camino
+    # CLI/FirstBoot: winget como proceso hijo con salida en STREAMING y tope por app
+    # (InstallTimeoutMin, def. 25 min); al vencer se mata el ARBOL entero (taskkill /T).
+    # ROJO Brave 0x80071130: --source winget (msstore no inicializado en Windows recien
+    # instalado tumbaba la resolucion del ID). F2-B3: la salida capturada permite degradar
+    # a FALLO el RC=0 con "Installer failed with exit code".
+    function Invoke-WingetConTope([string]$idApp) {
+        $toMin = 25
+        try { if ($Config -and [int]$Config.InstallTimeoutMin -gt 0) { $toMin = [int]$Config.InstallTimeoutMin } } catch {}
+        # RC (VT2-4): Start-Process -PassThru con redireccion NO expone ExitCode en
+        # PS 5.1 (sale $null y Get-CodeMeaning lo tomaba por exito -> FALSO [OK] con
+        # fallo real, cazado por el arnes de regresion del reintento-de-red sobre esta
+        # reescritura). Proceso .NET directo: ExitCode fiable + streaming por ReadAsync.
+        $psiW = New-Object System.Diagnostics.ProcessStartInfo
+        $psiW.FileName = 'winget'
+        $psiW.Arguments = 'install --id "{0}" -e --source winget --silent --accept-package-agreements --accept-source-agreements' -f $idApp
+        $psiW.UseShellExecute = $false
+        $psiW.RedirectStandardOutput = $true
+        $psiW.RedirectStandardError = $true
+        $psiW.CreateNoWindow = $true
+        $pW = [System.Diagnostics.Process]::Start($psiW)
+        $sbW = New-Object System.Text.StringBuilder
+        $errTask = $pW.StandardError.ReadToEndAsync()
+        $bufW = New-Object char[] 4096
+        $rdTask = $pW.StandardOutput.ReadAsync($bufW, 0, $bufW.Length)
+        $lim = (Get-Date).AddMinutes($toMin)
+        $colgado = $false
+        while ($true) {
+            if ($rdTask.Wait(700)) {
+                $nW = $rdTask.Result
+                if ($nW -le 0) { break }   # EOF: winget cerro su salida
+                $chunk = New-Object System.String($bufW, 0, $nW)
+                [void]$sbW.Append($chunk)
+                Write-Host $chunk -NoNewline
+                $rdTask = $pW.StandardOutput.ReadAsync($bufW, 0, $bufW.Length)
+            }
+            if ((Get-Date) -ge $lim) { $colgado = $true; break }
+        }
+        if (-not $colgado) {
+            $msRest = [int][Math]::Max(2000, ($lim - (Get-Date)).TotalMilliseconds)
+            if (-not $pW.WaitForExit($msRest)) { $colgado = $true }
+        }
+        if ($colgado -and -not $pW.HasExited) {
+            Write-Host ''
+            Write-Host ((L2 '  [WATCHDOG] winget lleva {0} min con esta app: se cierra el proceso colgado y se sigue con la siguiente.' '  [WATCHDOG] winget has spent {0} min on this app: killing the hung process and moving on.') -f $toMin) -ForegroundColor Yellow
+            try { Start-Process taskkill -ArgumentList ('/PID {0} /T /F' -f $pW.Id) -WindowStyle Hidden -Wait } catch {}
+        }
+        $pW.WaitForExit()
+        try { $eW = $errTask.Result; if ($eW) { [void]$sbW.Append("`n").Append($eW); Write-Host $eW -NoNewline } } catch {}
+        $rcW = -1
+        try { $rcW = $pW.ExitCode } catch {}
+        return @{ Out = $sbW.ToString(); RC = $rcW; Colgado = $colgado }
+    }
+    function Get-WingetVeredicto($resW) {
+        if ($resW.Colgado) { return @{ Ok = $false; Msg = (L2 'winget colgado: cerrado por el watchdog (reintentala desde el informe)' 'winget hung: killed by the watchdog (retry it from the report)') } }
+        $mV = Get-CodeMeaning -Code $resW.RC
+        if ($mV.Ok -and $resW.Out -match 'nstaller failed with exit code:\s*(-?\d+)') {
+            $mV = @{ Ok = $false; Msg = ((L2 'el instalador interno fallo (codigo {0})' 'inner installer failed (exit code {0})') -f $Matches[1]) }
+        }
+        return $mV
+    }
+
     $ok = @(); $fail = @()
     $i = 0
+    $nTotApps = @($Ids).Count
     foreach ($id in $Ids) {
         $i++
         Write-Host ''
-        Write-Host ('==[ {0}/{1} ]== Instalando {2} ...' -f $i, @($Ids).Count, $id) -ForegroundColor Cyan
-        winget install --id $id -e --silent --accept-package-agreements --accept-source-agreements
-        $m = Get-CodeMeaning -Code $LASTEXITCODE
+        # EXPERIENCIA PREMIUM (VT2-4): latido visible en TODO momento — barra de progreso
+        # del lote bajo el encabezado, % real en la banda superior (Write-Progress) y
+        # titulo de la ventana VIVO (se lee hasta minimizada, desde la barra de tareas).
+        # Objetivo: que en ningun PC ni configuracion parezca nunca "colgado".
+        $pctApp = [int](($i - 1) * 100 / [Math]::Max($nTotApps, 1))
+        $barW = 30; $lleno = [int]($barW * ($i - 1) / [Math]::Max($nTotApps, 1))
+        Write-Host ('  [' + ([string][char]0x2588 * $lleno).PadRight($barW, [char]0x2591) + ('] {0,3}%' -f $pctApp)) -ForegroundColor DarkCyan
+        Write-Host ('==[ {0}/{1} ]== ' -f $i, $nTotApps) -ForegroundColor Cyan -NoNewline
+        Write-Host ((L2 'Instalando {0} ...' 'Installing {0} ...') -f $id) -ForegroundColor Cyan
+        try { $Host.UI.RawUI.WindowTitle = ((L2 'Winzard - Instalando {0}/{1}: {2}' 'Winzard - Installing {0}/{1}: {2}') -f $i, $nTotApps, $id) } catch {}
+        try { Write-Progress -Id 7 -Activity (L2 'Winzard - instalando tus aplicaciones' 'Winzard - installing your apps') -Status ('{0}/{1}  -  {2}' -f $i, $nTotApps, $id) -PercentComplete $pctApp } catch {}
+        $swApp = [Diagnostics.Stopwatch]::StartNew()
+        $resWg = Invoke-WingetConTope $id
+        $durApp = (' ({0:n0} s)' -f $swApp.Elapsed.TotalSeconds)
+        $wgOut = $resWg.Out
+        $m = Get-WingetVeredicto $resWg
         if ($m.Ok) {
             $ok += ('{0} - {1}' -f $id, $m.Msg)
-            Write-Host ('[OK] {0} - {1}' -f $id, $m.Msg) -ForegroundColor Green
+            Write-Host ('[OK] {0} - {1}{2}' -f $id, $m.Msg, $durApp) -ForegroundColor Green
+            [void]$script:FbOkIds.Add($id)
             if ($id -eq 'Discord.Discord') {
                 try {
                     $sh = New-Object -ComObject WScript.Shell
@@ -2080,9 +3884,54 @@ function Invoke-WingetInstall {
             }
         } else {
             $fail += ('{0} - {1}' -f $id, $m.Msg)
-            Write-Host ('[X] {0} - {1}' -f $id, $m.Msg) -ForegroundColor Red
+            Write-Host ('[X] {0} - {1}{2}' -f $id, $m.Msg, $durApp) -ForegroundColor Red
+            [void]$script:FbFailIds.Add([pscustomobject]@{ Id = $id; Msg = [string]$m.Msg })
+        }
+        # EXPERIENCIA SERENA (solo primer arranque): si el instalador dejo la app
+        # abierta, se cierra AHORA para que nunca se apilen ventanas una tras otra.
+        if ($FirstBoot -and $script:FbProcBaseline) { Close-WpiNewApps -Baseline $script:FbProcBaseline -Tag $id }
+    }
+    try { Write-Progress -Id 7 -Activity (L2 'Winzard - instalando tus aplicaciones' 'Winzard - installing your apps') -Completed } catch {}
+    try { $Host.UI.RawUI.WindowTitle = (L2 'Winzard - Primer arranque' 'Winzard - First boot') } catch {}
+
+    # ROJO DEL FUEGO VT2 (17/19 caidas en cascada): si la red se cae a mitad de la fase
+    # (NAT/DNS transitorio, tipico en el primer arranque de una VM), todas las apps
+    # restantes fallan con 0x80072EE7. Recuperacion REAL: esperar a que vuelva la
+    # conectividad (hasta 5 min) y reintentar UNA vez solo las fallidas POR RED.
+    $netIds = @()
+    foreach ($f in $fail) { if ($f -match 'sin conexion|network|DNS') { $netIds += (($f -split ' - ')[0]) } }
+    if (@($netIds).Count -gt 0 -and -not $DryRun) {
+        Write-Host ''
+        Write-Host ((L2 '[RED] {0} app(s) fallaron por RED. Esperando conectividad (max 5 min)...' '[NET] {0} app(s) failed due to NETWORK. Waiting for connectivity (max 5 min)...') -f @($netIds).Count) -ForegroundColor Yellow
+        $netOk = $false
+        for ($wNet = 0; $wNet -lt 10; $wNet++) {
+            try { $netOk = Test-Connection -ComputerName 1.1.1.1 -Count 1 -Quiet -ErrorAction SilentlyContinue } catch { $netOk = $false }
+            if ($netOk) { break }
+            Start-Sleep -Seconds 30
+        }
+        if ($netOk) {
+            Write-Host (L2 '[RED] Conectividad recuperada: reintentando las fallidas por red...' '[NET] Connectivity is back: retrying the network failures...') -ForegroundColor Yellow
+            foreach ($idNet in $netIds) {
+                Write-Host ''
+                Write-Host ('==[ reintento ]== {0} ...' -f $idNet) -ForegroundColor Cyan
+                $resWg2 = Invoke-WingetConTope $idNet
+                $m2 = Get-WingetVeredicto $resWg2
+                if ($m2.Ok) {
+                    $fail = @($fail | Where-Object { $_ -notmatch ('^' + [regex]::Escape($idNet) + ' - ') })
+                    $ok += ('{0} - {1}' -f $idNet, $m2.Msg)
+                    Write-Host ('[OK] {0} - {1} (reintento tras recuperar la red)' -f $idNet, $m2.Msg) -ForegroundColor Green
+                    [void]$script:FbOkIds.Add($idNet)
+                    try { $script:FbFailIds = [System.Collections.ArrayList]@($script:FbFailIds | Where-Object { [string]$_.Id -ne $idNet }) } catch {}
+                } else {
+                    Write-Host ('[X] {0} - {1} (reintento)' -f $idNet, $m2.Msg) -ForegroundColor Red
+                }
+                if ($FirstBoot -and $script:FbProcBaseline) { Close-WpiNewApps -Baseline $script:FbProcBaseline -Tag $idNet }
+            }
+        } else {
+            Write-Host (L2 '[RED] Sin conectividad tras 5 min: las fallidas quedan en Reintentar_apps_fallidas.cmd (un clic).' '[NET] Still offline after 5 min: the failures remain in Reintentar_apps_fallidas.cmd (one click).') -ForegroundColor Yellow
         }
     }
+
     Write-Host ''
     Write-Host '====================================================' -ForegroundColor Cyan
     Write-Host ('  RESUMEN: {0} correctas, {1} fallidas' -f @($ok).Count, @($fail).Count) -ForegroundColor Cyan
@@ -2115,9 +3964,229 @@ $script:DeferredFirstLogonAppIds = @('Discord.Discord')
 # evita el clasico "Update Failed" y que la app no llegue a abrir.
 $script:UserScopeAppIds = @('Discord.Discord')
 
-# Escribe <Root>\reintento_apps.ps1 con los IDs diferidos y registra un RunOnce en
-# HKCU que lo lance en el primer inicio de sesion del usuario. Devuelve $true si se
-# registro correctamente, $false en caso de error (para poder hacer fallback).
+# ============================================================
+#  EXPERIENCIA PREMIUM DE PRIMER ARRANQUE (F1)
+#  - Cierre inmediato de cada app que el instalador deje abierta (sin apilar ventanas)
+#  - Autoruns de terceros calmados (reversible) para un primer escritorio limpio
+#  - Informe HTML en el Escritorio + reintento de fallidas con un clic
+#  - Conciencia de entorno (VM) y punto de restauracion "Recien instalado"
+# ============================================================
+$script:VmIncompatibleAppIds = @('ElementLabs.LMStudio')   # crashean en VM (AVX2 y similares)
+$script:FbOkIds      = New-Object System.Collections.ArrayList
+$script:FbFailIds    = New-Object System.Collections.ArrayList
+$script:FbDeferred   = New-Object System.Collections.ArrayList
+$script:FbSkippedVm  = New-Object System.Collections.ArrayList
+$script:FbTweaksOk   = 0
+$script:FbTweaksFail = 0
+$script:FbAutoruns   = 0
+$script:FbProcBaseline = $null
+
+# Detecta si estamos en una maquina virtual (VirtualBox/VMware/Hyper-V/QEMU/Parallels).
+function Test-WpiVirtualMachine {
+    try {
+        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+        return (('{0} {1}' -f $cs.Manufacturer, $cs.Model) -match 'VirtualBox|VMware|Virtual Machine|QEMU|KVM|Parallels|Xen')
+    } catch { return $false }
+}
+
+# Foto de los procesos vivos (para distinguir luego lo que abran los instaladores).
+function Get-WpiProcSnapshot {
+    $h = @{}
+    try { foreach ($p in (Get-Process -ErrorAction SilentlyContinue)) { $h[$p.Id] = $true } } catch {}
+    return $h
+}
+
+# Cierra las apps NUEVAS (no presentes en la foto inicial) que los instaladores
+# hayan dejado abiertas: primero cierre amable de su ventana y, si siguen, cierre
+# forzado. Tambien cierra lanzadores tipicos que quedan en bandeja. Los procesos
+# del sistema y del propio WPI estan en lista blanca y NUNCA se tocan.
+function Close-WpiNewApps {
+    param($Baseline, [string]$Tag = '')
+    if (-not $Baseline) { return }
+    $safe = @('winget','WindowsTerminal','OpenConsole','conhost','cmd','powershell','pwsh','explorer','dwm',
+        'msiexec','wusa','dism','TrustedInstaller','TiWorker','svchost','SecurityHealthSystray','SecurityHealthService',
+        'ShellExperienceHost','StartMenuExperienceHost','SearchHost','RuntimeBroker','ApplicationFrameHost','sihost',
+        'ctfmon','taskhostw','smartscreen','backgroundTaskHost','WmiPrvSE','csrss','wininit','winlogon','services',
+        'lsass','fontdrvhost','spoolsv','audiodg','dllhost','SystemSettings','TextInputHost','MoUsoCoreWorker',
+        'wuauclt','UserOOBEBroker','VBoxTray','vmtoolsd','vm3dservice','WerFault','consent','reg','schtasks','wsreset')
+    $launchers = @('Discord','Update','Steam','steamwebhelper','EADesktop','EABackgroundService','EALocalHostSvc',
+        'Telegram','qbittorrent','LocalSend','Element','ProtonVPN','ProtonVPNService','ProtonMailBridge','ProtonDrive',
+        'Cloudflare WARP','warp-taskbar','tailscale-ipn','VirtualDesktop.Streamer','sunshine','JDownloader2','Docker Desktop',
+        'brave','chrome','firefox','vivaldi','msedge')
+    try {
+        $nuevos = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            -not $Baseline.ContainsKey($_.Id) -and ($safe -notcontains $_.ProcessName)
+        })
+        if (@($nuevos).Count -eq 0) { return }
+        $conVentana = @($nuevos | Where-Object { $_.MainWindowHandle -ne 0 })
+        foreach ($p in $conVentana) { try { $null = $p.CloseMainWindow() } catch {} }
+        if (@($conVentana).Count -gt 0) { Start-Sleep -Seconds 3 }
+        $cerradas = 0
+        foreach ($p in $nuevos) {
+            $sigue = $null
+            try { $sigue = Get-Process -Id $p.Id -ErrorAction SilentlyContinue } catch {}
+            if (-not $sigue) { $cerradas++; continue }
+            $esVentana  = ($sigue.MainWindowHandle -ne 0)
+            $esLanzador = ($launchers -contains $sigue.ProcessName)
+            if ($esVentana -or $esLanzador) {
+                try {
+                    Stop-Process -Id $sigue.Id -Force -ErrorAction Stop
+                    $cerradas++
+                    Write-Host ('      [+] Cerrada tras instalar: {0}' -f $sigue.ProcessName) -ForegroundColor DarkCyan
+                } catch {}
+            }
+        }
+        if ($cerradas -gt 0 -and $Tag) { Write-Host ('      (escritorio limpio tras {0}: {1} proceso(s) cerrados)' -f $Tag, $cerradas) -ForegroundColor DarkGray }
+    } catch {}
+}
+
+# Desactiva (de forma REVERSIBLE) los autoarranques que los instaladores acaban de
+# registrar: copia cada valor a ...\WPI_Autoruns_Backup, lo quita de Run, y mueve los
+# .lnk de las carpetas de Inicio a una subcarpeta WPI_Desactivados. Todo queda ademas
+# en logs\autoruns_desactivados.json para poder restaurarlo a mano si se quiere.
+function Disable-WpiThirdPartyAutoruns {
+    $whitelist = @('SecurityHealth*','WindowsDefender*','VBoxTray*','VMware*','RtkAud*','Realtek*','NVIDIA*','Nv*',
+        'AMD*','Igfx*','Intel*','ETDCtrl*','Synaptics*','WPI_*','MicrosoftEdgeAutoLaunch*')
+    $rec = New-Object System.Collections.ArrayList
+    foreach ($hive in 'HKLM','HKCU') {
+        foreach ($sub in 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run','SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run') {
+            $p = ('{0}:\{1}' -f $hive, $sub)
+            if (-not (Test-Path $p)) { continue }
+            $k = $null
+            try { $k = Get-Item $p -ErrorAction Stop } catch { continue }
+            foreach ($name in @($k.GetValueNames())) {
+                if ([string]::IsNullOrWhiteSpace($name)) { continue }
+                $skip = $false
+                foreach ($w in $whitelist) { if ($name -like $w) { $skip = $true; break } }
+                if ($skip) { continue }
+                try {
+                    $val = [string]$k.GetValue($name)
+                    $bk = ('{0}:\{1}' -f $hive, ($sub -replace 'Run$', 'WPI_Autoruns_Backup'))
+                    if (-not (Test-Path $bk)) { New-Item -Path $bk -Force | Out-Null }
+                    New-ItemProperty -Path $bk -Name $name -Value $val -PropertyType String -Force | Out-Null
+                    Remove-ItemProperty -Path $p -Name $name -Force -ErrorAction Stop
+                    [void]$rec.Add(@{ Hive = $hive; Key = $sub; Name = $name; Value = $val })
+                    Write-Host ('  [+] Autorun desactivado (recuperable): {0}' -f $name) -ForegroundColor DarkCyan
+                } catch { Write-Host ('  [~] No se pudo calmar el autorun {0}: {1}' -f $name, $_.Exception.Message) -ForegroundColor Yellow }
+            }
+        }
+    }
+    $startupDirs = @()
+    try { $startupDirs += [Environment]::GetFolderPath('Startup') } catch {}
+    try { $startupDirs += (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\StartUp') } catch {}
+    foreach ($sf in ($startupDirs | Select-Object -Unique)) {
+        if ([string]::IsNullOrWhiteSpace($sf) -or -not (Test-Path $sf)) { continue }
+        $dis = Join-Path $sf 'WPI_Desactivados'
+        foreach ($ln in @(Get-ChildItem $sf -Filter *.lnk -ErrorAction SilentlyContinue)) {
+            try {
+                if (-not (Test-Path $dis)) { New-Item -ItemType Directory -Path $dis -Force | Out-Null }
+                Move-Item $ln.FullName (Join-Path $dis $ln.Name) -Force -ErrorAction Stop
+                [void]$rec.Add(@{ Hive = 'STARTUP'; Key = $sf; Name = $ln.Name; Value = $ln.FullName })
+                Write-Host ('  [+] Inicio: {0} movido a WPI_Desactivados (recuperable)' -f $ln.Name) -ForegroundColor DarkCyan
+            } catch {}
+        }
+    }
+    $script:FbAutoruns = @($rec).Count
+    try {
+        $logDir = Join-Path $PSScriptRoot 'logs'
+        if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+        ($rec | ConvertTo-Json -Depth 4) | Out-File (Join-Path $logDir 'autoruns_desactivados.json') -Encoding utf8
+    } catch {}
+    Write-Host ('  [OK] Primer escritorio sereno: {0} autoarranque(s) de terceros calmados (todo reversible).' -f $script:FbAutoruns) -ForegroundColor Green
+}
+
+# Genera el informe HTML del primer arranque en el Escritorio (y publico) con el
+# resultado REAL: instaladas, fallidas (con motivo), diferidas, omitidas por VM,
+# tweaks, autoruns calmados... y un Reintentar_apps_fallidas.cmd de un clic.
+function New-WpiFirstBootReport {
+    param([string]$LogFile)
+    $fecha = Get-Date -Format 'yyyy-MM-dd HH:mm'
+    $nOk = @($script:FbOkIds).Count; $nFail = @($script:FbFailIds).Count
+    $nDef = @($script:FbDeferred).Count; $nVm = @($script:FbSkippedVm).Count
+    $filasOk   = (@($script:FbOkIds)   | ForEach-Object { '<tr><td>' + $_ + '</td><td class="ok">OK</td></tr>' }) -join ''
+    $filasFail = (@($script:FbFailIds) | ForEach-Object { '<tr><td>' + $_.Id + '</td><td class="mal">' + $_.Msg + '</td></tr>' }) -join ''
+    $filasDef  = (@($script:FbDeferred) | ForEach-Object { '<tr><td>' + $_ + '</td><td class="warn">' + (L2 'diferida al proximo inicio de sesion' 'deferred to next sign-in') + '</td></tr>' }) -join ''
+    $filasVm   = (@($script:FbSkippedVm) | ForEach-Object { '<tr><td>' + $_ + '</td><td class="warn">' + (L2 'omitida (incompatible con maquina virtual)' 'skipped (incompatible with virtual machines)') + '</td></tr>' }) -join ''
+    $tituloRe  = L2 'Para reintentar las fallidas: doble clic en Reintentar_apps_fallidas.cmd (junto a este informe).' 'To retry the failed ones: double-click Reintentar_apps_fallidas.cmd (next to this report).'
+    $html = @"
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>WPI - $(L2 'Informe del primer arranque' 'First boot report')</title>
+<style>
+body{background:#0c1b33;color:#e8eef7;font-family:Segoe UI,Arial,sans-serif;margin:0;padding:32px}
+h1{color:#5ad0f5;font-size:22px} h2{color:#8ab8e6;font-size:15px;margin-top:26px;border-bottom:1px solid #274a72;padding-bottom:6px}
+table{border-collapse:collapse;width:100%;font-size:13px} td,th{padding:6px 10px;border-bottom:1px solid #1b3c5e;text-align:left}
+.ok{color:#49e59b}.mal{color:#ff7a7a}.warn{color:#ffd98a}.kpi{display:inline-block;background:#112038;border:1px solid #274a72;border-radius:10px;padding:12px 22px;margin:6px 10px 6px 0;text-align:center}
+.kpi b{display:block;font-size:26px}.pie{color:#8aa6cc;font-size:12px;margin-top:28px}
+</style></head><body>
+<h1>Winzard - $(L2 'Informe del primer arranque' 'First boot report')</h1>
+<div>$(L2 'Equipo' 'Computer'): <b>$env:COMPUTERNAME</b> &nbsp;|&nbsp; $(L2 'Fecha' 'Date'): $fecha</div>
+<div style="margin-top:14px">
+<span class="kpi"><b class="ok">$nOk</b>$(L2 'instaladas' 'installed')</span>
+<span class="kpi"><b class="mal">$nFail</b>$(L2 'fallidas' 'failed')</span>
+<span class="kpi"><b class="warn">$nDef</b>$(L2 'diferidas' 'deferred')</span>
+<span class="kpi"><b class="warn">$nVm</b>$(L2 'omitidas (VM)' 'skipped (VM)')</span>
+<span class="kpi"><b>$($script:FbTweaksOk)</b>tweaks OK</span>
+<span class="kpi"><b>$($script:FbAutoruns)</b>$(L2 'autoruns calmados' 'autoruns tamed')</span>
+</div>
+$(if ($nFail -gt 0) { '<h2>' + (L2 'Apps fallidas' 'Failed apps') + '</h2><table>' + $filasFail + '</table><p class="warn">' + $tituloRe + '</p>' })
+$(if ($nDef -gt 0) { '<h2>' + (L2 'Apps diferidas' 'Deferred apps') + '</h2><table>' + $filasDef + '</table>' })
+$(if ($nVm -gt 0) { '<h2>' + (L2 'Omitidas por entorno' 'Skipped by environment') + '</h2><table>' + $filasVm + '</table>' })
+<h2>$(L2 'Apps instaladas' 'Installed apps') ($nOk)</h2><table>$filasOk</table>
+<div class="pie">$(L2 'Log completo' 'Full log'): $LogFile<br>$(L2 'Autoruns desactivados (reversibles)' 'Tamed autoruns (reversible)'): C:\WPI\logs\autoruns_desactivados.json - WPI_Autoruns_Backup</div>
+</body></html>
+"@
+    $destinos = @()
+    try { $du = [Environment]::GetFolderPath('Desktop'); if ([string]::IsNullOrWhiteSpace($du)) { $du = Join-Path $env:USERPROFILE 'Desktop' }; $destinos += $du } catch {}
+    try { $destinos += (Join-Path $env:PUBLIC 'Desktop') } catch {}
+    foreach ($d in ($destinos | Select-Object -Unique)) {
+        if ([string]::IsNullOrWhiteSpace($d)) { continue }
+        try {
+            if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+            [IO.File]::WriteAllText((Join-Path $d 'Informe_Primer_Arranque.html'), $html, (New-Object System.Text.UTF8Encoding($true)))
+        } catch {}
+    }
+    # F6: copia canonica centralizada dentro del WPI (<WPI>\Informes)
+    try {
+        $infDir = Join-Path $PSScriptRoot 'Informes'
+        if (-not (Test-Path $infDir)) { New-Item -ItemType Directory -Path $infDir -Force | Out-Null }
+        [IO.File]::WriteAllText((Join-Path $infDir ('Informe_Primer_Arranque_{0}.html' -f (Get-Date -Format 'yyyyMMdd_HHmm'))), $html, (New-Object System.Text.UTF8Encoding($true)))
+    } catch {}
+    Write-Host '  [OK] Informe_Primer_Arranque.html creado en el Escritorio (copia en <WPI>\Informes).' -ForegroundColor Green
+    if ($nFail -gt 0) {
+        try {
+            $failIds = @($script:FbFailIds | ForEach-Object { $_.Id })
+            $lista = Join-Path $PSScriptRoot 'reintento_fallidas.txt'
+            Set-WpiContent -Path $lista -Value ($failIds -join "`r`n")
+            $lineaDirecta = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\WPI_Moderno.ps1`" -Preset `"$lista`" -NoReboot"
+            # UAC (VT2-4, pedido del usuario): SOLO en el primer arranque (contexto ISO,
+            # sesion ya admin) se registra una tarea elevada bajo demanda para que el
+            # doble clic del usuario reintente SIN aviso de UAC. En el PC del usuario
+            # (CLI normal) no se crean tareas: el .cmd conserva la linea directa.
+            $lineaTarea = ''
+            if ($FirstBoot) {
+                try {
+                    $actM = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Preset "{1}" -NoReboot' -f (Join-Path $PSScriptRoot 'WPI_Moderno.ps1'), $lista)
+                    $priM = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest
+                    Register-ScheduledTask -TaskName 'WPI_ReintentoManual' -Action $actM -Principal $priM -Force -ErrorAction Stop | Out-Null
+                    $lineaTarea = "schtasks /Run /TN `"WPI_ReintentoManual`" >nul 2>&1`r`nif not errorlevel 1 exit /b 0`r`n"
+                } catch { $lineaTarea = '' }
+            }
+            $cmdTxt = "@echo off`r`n$lineaTarea$lineaDirecta`r`npause`r`n"
+            foreach ($d in ($destinos | Select-Object -Unique)) {
+                if ([string]::IsNullOrWhiteSpace($d) -or -not (Test-Path $d)) { continue }
+                try { [IO.File]::WriteAllText((Join-Path $d 'Reintentar_apps_fallidas.cmd'), $cmdTxt, [System.Text.Encoding]::ASCII) } catch {}
+            }
+            Write-Host '  [OK] Reintentar_apps_fallidas.cmd creado en el Escritorio (reintento con un clic).' -ForegroundColor Green
+        } catch {}
+    }
+}
+
+# Escribe <Root>\reintento_apps.ps1 con los IDs diferidos y lo programa para el
+# primer inicio de sesion del usuario. UAC (VT2-4, pedido del usuario): se registra
+# como TAREA PROGRAMADA con RunLevel Highest -> corre ELEVADA de primeras y SIN aviso
+# de UAC, en la sesion interactiva del usuario (HKCU intacto para --scope user); la
+# tarea se borra sola al terminar. Si la tarea no se puede crear, RESPALDO con el
+# RunOnce clasico en HKCU (sin elevar; --scope user no la necesita). Devuelve $true
+# si se registro correctamente, $false en caso de error (para poder hacer fallback).
 function Register-DeferredAppRetry {
     param([string[]]$Ids, [string]$RootDir)
     if (-not $Ids -or @($Ids).Count -eq 0) { return $false }
@@ -2130,7 +4199,8 @@ function Register-DeferredAppRetry {
         # LITERALES en el archivo generado; $idList y $logDirDef se interpolan ahora.
         $retryText = @"
 # WPI - Reintento diferido de apps problematicas en contexto de usuario.
-# Generado automaticamente por el primer arranque (lanzado via RunOnce en HKCU).
+# Generado automaticamente por el primer arranque (lanzado via tarea programada
+# elevada WPI_ReintentoApps, sin aviso de UAC; RunOnce en HKCU como respaldo).
 # Estas apps (p. ej. Discord) se cuelgan al instalarse como SYSTEM/admin en el
 # primer logon (0xC0000005 / 3221225477); aqui se instalan ya en sesion de usuario.
 `$ErrorActionPreference = 'Continue'
@@ -2143,7 +4213,7 @@ RLog ('Reintento diferido de apps: {0}' -f (`$ids -join ', '))
 foreach (`$id in `$ids) {
     RLog ('==[ Instalando {0} ]==' -f `$id)
     try {
-        winget install --id `$id -e --silent --scope user --accept-package-agreements --accept-source-agreements 2>&1 | ForEach-Object { RLog `$_ }
+        winget install --id `$id -e --source winget --silent --scope user --accept-package-agreements --accept-source-agreements 2>&1 | ForEach-Object { RLog `$_ }
         RLog ('Resultado winget para {0}: codigo {1}' -f `$id, `$LASTEXITCODE)
     } catch {
         RLog ('[X] Error instalando {0}: {1}' -f `$id, `$_.Exception.Message)
@@ -2167,12 +4237,30 @@ try {
 } catch {
     RLog ("Error al parchear acceso directo de Discord: " + `$_.Exception.Message)
 }
+# UAC (VT2-4): si el lanzamiento fue por la tarea elevada, la tarea se borra a si
+# misma (bajo el respaldo RunOnce no existe y esto no hace nada).
+try { Unregister-ScheduledTask -TaskName 'WPI_ReintentoApps' -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
 RLog 'Reintento diferido finalizado.'
 "@
         Set-WpiContent -Path $scriptPath -Value $retryText -Bom
         $runOnceCmd = ('powershell -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $scriptPath)
+        # UAC (VT2-4): tarea ONLOGON con RunLevel Highest = elevada sin aviso de UAC.
+        # Register-ScheduledTask nativo (evita el infierno de comillas de schtasks /TR).
+        $tareaOk = $false
+        try {
+            $actR = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $scriptPath)
+            $trgR = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+            $priR = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest
+            Register-ScheduledTask -TaskName 'WPI_ReintentoApps' -Action $actR -Trigger $trgR -Principal $priR -Force -ErrorAction Stop | Out-Null
+            $tareaOk = $true
+        } catch { $tareaOk = $false }
+        if ($tareaOk) {
+            Write-Host '  [OK] Reintento diferido registrado como tarea ELEVADA (sin avisos de UAC).' -ForegroundColor Green
+            return $true
+        }
         reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce' /v 'WPI_ReintentoApps' /t REG_SZ /d $runOnceCmd /f 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'reg add devolvio un codigo de error al registrar el RunOnce.' }
+        Write-Host '  [~] Tarea elevada no disponible: reintento registrado como RunOnce (respaldo).' -ForegroundColor Yellow
         return $true
     } catch {
         Write-Host ('[X] No se pudo registrar el reintento diferido: {0}' -f $_.Exception.Message) -ForegroundColor Red
@@ -2193,6 +4281,10 @@ function W {
     }
     Write-Host ('  [{0,-4}] {1}' -f ([string]$t).ToUpper(), $m) -ForegroundColor $c
 }
+
+# L2 a nivel de script: mismo contrato que el L2 del worker, para que los Code
+# de tweaks (bilingues ES/EN) funcionen igual en modo CLI/desatendido.
+function L2([string]$es, [string]$en) { if ($script:Lang -eq 'en') { return $en } else { return $es } }
 
 function Show-WpiBanner {
     param([string]$Subtitle = '')
@@ -2255,10 +4347,32 @@ function Invoke-CliTweaks {
         if ($match) { $sel += $t }
     }
     if (@($sel).Count -eq 0) { W warn ('No hay tweaks que coincidan con: {0}' -f $Spec); return }
+    # DryRun universal (FASE C): imprime el PLAN de tweaks sin tocar nada.
+    if ($DryRun) {
+        W head ('[DRY-RUN] Se aplicarian {0} tweak(s) (nada se ejecuta):' -f @($sel).Count)
+        foreach ($t in $sel) {
+            $rev = if ($t.Undo) { 'reversible' } else { 'sin reversion automatica' }
+            W info ('   - {0}  [{1}, {2}, {3}]' -f $t.Name, $t.Cat, $t.Risk, $rev)
+        }
+        W head '[DRY-RUN] Fin del plan de tweaks. No se ha cambiado nada.'
+        return
+    }
     W head ('Aplicando {0} tweaks en modo desatendido...' -f @($sel).Count)
+    # Mismo contexto que el worker de la GUI: $isAdmin para los Code que lo usan
+    # y proxy de reg.exe para que los fallos de 'reg add' no pasen en silencio.
+    $isAdmin = $false
+    try { $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch {}
+    function reg {
+        $regOut = & "$env:SystemRoot\System32\reg.exe" @args 2>&1
+        $regOp = ''; if (@($args).Count -gt 0) { $regOp = ([string]$args[0]).ToLower() }
+        if ($LASTEXITCODE -ne 0 -and @('delete','query') -notcontains $regOp) {
+            throw ((L2 'reg.exe fallo (codigo {0}) en: reg {1}' 'reg.exe failed (code {0}) at: reg {1}') -f $LASTEXITCODE, ($args -join ' '))
+        }
+        $regOut
+    }
     foreach ($t in $sel) {
         W info ('>>> {0}' -f $t.Name)
-        try { & ([scriptblock]::Create([string]$t.Code)) } catch { W err ('[X] {0} fallo: {1}' -f $t.Name, $_.Exception.Message) }
+        try { & ([scriptblock]::Create([string]$t.Code)); $script:FbTweaksOk++ } catch { $script:FbTweaksFail++; W err ('[X] {0} fallo: {1}' -f $t.Name, $_.Exception.Message) }
     }
     W head 'Tweaks desatendidos terminados.'
 }
@@ -2276,6 +4390,13 @@ function Invoke-CliDebloat {
         if ($m) { $sel += $d }
     }
     if (@($sel).Count -eq 0) { W warn ('No hay apps de debloat que coincidan con: {0}' -f $Spec); return }
+    # DryRun universal (FASE C): imprime el PLAN de debloat sin quitar nada.
+    if ($DryRun) {
+        W head ('[DRY-RUN] Se quitarian {0} app(s) preinstaladas (nada se ejecuta):' -f @($sel).Count)
+        foreach ($d in $sel) { W info ('   - {0}  ({1})' -f $d.Name, $d.Pkg) }
+        W head '[DRY-RUN] Fin del plan de debloat. No se ha cambiado nada.'
+        return
+    }
     W head ('Quitando {0} apps preinstaladas en modo desatendido...' -f @($sel).Count)
     foreach ($d in $sel) {
         W info ('>>> Quitando: {0}' -f $d.Name)
@@ -2285,6 +4406,15 @@ function Invoke-CliDebloat {
             # Usuario actual (Get-AppxPackage / Remove-AppxPackage)
             $found = @($patterns | ForEach-Object { Get-AppxPackage -Name $_ -ErrorAction SilentlyContinue })
             foreach ($pkg in $found) {
+                # F2-B4 (VT2): mismo predicado $isSys del worker. Componentes de sistema
+                # (p.ej. XboxGameCallableUI en SystemApps) NO son desinstalables: intentarlo
+                # falla siempre con 0x80070032 e inflaba el contador de fallos del CLI.
+                $isSys = $false
+                try { $isSys = ($pkg.NonRemovable -eq $true) -or ([string]$pkg.SignatureKind -eq 'System') -or ([string]$pkg.InstallLocation -like ($env:SystemRoot + '\SystemApps\*')) } catch {}
+                if ($isSys) {
+                    W dim ((L2 '    componente del sistema (no desinstalable, se omite): {0}' '    system component (non-removable, skipped): {0}') -f $pkg.Name)
+                    continue
+                }
                 $matched++
                 try { $pkg | Remove-AppxPackage -ErrorAction Stop; $removed++; W ok ('    quitado: {0}' -f $pkg.Name) }
                 catch { $failed++; W err ('    fallo: {0} :: {1}' -f $pkg.Name, $_.Exception.Message) }
@@ -2306,6 +4436,64 @@ function Invoke-CliDebloat {
         } catch { W err ('[X] "{0}" fallo: {1}' -f $d.Name, $_.Exception.Message) }
     }
     W head 'Debloat desatendido terminado.'
+}
+
+# FASE C: export auditable del catalogo de tweaks a logs\ (.md + .json).
+# Las rutas de registro se extraen del texto del Code con un regex sencillo
+# (HKLM/HKCU): es INFORMATIVO, no exhaustivo (puede omitir claves construidas
+# dinamicamente o cambios via servicios/powercfg/bcdedit). Disponible desde la
+# GUI (boton en Tweaks) y por consola con -ExportCatalog.
+function Export-WpiTweaksCatalog {
+    $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $logDir = Join-Path $PSScriptRoot 'logs'
+    try { if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } } catch {}
+    $items = @()
+    foreach ($t in $TweaksCatalog) {
+        $paths = @()
+        try {
+            $mm = [regex]::Matches([string]$t.Code, '(?i)HK(?:LM|CU)[:\\][^''"\s]+')
+            $paths = @($mm | ForEach-Object { [string]$_.Value } | Select-Object -Unique)
+        } catch {}
+        $items += [ordered]@{
+            Name     = [string]$t.Name
+            Cat      = [string]$t.Cat
+            Risk     = [string]$t.Risk
+            HasUndo  = [bool]$t.Undo
+            HasWarn  = [bool]$t.Warn
+            GpuAware = [bool]$t.GpuAware
+            RegPaths = $paths
+        }
+    }
+    $jsonPath = Join-Path $logDir ('catalogo_tweaks_{0}.json' -f $ts)
+    $mdPath   = Join-Path $logDir ('catalogo_tweaks_{0}.md' -f $ts)
+    $doc = [ordered]@{
+        '$schema' = 'wpi-tweaks-catalog-1.0'
+        created   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
+        machine   = $env:COMPUTERNAME
+        wpi       = $WpiVersion
+        note      = (L2 'RegPaths es informativo: extraido del codigo por regex; puede omitir claves dinamicas o cambios via servicios/powercfg/bcdedit.' 'RegPaths is informational: extracted from the code via regex; it may miss dynamic keys or changes made via services/powercfg/bcdedit.')
+        tweaks    = $items
+    }
+    $md = New-Object System.Text.StringBuilder
+    [void]$md.AppendLine((L2 '# Catalogo de tweaks de Winzard (auditoria)' '# Winzard tweaks catalog (audit)'))
+    [void]$md.AppendLine('')
+    [void]$md.AppendLine((L2 ('Generado: {0} | Equipo: {1} | Winzard v{2} | Tweaks: {3}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $env:COMPUTERNAME, $WpiVersion, @($items).Count) ('Generated: {0} | Machine: {1} | Winzard v{2} | Tweaks: {3}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $env:COMPUTERNAME, $WpiVersion, @($items).Count)))
+    [void]$md.AppendLine('')
+    [void]$md.AppendLine((L2 '> NOTA: la columna de claves de registro se extrae del codigo con un regex sencillo. Es informativa, no exhaustiva: puede omitir claves construidas dinamicamente o cambios hechos via servicios, powercfg o bcdedit.' '> NOTE: the registry-keys column is extracted from the code with a simple regex. It is informational, not exhaustive: it may miss dynamically built keys or changes made via services, powercfg or bcdedit.'))
+    [void]$md.AppendLine('')
+    [void]$md.AppendLine((L2 '| Nombre | Categoria | Riesgo | Reversible | Aviso | GPU | Claves de registro detectadas |' '| Name | Category | Risk | Reversible | Warning | GPU | Detected registry keys |'))
+    [void]$md.AppendLine('|---|---|---|---|---|---|---|')
+    foreach ($it in $items) {
+        $si = L2 'Si' 'Yes'; $no = 'No'
+        $rp = ($it.RegPaths -join '<br>')
+        if (-not $rp) { $rp = '-' }
+        [void]$md.AppendLine(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} |' -f $it.Name.Replace('|','/'), $it.Cat, $it.Risk, $(if ($it.HasUndo) { $si } else { $no }), $(if ($it.HasWarn) { $si } else { $no }), $(if ($it.GpuAware) { $si } else { $no }), $rp))
+    }
+    try {
+        Set-WpiContent -Path $jsonPath -Value ($doc | ConvertTo-Json -Depth 6)
+        Set-WpiContent -Path $mdPath -Value $md.ToString()
+    } catch { return $null }
+    return @{ Md = $mdPath; Json = $jsonPath; Count = @($items).Count }
 }
 
 # Desinstala OneDrive (instalador Win32, NO Appx) de forma idempotente. Cubre:
@@ -2373,6 +4561,20 @@ function Remove-OneDrive {
 function Invoke-CliUpdate {
     param([string]$Spec)
     $s = ([string]$Spec).ToLower()
+    # P0 (VT2): rama PLAN. Antes esta funcion IGNORABA -DryRun (F2-B2): "recommended"
+    # ejecutaba el Code real de WU y cualquier otro valor lanzaba winget upgrade --all.
+    if ($DryRun) {
+        W head (L2 '[DRY-RUN] Windows Update / actualizaciones (nada se ejecuta):' '[DRY-RUN] Windows Update / upgrades (nothing runs):')
+        if ($s -eq 'recommended' -or $s -eq 'recomendado') {
+            $actPlan = $WindowsUpdateActions | Where-Object { [string]$_.Name -like 'Configuracion recomendada*' } | Select-Object -First 1
+            if ($actPlan) { W info ('   - {0}  ({1})' -f [string]$actPlan.Name, [string]$actPlan.Desc) }
+            else { W info '   - (accion recomendada no encontrada en el catalogo)' }
+        } else {
+            W info '   - winget upgrade --all --silent --include-unknown (todas las apps instaladas)'
+        }
+        W head (L2 '[DRY-RUN] Fin del plan de actualizaciones. No se ha cambiado nada.' '[DRY-RUN] End of the updates plan. Nothing was changed.')
+        return
+    }
     if ($s -eq 'recommended' -or $s -eq 'recomendado') {
         $act = $WindowsUpdateActions | Where-Object { [string]$_.Name -like 'Configuracion recomendada*' } | Select-Object -First 1
         if ($act) { W head ('Aplicando: {0}' -f $act.Name); try { & ([scriptblock]::Create([string]$act.Code)) } catch { W err ('[X] fallo: {0}' -f $_.Exception.Message) } }
@@ -2487,7 +4689,7 @@ function Apply-MasterProfileCli {
     # por el limite de 1 cada 24h de Windows; solo lo registra y continua).
     try {
         Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
-        Checkpoint-Computer -Description "WPI Moderno - antes de aplicar perfil maestro" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+        Checkpoint-Computer -Description "Winzard - antes de aplicar perfil maestro" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
         W ok "Punto de restauracion creado."
     } catch { W warn ("Punto de restauracion no creado: {0} (continuo igualmente)." -f $_.Exception.Message) }
 
@@ -2546,16 +4748,34 @@ function Apply-MasterProfileCli {
 
 # ===================== ARRANQUE EN CONSOLA ==================
 Write-Host ''
-Write-Host ('  WPI MODERNO v{0}  -  motor winget asincrono' -f $WpiVersion) -ForegroundColor Cyan
+Write-Host ('  WINZARD v{0}  -  motor winget asincrono' -f $WpiVersion) -ForegroundColor Cyan
 Write-Host '  --------------------------------------------' -ForegroundColor DarkGray
+Update-WpiSplash 'Comprobando el motor winget...' 'Checking the winget engine...'
 $script:WingetOK = Test-Winget
 Invoke-SelfUpdate
 if ($script:WingetOK) { Update-WingetSources }
 if (-not (Test-Path $Config.LogDir)) { New-Item -ItemType Directory -Path $Config.LogDir -Force | Out-Null }
-if ($script:WingetOK -and $Config.AutoUpgradeApps) {
+if ($script:WingetOK -and $Config.AutoUpgradeApps -and -not $DryRun) {
+    # P0 (VT2): "-and -not $DryRun" para que ni siquiera el auto-upgrade opcional de
+    # arranque pueda mutar el equipo en una pasada de solo-plan.
     Write-Host '[+] Auto-actualizando todas las apps instaladas (configurable en el script)...' -ForegroundColor DarkCyan
     winget upgrade --all --silent --include-unknown --accept-package-agreements --accept-source-agreements
     Write-Host '[OK] Auto-actualizacion finalizada.' -ForegroundColor DarkGreen
+}
+
+# ===================== EXPORT DEL CATALOGO (CLI) =====================
+# FASE C: -ExportCatalog vuelca el catalogo de tweaks a logs\ (auditoria) y,
+# si no se pidio nada mas, termina. Solo lectura: no cambia nada del sistema.
+if ($ExportCatalog) {
+    $expRes = Export-WpiTweaksCatalog
+    if ($expRes) {
+        W head ((L2 'Catalogo exportado ({0} tweaks):' 'Catalog exported ({0} tweaks):') -f $expRes.Count)
+        W info ('   - {0}' -f $expRes.Md)
+        W info ('   - {0}' -f $expRes.Json)
+    } else {
+        W err (L2 'No se pudo exportar el catalogo (revisa permisos de la carpeta logs).' 'The catalog could not be exported (check permissions on the logs folder).')
+    }
+    if (-not ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath)) { exit 0 }
 }
 
 # ===================== MODO DESATENDIDO =====================
@@ -2566,7 +4786,37 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
     $logFile = Join-Path $logDir ('primer_arranque_{0}.log' -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
     try { Start-Transcript -Path $logFile -Force | Out-Null } catch {}
 
+    # F2-B6 (VT2): este bloque corre ANTES de la carga de idioma del arranque normal
+    # (seccion i18n), asi que $script:Lang llegaba vacio y L2 imprimia SIEMPRE en
+    # espanol aunque wpi_settings.json tuviera Lang=en. Se carga aqui el idioma
+    # persistido para que todo el modo desatendido (banner DRY-RUN, planes, avisos)
+    # respete el ajuste del usuario.
+    $script:Lang = 'es'
+    try {
+        if (Test-Path $Config.SettingsFile) {
+            $____sL = Get-Content $Config.SettingsFile -Raw | ConvertFrom-Json
+            if ([string]$____sL.Lang -eq 'en') { $script:Lang = 'en' }
+        }
+    } catch {}
+
     Show-WpiBanner -Subtitle 'Aplicando tu configuracion automaticamente. No cierres esta ventana.'
+
+    # P0 (VT2): $isAdmin UNA sola vez, a nivel de script, para TODAS las fases CLI.
+    # Antes solo existia como local de Invoke-CliTweaks: los Code de Windows Update
+    # ejecutados por Invoke-CliUpdate ("-Update recommended") no lo veian y lanzaban
+    # "requiere administrador" aunque la consola fuera elevada.
+    $script:isAdmin = $false
+    try { $script:isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch {}
+
+    # P0 (VT2): banner inequivoco de DRY-RUN para todo el modo desatendido. Cada fase
+    # tiene su rama PLAN y el mutador de bajo nivel (Invoke-WingetInstall) se bloquea
+    # solo bajo -DryRun (fail-closed), llame quien lo llame.
+    if ($DryRun) {
+        Write-Host ''
+        Write-Host '  ==============================================' -ForegroundColor Yellow
+        Write-Host (L2 '   MODO DRY-RUN: NADA SE EJECUTA (solo el plan)' '   DRY-RUN MODE: NOTHING RUNS (plan only)') -ForegroundColor Yellow
+        Write-Host '  ==============================================' -ForegroundColor Yellow
+    }
 
     # Plan de fases
     $steps = New-Object System.Collections.Generic.List[string]
@@ -2590,7 +4840,18 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
         } else {
             $ids = Get-Content $Preset | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and -not $_.StartsWith('#') }
             Write-Host ('[i] {0} aplicaciones en el preset.' -f @($ids).Count) -ForegroundColor White
-            if ($script:WingetOK) {
+            if ($DryRun) {
+                # P0 (VT2): rama PLAN de la fase de apps. Antes esta fase IGNORABA -DryRun
+                # e instalaba de verdad (F2-B1); ahora imprime el plan y no toca nada.
+                W head ((L2 '[DRY-RUN] Se instalarian {0} app(s) via winget (nada se ejecuta):' '[DRY-RUN] {0} app(s) would be installed via winget (nothing runs):') -f @($ids).Count)
+                foreach ($idPlan in @($ids)) {
+                    $nmPlan = $idPlan
+                    $cPlan = @($catalog | Where-Object { [string]$_.Id -eq $idPlan }) | Select-Object -First 1
+                    if ($cPlan) { $nmPlan = ('{0}   [{1}]' -f [string]$cPlan.Name, $idPlan) }
+                    W info ('   - {0}' -f $nmPlan)
+                }
+                W head (L2 '[DRY-RUN] Fin del plan de apps. No se ha instalado nada.' '[DRY-RUN] End of the apps plan. Nothing was installed.')
+            } elseif ($script:WingetOK) {
                 # ---- Cambio 6: diferir apps problematicas (Discord) a RunOnce en el primer arranque ----
                 # En -FirstBoot, instalar Discord como SYSTEM/admin se cuelga con 0xC0000005
                 # (3221225477). Esas apps se separan del resto y se difieren a un RunOnce en HKCU
@@ -2598,13 +4859,27 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
                 # reinicio. El resto de apps (Brave, Firefox, WinRAR, Audacity, EA...) se instalan
                 # igual que siempre. Fuera del primer arranque (GUI/CLI normal) NO se difiere nada.
                 if ($FirstBoot) {
+                    $script:FbProcBaseline = Get-WpiProcSnapshot
+                    # Conciencia de entorno: en maquina virtual se omiten las apps que
+                    # se sabe que crashean en VM (p.ej. LM Studio requiere AVX2).
+                    if (Test-WpiVirtualMachine) {
+                        $vmSkip = @($ids | Where-Object { $script:VmIncompatibleAppIds -contains $_ })
+                        if (@($vmSkip).Count -gt 0) {
+                            $ids = @($ids | Where-Object { $script:VmIncompatibleAppIds -notcontains $_ })
+                            foreach ($vs in $vmSkip) {
+                                [void]$script:FbSkippedVm.Add($vs)
+                                Write-Host ('  [~] OMITIDA en maquina virtual (incompatible conocida): {0}' -f $vs) -ForegroundColor Yellow
+                            }
+                        }
+                    }
                     $deferredIds = @($ids | Where-Object { $script:DeferredFirstLogonAppIds -contains $_ })
                     $normalIds   = @($ids | Where-Object { $script:DeferredFirstLogonAppIds -notcontains $_ })
                     if (@($normalIds).Count -gt 0) { Invoke-WingetInstall -Ids @($normalIds) }
                     if (@($deferredIds).Count -gt 0) {
                         Write-Host ''
                         if (Register-DeferredAppRetry -Ids @($deferredIds) -RootDir $PSScriptRoot) {
-                            Write-Host ('  Discord diferido a RunOnce (se instalara en el primer inicio de sesion): {0}' -f ($deferredIds -join ', ')) -ForegroundColor Cyan
+                            foreach ($dfx in $deferredIds) { [void]$script:FbDeferred.Add($dfx) }
+                            Write-Host ('  Discord diferido al primer inicio de sesion (tarea elevada, sin UAC): {0}' -f ($deferredIds -join ', ')) -ForegroundColor Cyan
                         } else {
                             Write-Host '  [~] No se pudo diferir; se intenta instalar ahora como respaldo.' -ForegroundColor Yellow
                             Invoke-WingetInstall -Ids @($deferredIds)
@@ -2624,7 +4899,7 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
     # ---- LIMPIEZA: desinstalar OneDrive en el PRIMER ARRANQUE (Win32, no Appx) ----
     # Solo en el flujo desatendido de primer arranque (-FirstBoot) o si el usuario
     # marco OneDrive en el debloat. Queda registrado en el transcript del primer arranque.
-    if ($FirstBoot -or ($Debloat -and (Split-CliTokens $Debloat | Where-Object { $_.ToLower().Contains('onedrive') }))) {
+    if (-not $DryRun -and ($FirstBoot -or ($Debloat -and (Split-CliTokens $Debloat | Where-Object { $_.ToLower().Contains('onedrive') })))) {
         Write-Host ''
         Write-Host '  ===== LIMPIEZA: OneDrive =====' -ForegroundColor Cyan
         try { Remove-OneDrive } catch { W err ('[X] Remove-OneDrive fallo: {0}' -f $_.Exception.Message) }
@@ -2634,7 +4909,7 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
     # Complementa la desactivacion offline del hive Default (Cambio 5): asegura que el usuario
     # que ya inicio sesion tampoco reciba apps sugeridas ni anclajes fantasma. Las mismas claves
     # que se fijan offline en WPIDEF se fijan aqui en HKCU. Queda en el transcript del arranque.
-    if ($FirstBoot -or $Debloat) {
+    if (-not $DryRun -and ($FirstBoot -or $Debloat)) {
         Write-Host ''
         Write-Host '  ===== REFUERZO: Content Delivery Manager (HKCU) =====' -ForegroundColor Cyan
         $cdmKeyHkcu  = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
@@ -2656,6 +4931,24 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
 
     try { Write-Progress -Activity 'WPI - primer arranque' -Completed } catch {}
 
+    # ---- EXPERIENCIA SERENA (F1): escritorio limpio y autoruns calmados ----
+    if ($FirstBoot) {
+        Write-Host ''
+        Write-Host '  ===== EXPERIENCIA SERENA: escritorio limpio =====' -ForegroundColor Cyan
+        if ($script:FbProcBaseline) { Close-WpiNewApps -Baseline $script:FbProcBaseline -Tag 'barrido final' }
+        Disable-WpiThirdPartyAutoruns
+        Write-Host ''
+        Write-Host '  ===== PUNTO DE RESTAURACION "Recien instalado" =====' -ForegroundColor Cyan
+        try {
+            Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
+            Checkpoint-Computer -Description 'WPI - Recien instalado' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+            Write-Host '  [OK] Punto de restauracion creado y disponible.' -ForegroundColor Green
+        } catch { Write-Host ('  [~] No se pudo crear el punto de restauracion: {0}' -f $_.Exception.Message) -ForegroundColor Yellow }
+        Write-Host ''
+        Write-Host '  ===== INFORME PARA EL USUARIO =====' -ForegroundColor Cyan
+        try { New-WpiFirstBootReport -LogFile $logFile } catch { Write-Host ('  [~] Informe HTML no generado: {0}' -f $_.Exception.Message) -ForegroundColor Yellow }
+    }
+
     # ---- RESUMEN FINAL ----
     Write-Host ''
     Write-Host ('  ' + ('=' * 60)) -ForegroundColor DarkCyan
@@ -2666,18 +4959,20 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
     Write-Host ('   Log    : {0}' -f $logFile) -ForegroundColor White
     Write-Host ('  ' + ('=' * 60)) -ForegroundColor DarkCyan
 
-    # Marcador de diagnostico
-    try {
-        $mk = Join-Path $PSScriptRoot 'primer_arranque_OK.txt'
-        Set-WpiContent -Path $mk -Value ('WPI desatendido completado: {0} (winget: {1}) | log: {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $(if ($script:WingetOK) {'OK'} else {'NO disponible'}), $logFile)
-    } catch {}
+    # Marcador de diagnostico (no se escribe en DryRun: el plan no cambia nada)
+    if (-not $DryRun) {
+        try {
+            $mk = Join-Path $PSScriptRoot 'primer_arranque_OK.txt'
+            Set-WpiContent -Path $mk -Value ('WPI desatendido completado: {0} (winget: {1}) | log: {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $(if ($script:WingetOK) {'OK'} else {'NO disponible'}), $logFile)
+        } catch {}
+    }
 
     try { Stop-Transcript | Out-Null } catch {}
 
     # ---- COPIA ADICIONAL DEL LOG (visible para el usuario) ----
     # El original en C:\WPI\logs\primer_arranque_*.log y el marcador siguen intactos;
     # esta copia es ADICIONAL y un fallo aqui NO debe impedir el reinicio.
-    if (Test-Path $logFile) {
+    if (-not $DryRun -and (Test-Path $logFile)) {
         # Escritorio del usuario actual
         try {
             $userDesktop = [Environment]::GetFolderPath('Desktop')
@@ -2702,6 +4997,9 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
     # Deja accesos directos al lanzador y a la carpeta C:\WPI en el Escritorio del
     # usuario y en el Publico. Si el usuario borra C:\WPI o el log, siempre puede
     # abrir el WPI desde el USB (carpeta WPI en la raiz). Un fallo aqui NO bloquea el reinicio.
+    if ($DryRun) {
+        # En DryRun no se crean accesos directos ni copias: solo se muestra el plan.
+    } else {
     try {
         $wsh = New-Object -ComObject WScript.Shell
         $targets = @()
@@ -2710,8 +5008,11 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
         foreach ($dt in ($targets | Select-Object -Unique)) {
             if ([string]::IsNullOrWhiteSpace($dt)) { continue }
             if (-not (Test-Path $dt)) { try { New-Item -ItemType Directory -Path $dt -Force | Out-Null } catch { continue } }
+            # Rebrand: retira el acceso directo con el nombre antiguo si quedara de
+            # una version anterior (el nuevo se llama Winzard.lnk).
+            try { $lnkViejo = Join-Path $dt 'WPI Moderno.lnk'; if (Test-Path $lnkViejo) { Remove-Item $lnkViejo -Force } } catch {}
             try {
-                $lnk = $wsh.CreateShortcut((Join-Path $dt 'WPI Moderno.lnk'))
+                $lnk = $wsh.CreateShortcut((Join-Path $dt 'Winzard.lnk'))
                 if (Test-Path 'C:\WPI\Iniciar_WPI.bat') {
                     $lnk.TargetPath = 'C:\WPI\Iniciar_WPI.bat'
                 } else {
@@ -2720,7 +5021,7 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
                 }
                 $lnk.WorkingDirectory = 'C:\WPI'
                 $lnk.IconLocation = 'powershell.exe,0'
-                $lnk.Description = 'Abrir WPI Moderno'
+                $lnk.Description = 'Abrir Winzard'
                 $lnk.Save()
             } catch {}
             try {
@@ -2732,6 +5033,7 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
         }
         Write-Host '  Accesos directos del WPI creados en el Escritorio (lanzador + carpeta).' -ForegroundColor Green
     } catch { Write-Host ('  [!] No se pudieron crear accesos del WPI en el Escritorio: ' + $_.Exception.Message) -ForegroundColor Yellow }
+    }
 
     # ---- REINICIO (solo en primer arranque real; -NoReboot lo evita) ----
     if ($FirstBoot -and -not $NoReboot) {
@@ -2743,8 +5045,14 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
         try { Restart-Computer -Force } catch { Write-Host ('[X] No se pudo reiniciar: {0}' -f $_.Exception.Message) -ForegroundColor Red }
     } else {
         Write-Host ''
-        Write-Host '  Proceso terminado.' -ForegroundColor Green
-        if (-not $FirstBoot) { Read-Host '  Pulsa Enter para salir' }
+        Write-Host (L2 '  Proceso terminado.' '  Process finished.') -ForegroundColor Green
+        # En DryRun no se espera tecla: permite usarlo desde guiones sin bloqueo.
+        # Cuelgue (VT2): con stdin redirigido (arnes, tarea programada, automatizacion)
+        # Read-Host espera PARA SIEMPRE una entrada que nunca llega y el proceso queda
+        # zombi tras terminar el trabajo. La pausa es solo para consola interactiva.
+        $____stdinRedir = $false
+        try { $____stdinRedir = [Console]::IsInputRedirected } catch {}
+        if (-not $FirstBoot -and -not $DryRun -and -not $____stdinRedir) { Read-Host (L2 '  Pulsa Enter para salir' '  Press Enter to exit') }
     }
     exit 0
 }
@@ -2752,6 +5060,7 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
 # ============================================================
 #                    INTERFAZ GRAFICA v3
 # ============================================================
+Update-WpiSplash 'Construyendo la interfaz...' 'Building the interface...'
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -2764,7 +5073,8 @@ if (-not $gotMutex) {
         Write-Host '[FAIL] SelfTestGui: WPI ya esta abierto o el mutex esta bloqueado.' -ForegroundColor Red
         exit 1
     }
-    [System.Windows.MessageBox]::Show('WPI Moderno ya esta abierto. Solo puede haber una ventana a la vez.', 'WPI Moderno', 'OK', 'Information') | Out-Null
+    try { Close-WpiSplash } catch {}
+    [System.Windows.MessageBox]::Show('Winzard ya esta abierto. Solo puede haber una ventana a la vez.', 'Winzard', 'OK', 'Information') | Out-Null
     exit 0
 }
 
@@ -2772,7 +5082,9 @@ if (-not $gotMutex) {
 try {
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdmin -and -not $SelfTestGui) {
-        [System.Windows.MessageBox]::Show('Atencion: NO se esta ejecutando como Administrador (se rechazo el aviso de permisos). Muchas instalaciones, tweaks, el Control de Windows Update y el debloat fallaran. Cierra y vuelve a abrir WPI aceptando el aviso de Control de cuentas de usuario (UAC).', 'WPI Moderno', 'OK', 'Warning') | Out-Null
+        Set-WpiSplashTopmost $false
+        [System.Windows.MessageBox]::Show('Atencion: NO se esta ejecutando como Administrador (se rechazo el aviso de permisos). Muchas instalaciones, tweaks, el Control de Windows Update y el debloat fallaran. Cierra y vuelve a abrir WPI aceptando el aviso de Control de cuentas de usuario (UAC).', 'Winzard', 'OK', 'Warning') | Out-Null
+        Set-WpiSplashTopmost $true
     }
 } catch {}
 
@@ -2781,7 +5093,7 @@ try {
 # se ejecuta aqui para que la ventana NUNCA se congele. La UI
 # lee la cola $Q con un DispatcherTimer.
 $WorkerScript = {
-    param($Q, $S, $Mode, $Ids, $Parallel, $LogFile, $TweakList, $Names, $TimeoutMin, $Query, $Scope, $Fallback, $Lang)
+    param($Q, $S, $Mode, $Ids, $Parallel, $LogFile, $TweakList, $Names, $TimeoutMin, $Query, $Scope, $Fallback, $Lang, $UserScopeIds)
 
     # P4: registro de TODOS los temporales que crea el worker, para limpiarlos
     # en el finally aunque un proceso se mate (watchdog/cancelacion) y deje su
@@ -2802,6 +5114,18 @@ $WorkerScript = {
         $line = '[{0}] [{1,-4}] {2}' -f (Get-Date -Format 'HH:mm:ss'), $t.ToUpper(), $m
         try { Add-Content -Path $LogFile -Value $line -Encoding UTF8 } catch {}
         $Q.Enqueue([pscustomobject]@{T = $t; M = $m})
+    }
+    # Proxy de reg.exe para los Code de tweaks: un 'reg add' que falla (permisos,
+    # ruta invalida, valor mal formado...) LANZA excepcion y el tweak se cuenta
+    # como FALLO en el log, en lugar de fingir exito con "0 con error". Los usos
+    # 'reg delete' y 'reg query' toleran el tipico "no existe" (limpieza best-effort).
+    function reg {
+        $regOut = & "$env:SystemRoot\System32\reg.exe" @args 2>&1
+        $regOp = ''; if (@($args).Count -gt 0) { $regOp = ([string]$args[0]).ToLower() }
+        if ($LASTEXITCODE -ne 0 -and @('delete','query') -notcontains $regOp) {
+            throw ((L2 'reg.exe fallo (codigo {0}) en: reg {1}' 'reg.exe failed (code {0}) at: reg {1}') -f $LASTEXITCODE, ($args -join ' '))
+        }
+        $regOut
     }
     function NameOf([string]$id) {
         if ($Names.ContainsKey($id)) { return ('{0}  [{1}]' -f $Names[$id], $id) } else { return $id }
@@ -2829,15 +5153,28 @@ $WorkerScript = {
             default      { return @{Ok=$false; Msg=(L2 ('fallo con codigo {0}' -f $hex) ('failed with code {0}' -f $hex))} }
         }
     }
-    # Lee lo nuevo del stdout de un proceso en marcha (tail forense)
+    # Lee lo nuevo del stdout de un proceso en marcha (tail forense).
+    # Decodificacion ROBUSTA: winget escribe UTF-8, pero los mensajes de error del
+    # instalador/Windows vienen en el codepage ANSI del sistema (acentos). Se lee a
+    # bytes: se prueba UTF-8 estricto y, si hay bytes invalidos, se cae al ANSI del
+    # sistema. Asi no salen caracteres rotos (mojibake) ni en ES ni en EN.
     function TailRead($r) {
         try {
             $fs = [IO.File]::Open($r.Out, 'Open', 'Read', 'ReadWrite')
             $fs.Position = $r.Pos
-            $sr = New-Object IO.StreamReader($fs)
-            $txt = $sr.ReadToEnd()
+            $len = $fs.Length - $r.Pos
+            if ($len -le 0) { $fs.Close(); return }
+            $buf = New-Object byte[] $len
+            $read = $fs.Read($buf, 0, [int]$len)
             $r.Pos = $fs.Position
-            $sr.Close(); $fs.Close()
+            $fs.Close()
+            $txt = ''
+            try {
+                $u8 = New-Object System.Text.UTF8Encoding($false, $true)
+                $txt = $u8.GetString($buf, 0, $read)
+            } catch {
+                $txt = [System.Text.Encoding]::Default.GetString($buf, 0, $read)
+            }
             # T2: extrae el ultimo porcentaje del progreso de winget (si lo hay).
             # Si no se parsea, CurPercent queda como estaba y la barra avanza
             # como antes (por apps hechas/total). Fallback seguro.
@@ -2932,6 +5269,11 @@ $WorkerScript = {
         try { [void]$script:WpiTempFiles.Add($out); [void]$script:WpiTempFiles.Add($err) } catch {}
         $p = Start-Process -FilePath $Exe -ArgumentList $Arguments -PassThru -WindowStyle Hidden `
              -RedirectStandardOutput $out -RedirectStandardError $err
+        # CRITICO: cachear el handle YA. En PowerShell 5.1, sin esto, $p.ExitCode
+        # devuelve NULL tras salir el proceso (bug conocido de Start-Process
+        # -PassThru sin -Wait). Un ExitCode null convertia todo 'validate' en
+        # "ID NO encontrado" y podia degradar codigos de fallo reales a 0/exito.
+        try { $null = $p.Handle } catch {}
         return @{P = $p; Out = $out; Err = $err; Pos = [long]0; T0 = (Get-Date); Killed = $false}
     }
     function Patch-DiscordShortcuts {
@@ -2981,13 +5323,18 @@ $WorkerScript = {
                             $base = 'install --id "{0}" -e --silent --accept-package-agreements --accept-source-agreements --disable-interactivity' -f $it.Id
                             if ($Scope -eq 'user' -or $Scope -eq 'machine') {
                                 $base += (' --scope {0}' -f $Scope)
-                            } elseif ($script:UserScopeAppIds -contains $it.Id) {
+                            } elseif (@($UserScopeIds) -contains $it.Id) {
                                 # Auto + app problematica en machine (Discord): forzamos ambito de usuario.
+                                # F3-B1 (VT2): la lista llega como 14o argumento del worker; antes se leia
+                                # $script:UserScopeAppIds, que NO existe en el runspace del worker (quedaba
+                                # $null y Discord se instalaba sin --scope user en modo Auto).
                                 $base += ' --scope user'
                             }
                             $base
                         } elseif ($upg) {
-                            'upgrade --id "{0}" -e --silent --include-unknown --accept-package-agreements --accept-source-agreements --disable-interactivity' -f $it.Id
+                            # --force: obliga a winget a ejecutar el instalador aunque crea que
+                            # ya esta al dia (evita no-ops silenciosos que dejaban la version vieja).
+                            'upgrade --id "{0}" -e --silent --force --include-unknown --accept-package-agreements --accept-source-agreements --disable-interactivity' -f $it.Id
                         } elseif ($dl) {
                             'download --id "{0}" -e --accept-package-agreements --accept-source-agreements --disable-interactivity --download-directory "{1}"' -f $it.Id, $Query
                         } else {
@@ -3008,6 +5355,14 @@ $WorkerScript = {
                     }
                     foreach ($r in @($running)) {
                         if ($Parallel -eq 1) { TailRead $r }
+                        # CANCELACION INMEDIATA: si se pulso "Cancelar", se mata YA el arbol
+                        # de procesos del instalador en curso (no se espera a que acabe).
+                        if ($S.Cancel -and -not $r.P.HasExited -and -not $r.Killed) {
+                            $r.Killed = $true
+                            W warn ((L2 '[X]  CANCELADO: deteniendo {0} (cierre forzado del instalador).' '[X]  CANCELLED: stopping {0} (forcing the installer to close).') -f (NameOf $r.Id))
+                            try { Start-Process taskkill -ArgumentList ('/PID {0} /T /F' -f $r.P.Id) -WindowStyle Hidden -Wait } catch {}
+                            Start-Sleep -Milliseconds 300
+                        }
                         if (-not $r.P.HasExited -and -not $r.Killed -and $TimeoutMin -gt 0 -and ((Get-Date) - $r.T0).TotalMinutes -ge $TimeoutMin) {
                             W err ((L2 '[X]  WATCHDOG: {0} lleva mas de {1} min. Se fuerza el cierre del instalador colgado.' '[X]  WATCHDOG: {0} has been running for over {1} min. Forcing the hung installer to close.') -f (NameOf $r.Id), $TimeoutMin)
                             $r.Killed = $true
@@ -3017,9 +5372,61 @@ $WorkerScript = {
                         if ($r.P.HasExited) {
                             Start-Sleep -Milliseconds 120
                             if ($Parallel -eq 1) { TailRead $r }
-                            $m = CodeMeaning $r.P.ExitCode
+                            # Guarda de honestidad: si el codigo de salida no se puede leer
+                            # (null), NUNCA degradarlo a 0/exito; se reporta como no fiable.
+                            $rawEc = $null; try { $rawEc = $r.P.ExitCode } catch {}
+                            $m = if ($null -eq $rawEc) {
+                                @{ Ok = $false; Msg = (L2 'no se pudo leer el codigo de salida del instalador (resultado no fiable)' 'could not read the installer exit code (result unreliable)') }
+                            } else { CodeMeaning $rawEc }
+                            # BUG FIX: winget puede SALIR con 0 aunque el instalador haya
+                            # fallado (imprime "Installer failed with exit code: 0x..."). Se
+                            # escanea su salida real: si el instalador fallo, NO es exito.
+                            try {
+                                $wOut = ''
+                                if ($r.Out -and (Test-Path $r.Out)) { $wOut = [IO.File]::ReadAllText($r.Out) }
+                                $fm = [regex]::Match($wOut, 'nstaller failed with exit code:\s*(0x[0-9A-Fa-f]+|\d+)')
+                                if ($fm.Success) {
+                                    $cs = $fm.Groups[1].Value
+                                    $ic = 0; try { $ic = if ($cs -like '0x*') { [Convert]::ToInt64($cs, 16) } else { [int64]$cs } } catch {}
+                                    if ($ic -ne 0) {
+                                        $ihex = '0x{0:X8}' -f ([uint32]($ic -band 0xFFFFFFFF))
+                                        if ($ic -eq 0x80070422 -or $ihex -eq '0x80070422') {
+                                            $m = @{ Ok = $false; Msg = (L2 ('el instalador no pudo ejecutarse: un SERVICIO DE WINDOWS esta DESHABILITADO ({0}).' -f $ihex) ('the installer could not run: a WINDOWS SERVICE is DISABLED ({0}).' -f $ihex)) }
+                                            try { [void]$S.BlockedApps.Add((NameOf $r.Id)) } catch {}
+                                        } else {
+                                            $m = @{ Ok = $false; Msg = (L2 ('el instalador fallo con codigo {0}' -f $ihex) ('the installer failed with code {0}' -f $ihex)) }
+                                        }
+                                    }
+                                }
+                            } catch {}
+                            # HONESTIDAD: un proceso matado (cancelacion o watchdog) JAMAS
+                            # cuenta como exito, devuelva el codigo que devuelva el cierre
+                            # forzado (se ha visto winget salir con 0 tras un taskkill).
+                            if ($r.Killed) {
+                                $m = if ($S.Cancel) {
+                                    @{ Ok = $false; Msg = (L2 'cancelado por el usuario: se cerro a la fuerza antes de terminar' 'cancelled by the user: force-closed before finishing') }
+                                } else {
+                                    @{ Ok = $false; Msg = (L2 ('detenido por el watchdog: supero el maximo de {0} min' -f $TimeoutMin) ('stopped by the watchdog: exceeded the {0} min limit' -f $TimeoutMin)) }
+                                }
+                            }
                             if ($upg  -and $m.Ok) { $m.Msg = (L2 'actualizada correctamente' 'updated successfully') }
-                            if ($dl   -and $m.Ok) { $m.Msg = (L2 'instalador descargado' 'installer downloaded') }
+                            if ($dl   -and $m.Ok) {
+                                # VERIFICACION REAL EN DISCO: winget puede salir con 0 sin dejar
+                                # archivo. Solo es exito si hay un instalador NUEVO (posterior al
+                                # inicio de esta descarga) dentro de la carpeta de destino.
+                                $dlFile = $null
+                                try {
+                                    $dlFile = Get-ChildItem -Path $Query -Recurse -File -ErrorAction SilentlyContinue |
+                                        Where-Object { $_.Extension -match '^\.(exe|msi|msix|msixbundle|appx|appxbundle|zip)$' -and $_.LastWriteTime -ge $r.T0.AddMinutes(-2) } |
+                                        Sort-Object Length -Descending | Select-Object -First 1
+                                } catch {}
+                                if ($dlFile) {
+                                    $mbTam = [math]::Round($dlFile.Length / 1MB, 1)
+                                    $m.Msg = (L2 ('instalador descargado y VERIFICADO en disco: {0} ({1} MB)' -f $dlFile.Name, $mbTam) ('installer downloaded and VERIFIED on disk: {0} ({1} MB)' -f $dlFile.Name, $mbTam))
+                                } else {
+                                    $m = @{ Ok = $false; Msg = (L2 'winget termino sin error pero NO hay ningun instalador nuevo en la carpeta de destino (verificacion real en disco)' 'winget finished without error but NO new installer file exists in the destination folder (real on-disk verification)') }
+                                }
+                            }
                             if (-not $inst -and -not $upg -and -not $dl -and $m.Ok) { $m.Msg = (L2 'desinstalada correctamente' 'uninstalled successfully') }
                             if (-not $m.Ok -and $m.Retry -and $r.Try -lt 3) {
                                 $wait = 4 * $r.Try
@@ -3050,14 +5457,22 @@ $WorkerScript = {
                                 # (mensaje ya traducido via CodeMeaning / override $m.Msg)
                             } else {
                                 $okFb = $false
-                                if ($inst -and $Fallback) {
+                                # Sin fallback Chocolatey si el fallo es un cierre forzado
+                                # (cancelacion/watchdog): el usuario pidio PARAR, no reintentar.
+                                if ($inst -and $Fallback -and -not $r.Killed) {
                                     if (Get-Command choco -ErrorAction SilentlyContinue) {
                                         W warn ((L2 '[~] {0}: winget fallo. Probando con Chocolatey (best-effort)...' '[~] {0}: winget failed. Trying Chocolatey (best-effort)...') -f (NameOf $r.Id))
                                         try {
                                             $cp = Start-Process choco -ArgumentList ('install ' + $r.Id + ' -y --no-progress') -WindowStyle Hidden -Wait -PassThru
-                                            if ($cp -and $cp.ExitCode -eq 0) { $okFb = $true }
+                                            if ($cp -and $cp.ExitCode -in @(0, 1641, 3010)) {
+                                                # VERIFICACION REAL: el exit code de choco no basta; se
+                                                # comprueba que el paquete quedo registrado como instalado.
+                                                $cl = ''
+                                                try { $cl = (& choco list --exact $r.Id --limit-output 2>&1 | Out-String) } catch {}
+                                                if ($cl -match ('(?im)^' + [regex]::Escape($r.Id) + '\|')) { $okFb = $true }
+                                            }
                                         } catch {}
-                                        if (-not $okFb) { W warn ((L2 '    Chocolatey no pudo instalar {0} (puede que el ID no exista en choco).' '    Chocolatey could not install {0} (the ID may not exist on choco).') -f $r.Id) }
+                                        if (-not $okFb) { W warn ((L2 '    Chocolatey no pudo instalar {0} (o la verificacion posterior no lo encontro instalado; puede que el ID no exista en choco).' '    Chocolatey could not install {0} (or the post-install verification did not find it installed; the ID may not exist on choco).') -f $r.Id) }
                                     } else {
                                         W warn (L2 '    Fallback Choco activado, pero Chocolatey no esta instalado (instalalo para usarlo).' '    Choco fallback enabled, but Chocolatey is not installed (install it to use this).')
                                     }
@@ -3081,7 +5496,7 @@ $WorkerScript = {
                     }
                     Start-Sleep -Milliseconds 250
                 }
-                if ($S.Cancel) { W warn (L2 'Proceso cancelado: no se lanzaron mas operaciones (las en curso se respetaron hasta terminar).' 'Process cancelled: no more operations were launched (running ones were left to finish).') }
+                if ($S.Cancel) { W warn (L2 'Proceso cancelado: se detuvieron las operaciones en curso (cierre forzado) y no se lanzaron mas.' 'Process cancelled: running operations were stopped (force-closed) and no more were launched.') }
                 W head ((L2 'RESUMEN FINAL: {0} correctas | {1} fallidas | {2} procesadas de {3}' 'FINAL SUMMARY: {0} succeeded | {1} failed | {2} processed of {3}') -f $S.Ok, $S.Fail, $S.Done, $S.Total)
                 foreach ($f in $S.FailList) { W err ((L2 '   fallo: ' '   failed: ') + $f) }
                 if ($inst -and $S.Fail -gt 0) { W warn (L2 'Sugerencia: lo que falle en --silent suele entrar a mano con: winget install --id <ID> -e' 'Tip: anything failing under --silent usually installs manually with: winget install --id <ID> -e') }
@@ -3103,8 +5518,28 @@ $WorkerScript = {
                         [void]$running.Add($r)
                     }
                     foreach ($r in @($running)) {
+                        if ($S.Cancel -and -not $r.P.HasExited -and -not $r.Killed) {
+                            $r.Killed = $true
+                            try { Start-Process taskkill -ArgumentList ('/PID {0} /T /F' -f $r.P.Id) -WindowStyle Hidden -Wait } catch {}
+                        }
                         if ($r.P.HasExited) {
-                            if ($r.P.ExitCode -eq 0) {
+                            if ($r.Killed) {
+                                # Cancelado: NO se evalua (ni valido ni invalido) y, sobre
+                                # todo, NO se lanza el 'winget search' de rescate tras cancelar.
+                                $S.Done++
+                                W warn ((L2 '[~]  Validacion cancelada: {0} (queda sin comprobar)' '[~]  Validation cancelled: {0} (left unchecked)') -f (NameOf $r.Id))
+                                Remove-Item $r.Out, $r.Err -Force -ErrorAction SilentlyContinue
+                                $running.Remove($r)
+                                continue
+                            }
+                            # Doble comprobacion REAL: codigo de salida Y salida de winget.
+                            # 'winget show' imprime "Found <nombre> [<Id>]" cuando el ID
+                            # existe; asi un exit code perdido/raro no invalida un ID bueno.
+                            $vEc = $null; try { $vEc = $r.P.ExitCode } catch {}
+                            $vOut = ''
+                            try { if ($r.Out -and (Test-Path $r.Out)) { $vOut = [IO.File]::ReadAllText($r.Out) } } catch {}
+                            $vFound = ($vOut -match ('(?im)^\s*(Found|Encontrado)\b[^\r\n]*' + [regex]::Escape($r.Id)))
+                            if ($vEc -eq 0 -or $vFound) {
                                 $S.Ok++; $S.Done++
                                 W ok ((L2 '[OK] ID valido: {0}' '[OK] valid ID: {0}') -f (NameOf $r.Id))
                             } else {
@@ -3113,11 +5548,17 @@ $WorkerScript = {
                                 if (Test-Path $r.Err) { $errTxt = (Get-Content $r.Err -Raw -ErrorAction SilentlyContinue) }
                                 if ($errTxt) { $errTxt = $errTxt.Trim() }
 
-                                # Comprobamos si el ID es valido mediante 'winget search' exacto
+                                # Comprobamos si el ID es valido mediante 'winget search' exacto.
+                                # Con reintento: la primera llamada puede volver vacia si otro
+                                # winget tiene bloqueada la actualizacion de fuentes.
                                 $searchRaw = ''
-                                try {
-                                    $searchRaw = (& winget search -q $r.Id -e --accept-source-agreements --disable-interactivity 2>&1 | Out-String)
-                                } catch {}
+                                foreach ($vTry in 1..2) {
+                                    try {
+                                        $searchRaw = (& winget search -q $r.Id -e --accept-source-agreements --disable-interactivity 2>&1 | Out-String)
+                                    } catch { $searchRaw = '' }
+                                    if ($searchRaw -match '-{10,}') { break }   # la tabla de resultados esta presente
+                                    Start-Sleep -Seconds 2
+                                }
 
                                 $idFoundInSearch = $false
                                 if ($searchRaw) {
@@ -3158,8 +5599,13 @@ $WorkerScript = {
                         # Extraer solo el nombre de la app (ej. "Discord" de $Names o de "Discord.Discord")
                         $term = if ($Names.ContainsKey($f)) { $Names[$f] } else { ($f -split '\.')[-1] }
                         W info ((L2 '>>> Sugerencias para "{0}" (busqueda: {1}) ...' '>>> Suggestions for "{0}" (search: {1}) ...') -f $f, $term)
+                        # Con reintento (misma razon que el rescate: fuentes bloqueadas).
                         $raw = ''
-                        try { $raw = (& winget search "$term" --accept-source-agreements --disable-interactivity 2>&1 | Out-String) } catch { $raw = '' }
+                        foreach ($sTry in 1..2) {
+                            try { $raw = (& winget search "$term" --accept-source-agreements --disable-interactivity 2>&1 | Out-String) } catch { $raw = '' }
+                            if ($raw -match '-{10,}') { break }
+                            Start-Sleep -Seconds 2
+                        }
                         $cands = @()
                         foreach ($c in (Parse-WingetTable $raw)) {
                             if ($c.Count -lt 2) { continue }
@@ -3183,39 +5629,133 @@ $WorkerScript = {
 
             'detect' {
                 $S.Total = 1
-                W head (L2 'DETECTANDO aplicaciones del catalogo ya instaladas (winget export)...' 'DETECTING catalog apps already installed (winget export)...')
-                $tmp = [IO.Path]::GetTempFileName()
-                $r = Start-One 'winget' ('export -o "{0}" --accept-source-agreements --disable-interactivity' -f $tmp)
+                # S6: deteccion COMBINADA multi-fuente para maxima precision:
+                #  1) winget list  -> IDs exactos (fuente principal; incluye entradas ARP)
+                #  2) Get-AppxPackage (+AllUsers) -> apps UWP/Store
+                #  3) Registro de desinstalacion HKLM (64 y 32 bits) + HKCU -> MSI/EXE
+                # Los nombres se NORMALIZAN antes de comparar (se quitan versiones,
+                # parentesis, x64/x86...) para que "7-Zip 23.01 (x64)" cuadre con "7-Zip".
+                # Las fuentes son conjuntos: multiples versiones o ambitos (usuario vs
+                # maquina) no duplican ni pierden la deteccion.
+                W head (L2 'DETECTANDO aplicaciones instaladas (winget list + Appx + registro)...' 'DETECTING installed applications (winget list + Appx + registry)...')
+                function NormName([string]$s) {
+                    if (-not $s) { return '' }
+                    $x = $s.ToLower()
+                    $x = $x -replace '\([^)]*\)', ' '                     # parentesis (descriptores)
+                    $x = $x -replace '\b\d+(\.\d+)+(\.\d+)*\b', ' '        # versiones 1.2 / 23.01.2
+                    $x = $x -replace '\b(x64|x86|64-?bits?|32-?bits?|amd64|win64|win32)\b', ' '
+                    $x = $x -replace '[^a-z0-9\+\.#\- ]', ' '
+                    $x = ($x -replace '\s+', ' ').Trim()
+                    return $x
+                }
+                # -- Fuente 1: winget list --
+                $wingetIds = @{}; $wingetNames = @{}
+                $r = Start-One 'winget' 'list --accept-source-agreements --disable-interactivity'
                 while (-not $r.P.HasExited -and -not $S.Cancel) { Start-Sleep -Milliseconds 300 }
                 if (-not $r.P.HasExited) { try { $r.P.Kill() } catch {} }
-                $found = @()
-                try {
-                    $json = Get-Content $tmp -Raw -ErrorAction Stop | ConvertFrom-Json
-                    $instMap = @{}
-                    foreach ($src in @($json.Sources)) {
-                        foreach ($p in @($src.Packages)) {
-                            if ($p.PackageIdentifier) { $instMap[([string]$p.PackageIdentifier).ToLower()] = $true }
+                $raw = ''
+                try { $raw = [IO.File]::ReadAllText($r.Out) } catch {}
+                foreach ($c in (Parse-WingetTable $raw)) {
+                    if ($c.Count -lt 2) { continue }
+                    $wid = [string]$c[1]
+                    if ($wid -and $wid -notmatch '\s') { $wingetIds[$wid.ToLower()] = $true }
+                    $wnm = NormName ([string]$c[0])
+                    if ($wnm) { $wingetNames[$wnm] = $true }
+                }
+                Remove-Item $r.Out, $r.Err -Force -ErrorAction SilentlyContinue
+                W dim ((L2 '    winget list: {0} paquetes leidos.' '    winget list: {0} packages read.') -f $wingetIds.Count)
+                # -- Fuente 2: Appx (usuario actual y, si hay permisos, todos) --
+                $appxNames = @{}
+                try { foreach ($ap in @(Get-AppxPackage -ErrorAction SilentlyContinue)) { $appxNames[([string]$ap.Name).ToLower()] = $true } } catch {}
+                try { foreach ($ap in @(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue)) { $appxNames[([string]$ap.Name).ToLower()] = $true } } catch {}
+                W dim ((L2 '    Appx/Store: {0} paquetes leidos.' '    Appx/Store: {0} packages read.') -f $appxNames.Count)
+                # -- Fuente 3: registro de desinstalacion (HKLM 64/32 + HKCU) --
+                $regNames = @{}
+                foreach ($rk in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+                                'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+                                'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall') {
+                    try {
+                        foreach ($it in @(Get-ItemProperty -Path ($rk + '\*') -ErrorAction SilentlyContinue)) {
+                            $dn = NormName ([string]$it.DisplayName)
+                            if ($dn) { $regNames[$dn] = $true }
+                        }
+                    } catch {}
+                }
+                W dim ((L2 '    Registro (uninstall): {0} entradas leidas.' '    Registry (uninstall): {0} entries read.') -f $regNames.Count)
+                # -- Cruce contra el catalogo --
+                $found = @(); $viaId = 0; $viaName = 0
+                foreach ($id in $Ids) {
+                    $hit = $false
+                    if ($wingetIds.ContainsKey($id.ToLower())) { $hit = $true; $viaId++ }
+                    if (-not $hit) {
+                        $nm = ''
+                        if ($Names.ContainsKey($id)) { $nm = [string]$Names[$id] }
+                        $nn = NormName $nm
+                        # Nombre derivado del propio ID de winget: 'Mozilla.Firefox' ->
+                        # 'mozilla firefox' (cuadra con el DisplayName tipico del registro
+                        # cuando winget no correlaciona, p.ej. "Mozilla Firefox (x64 es-ES)").
+                        $idn = NormName ($id -replace '[._]', ' ')
+                        if ($idn -and ($regNames.ContainsKey($idn) -or $wingetNames.ContainsKey($idn))) { $hit = $true }
+                        if (-not $hit -and $nn -and $nn.Length -ge 3) {
+                            if ($regNames.ContainsKey($nn) -or $wingetNames.ContainsKey($nn)) { $hit = $true }
+                            if (-not $hit) {
+                                foreach ($k in $regNames.Keys) { if ($k -eq $nn -or $k.StartsWith($nn + ' ') -or $k.EndsWith(' ' + $nn)) { $hit = $true; break } }
+                            }
+                            if (-not $hit) {
+                                $an = ($nn -replace '[^a-z0-9]', '')
+                                if ($an.Length -ge 4) { foreach ($k in $appxNames.Keys) { if ($k.Replace('.','') -like ('*' + $an + '*')) { $hit = $true; break } } }
+                            }
+                            if ($hit) { $viaName++ }
                         }
                     }
-                    foreach ($id in $Ids) {
-                        if ($instMap[$id.ToLower()]) { $found += $id; [void]$S.DetectList.Add($id) }
-                    }
-                } catch {
-                    W warn ((L2 'No se pudo leer el export de winget: {0}' 'Could not read the winget export: {0}') -f $_.Exception.Message)
+                    if ($hit) { $found += $id; [void]$S.DetectList.Add($id) }
                 }
-                Remove-Item $tmp, $r.Out, $r.Err -Force -ErrorAction SilentlyContinue
                 $S.Done = 1; $S.Ok = 1
+                W dim ((L2 '    Coincidencias: {0} por ID de winget, {1} por nombre normalizado (registro/Appx).' '    Matches: {0} by winget ID, {1} by normalized name (registry/Appx).') -f $viaId, $viaName)
                 W head ((L2 'DETECCION TERMINADA: {0} de {1} apps del catalogo ya estan instaladas (se marcan en verde).' 'DETECTION FINISHED: {0} of {1} catalog apps are already installed (marked in green).') -f $found.Count, @($Ids).Count)
                 foreach ($f in $found) { W ok ('   [Y] ' + (NameOf $f)) }
             }
 
             'upgrade' {
                 $S.Total = 1
+                # F7-B4 (VT2): preflight de los servicios de los que dependen la Store/MSI.
+                # Con wuauserv/BITS/msiserver DESACTIVADOS, los paquetes msstore fallan con
+                # 0x80070422; antes el fallo llegaba sin pista. Se avisa ANTES de lanzar.
+                foreach ($svcPre in @('wuauserv', 'BITS', 'msiserver')) {
+                    try {
+                        $svMode = [string](Get-CimInstance Win32_Service -Filter ("Name='" + $svcPre + "'") -ErrorAction Stop).StartMode
+                        if ($svMode -eq 'Disabled') { W warn ((L2 '    aviso: el servicio {0} esta DESACTIVADO; las apps de la Store/MSI pueden fallar con 0x80070422.' '    warning: service {0} is DISABLED; Store/MSI apps may fail with 0x80070422.') -f $svcPre) }
+                    } catch {}
+                }
                 W head (L2 'ACTUALIZANDO TODAS las aplicaciones instaladas (winget upgrade --all)...' 'UPDATING ALL installed applications (winget upgrade --all)...')
                 $r = Start-One 'winget' 'upgrade --all --silent --include-unknown --accept-package-agreements --accept-source-agreements --disable-interactivity'
-                while (-not $r.P.HasExited) { TailRead $r; Start-Sleep -Milliseconds 400 }
+                # F3-B2 (VT2): watchdog por INACTIVIDAD de salida (no por tiempo total: una
+                # tanda legitima de updates puede tardar mucho, pero si winget deja de
+                # escribir durante TimeoutMin minutos es que esta colgado).
+                $upLastLen = 0; $upLastAct = Get-Date
+                $upIdleMin = if ($TimeoutMin -gt 0) { $TimeoutMin } else { 25 }
+                $upWatchdog = $false
+                while (-not $r.P.HasExited -and -not $S.Cancel) {
+                    TailRead $r
+                    try { $upLen = (Get-Item $r.Out -ErrorAction SilentlyContinue).Length; if ($upLen -gt $upLastLen) { $upLastLen = $upLen; $upLastAct = Get-Date } } catch {}
+                    if (((Get-Date) - $upLastAct).TotalMinutes -gt $upIdleMin) {
+                        $upWatchdog = $true
+                        W warn ((L2 '[X]  WATCHDOG: winget lleva {0} min sin dar señales; se cierra el proceso colgado.' '[X]  WATCHDOG: winget has been silent for {0} min; killing the hung process.') -f $upIdleMin)
+                        break
+                    }
+                    Start-Sleep -Milliseconds 400
+                }
+                if (-not $r.P.HasExited) { if (-not $upWatchdog) { W warn (L2 '[X]  CANCELADO: cerrando winget upgrade --all.' '[X]  CANCELLED: closing winget upgrade --all.') }; try { Start-Process taskkill -ArgumentList ('/PID {0} /T /F' -f $r.P.Id) -WindowStyle Hidden -Wait } catch {} }
                 TailRead $r
-                $S.Done = 1; if ($r.P.ExitCode -eq 0) { $S.Ok = 1 } else { $S.Fail = 1 }
+                # F3-B3 (VT2): veredicto por CONTENIDO ademas del codigo global. winget
+                # puede salir con 0 aunque instaladores internos hayan fallado.
+                $upRaw = ''
+                try { $upRaw = [IO.File]::ReadAllText($r.Out) } catch {}
+                $upInner = 0
+                try { $upInner = [regex]::Matches($upRaw, 'nstaller failed with exit code').Count } catch {}
+                $S.Done = 1
+                if ($r.P.ExitCode -eq 0 -and -not $S.Cancel -and -not $upWatchdog -and $upInner -eq 0) { $S.Ok = 1 } else { $S.Fail = 1 }
+                if ($upInner -gt 0) { W warn ((L2 '    {0} instalador(es) internos fallaron aunque winget devolviera codigo global 0.' '    {0} inner installer(s) failed even though winget returned global code 0.') -f $upInner) }
                 Remove-Item $r.Out, $r.Err -Force -ErrorAction SilentlyContinue
                 W head ((L2 'Actualizacion global finalizada (codigo 0x{0:X8}).' 'Global update finished (code 0x{0:X8}).') -f $r.P.ExitCode)
             }
@@ -3225,8 +5765,19 @@ $WorkerScript = {
                 W head (L2 'Buscando actualizaciones disponibles en TU equipo (winget upgrade)...' 'Searching for available updates on YOUR PC (winget upgrade)...')
                 W dim (L2 '    winget detecta todos los programas instalados que reconoce.' '    winget detects every installed program it recognizes.')
                 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
+                # Cancelable: winget como proceso aparte (antes era una llamada
+                # bloqueante y el boton Cancelar no podia interrumpir el escaneo).
+                $r = Start-One 'winget' 'upgrade --include-unknown --accept-source-agreements --disable-interactivity'
+                while (-not $r.P.HasExited -and -not $S.Cancel) { Start-Sleep -Milliseconds 300 }
+                if (-not $r.P.HasExited) { $r.Killed = $true; try { Start-Process taskkill -ArgumentList ('/PID {0} /T /F' -f $r.P.Id) -WindowStyle Hidden -Wait } catch {} }
                 $raw = ''
-                try { $raw = (& winget upgrade --include-unknown --accept-source-agreements --disable-interactivity 2>&1 | Out-String) } catch { $raw = '' }
+                try { $raw = [IO.File]::ReadAllText($r.Out) } catch {}
+                Remove-Item $r.Out, $r.Err -Force -ErrorAction SilentlyContinue
+                if ($S.Cancel) {
+                    $S.Done = 1
+                    W warn (L2 'Busqueda de actualizaciones cancelada por el usuario.' 'Update scan cancelled by the user.')
+                    break
+                }
 
                 $count = 0
                 foreach ($c in (Parse-WingetTable $raw)) {
@@ -3257,8 +5808,18 @@ $WorkerScript = {
                 $S.Total = 1
                 W head ((L2 'Buscando "{0}" en todo el repositorio de winget...' 'Searching "{0}" across the entire winget repository...') -f $Query)
                 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
+                # Cancelable: winget como proceso aparte (misma razon que en scanupgrades).
+                $r = Start-One 'winget' ('search "{0}" --accept-source-agreements --disable-interactivity' -f ($Query -replace '"',''))
+                while (-not $r.P.HasExited -and -not $S.Cancel) { Start-Sleep -Milliseconds 300 }
+                if (-not $r.P.HasExited) { $r.Killed = $true; try { Start-Process taskkill -ArgumentList ('/PID {0} /T /F' -f $r.P.Id) -WindowStyle Hidden -Wait } catch {} }
                 $raw = ''
-                try { $raw = (& winget search $Query --accept-source-agreements --disable-interactivity 2>&1 | Out-String) } catch { $raw = '' }
+                try { $raw = [IO.File]::ReadAllText($r.Out) } catch {}
+                Remove-Item $r.Out, $r.Err -Force -ErrorAction SilentlyContinue
+                if ($S.Cancel) {
+                    $S.Done = 1
+                    W warn (L2 'Busqueda cancelada por el usuario.' 'Search cancelled by the user.')
+                    break
+                }
 
                 $count = 0
                 foreach ($c in (Parse-WingetTable $raw)) {
@@ -3318,6 +5879,17 @@ $WorkerScript = {
                         # Usuario actual (Get-AppxPackage / Remove-AppxPackage)
                         $found = @($patterns | ForEach-Object { Get-AppxPackage -Name $_ -ErrorAction SilentlyContinue })
                         foreach ($pkg in $found) {
+                            # Componentes de sistema NO desinstalables (p.ej.
+                            # XboxGameCallableUI en C:\Windows\SystemApps): se
+                            # informan y se omiten; intentarlo siempre falla con
+                            # 0x80070032 y ensuciaria el resultado con un fallo
+                            # que no depende del usuario. Verificado en VM.
+                            $isSys = $false
+                            try { $isSys = ($pkg.NonRemovable -eq $true) -or ([string]$pkg.SignatureKind -eq 'System') -or ([string]$pkg.InstallLocation -like ($env:SystemRoot + '\SystemApps\*')) } catch {}
+                            if ($isSys) {
+                                W dim ((L2 '    componente del sistema (no desinstalable, se omite): {0}' '    system component (non-removable, skipped): {0}') -f $pkg.Name)
+                                continue
+                            }
                             $matched++
                             try { $pkg | Remove-AppxPackage -ErrorAction Stop; $removed++; W ok ((L2 '    quitado: {0}' '    removed: {0}') -f $pkg.Name) }
                             catch { $failed++; W warn ((L2 '    fallo: {0} :: {1}' '    failed: {0} :: {1}') -f $pkg.Name, $_.Exception.Message) }
@@ -3429,7 +6001,25 @@ $script:LightMap = @{
     # --- Acentos por intencion (suaves, no chillones) ---
     '#FF00E5FF'='#FF1397B0'; '#FF76E0FF'='#FF2BA6C4'; '#FF3F9EFF'='#FF2E72C8'; '#FF5CFF8F'='#FF3A9D5E'
     '#FF4F9E4F'='#FF3A9D5E'; '#FFFFD166'='#FFC2912A'; '#FFFF6B6B'='#FFD0504E'; '#FFB388FF'='#FF7E5BC4'
-    '#FF7C4DFF'='#FF6A45C0'; '#FF9D7BFF'='#FF7E5BC4'; '#FFFF9E64'='#FFE57A2E'
+    '#FF7C4DFF'='#FF6A45C0'; '#FF9D7BFF'='#FF7E5BC4'; '#FFFF9E64'='#FFE57A2E'; '#FFE83B4B'='#FFC62233'
+    # --- SESION 10: hex que faltaban (auditoria completa Get-ThemeBrush) ---
+    # Superficies (tarjetas, filas, banners, chips)
+    '#FF0C0C14'='#FFEDF0F6'; '#FF12121C'='#FFF2F4F9'; '#FF17222B'='#FFE8F0F9'; '#FF14141D'='#FFF7F9FC'
+    '#FF15202A'='#FFE8F0F9'; '#FF181820'='#FFF2F4F9'; '#FF173A26'='#FFE2F3E8'; '#FF1A2E22'='#FFE2F3E8'
+    '#FF23344A'='#FFE8F0F9'
+    # Botones con texto BLANCO por defecto: relleno solido de color
+    '#FF14321F'='#FF56A06A'; '#FF2A2A38'='#FF64779B'
+    # Botones con texto de ACENTO u OSCURO: superficie clara tintada (el acento
+    # se remapea a su tono oscuro y se lee bien encima)
+    '#FF153026'='#FFE2F3E8'; '#FF332B12'='#FFF7EFD8'; '#FF3A1B1B'='#FFFBE5E5'; '#FF3A1F1F'='#FFFBE5E5'
+    '#FF2A1F4F'='#FFEDE7FB'; '#FF1A2B3C'='#FFE8F0F9'; '#FF4A3A1F'='#FFF7EFD8'
+    # Bordes
+    '#FF2C4A57'='#FF7FA8C0'; '#FF3A3A4A'='#FFC6CBD6'; '#FF3A5B7C'='#FF3568A0'; '#FF54546A'='#FFAAB0BE'
+    '#FF7C3A3A'='#FF9E4542'; '#FF3E8E5E'='#FF3E8A50'; '#FF6FB8FF'='#FF3568A0'; '#FF9076FF'='#FF6A4DA8'
+    '#FFFFB454'='#FFB8943A'
+    # Textos y acentos
+    '#FF4A4A56'='#FFB8BEC9'; '#FF6A6A78'='#FF6E7280'; '#FF9A9AA8'='#FF5A5E6A'; '#FF9DF5B8'='#FF2E7D4F'
+    '#FFFF8A8A'='#FFD0504E'; '#FFFF8C1A'='#FFE57A2E'; '#FFFFB020'='#FFC2912A'; '#FFE6E6EE'='#FF2A2E3A'
 }
 # Tema AZUL estilo Chris Titus (WinUtil): navy oscuro con acentos azules.
 $script:BlueMap = @{
@@ -3448,7 +6038,17 @@ $script:BlueMap = @{
     '#FF76E0FF'='#FF5AD0F5'; '#FF7B4444'='#FF8A4450'; '#FF7C4DFF'='#FF4D8BFF'; '#FF8A8A95'='#FF8AA6CC'
     '#FF9A9AA5'='#FF94AFD2'; '#FF9D7BFF'='#FF6FA8FF'; '#FFB0B0BC'='#FFAEC6E6'; '#FFB388FF'='#FF6FA8FF'
     '#FFC9C9D4'='#FFC2D6EF'; '#FFCFCFD8'='#FFC2D6EF'; '#FFE6E6EC'='#FFEAF2FF'; '#FFEDEDF2'='#FFEAF2FF'
-    '#FFFF6B6B'='#FFFF7A7A'; '#FFFF9E64'='#FFFFA869'; '#FFFFD166'='#FFFFD98A'
+    '#FFFF6B6B'='#FFFF7A7A'; '#FFFF9E64'='#FFFFA869'; '#FFFFD166'='#FFFFD98A'; '#FFE83B4B'='#FFF0545F'
+    # --- SESION 10: hex que faltaban (auditoria completa Get-ThemeBrush) ---
+    '#FF0C0C14'='#FF0A1424'; '#FF12121C'='#FF0E1A2E'; '#FF17222B'='#FF13243E'; '#FF14141D'='#FF112038'
+    '#FF15202A'='#FF13243E'; '#FF181820'='#FF13243E'; '#FF173A26'='#FF12402F'; '#FF1A2E22'='#FF12402F'
+    '#FF23344A'='#FF173456'
+    '#FF14321F'='#FF12402F'; '#FF153026'='#FF12402F'; '#FF1A2B3C'='#FF1B3C5E'; '#FF2A1F4F'='#FF1E3357'
+    '#FF2A2A38'='#FF15273F'; '#FF332B12'='#FF44391A'; '#FF3A1B1B'='#FF4A1F24'; '#FF3A1F1F'='#FF4A1F24'
+    '#FF4A3A1F'='#FF3A2F14'
+    '#FF2C4A57'='#FF274A72'; '#FF3A3A4A'='#FF2C507A'; '#FF3A5B7C'='#FF3A6CA0'; '#FF54546A'='#FF2C507A'
+    '#FF7C3A3A'='#FF8A4450'; '#FF3E8E5E'='#FF3FA06A'; '#FF9076FF'='#FF6FA8FF'
+    '#FF4A4A56'='#FF2C507A'; '#FF6A6A78'='#FF8AA6CC'; '#FF9A9AA8'='#FF94AFD2'
 }
 # Devuelve el mapa de color del tema activo (o $null si es Oscuro = identidad).
 function Get-ThemeMap {
@@ -3456,12 +6056,65 @@ function Get-ThemeMap {
     if ($script:ThemeName -eq 'Blue')  { return $script:BlueMap }
     return $null
 }
+# Transformacion HSV central: multiplica saturacion (sMul) y brillo (vMul) SIN
+# tocar el matiz (hue). Es la base del suavizado del tema Azul y de la subida
+# global de brillo (+5%) de TODOS los temas. Con cache por (color, factores).
+$script:SoftColorCache = @{}
+function Convert-WpiHsv([string]$hex, [double]$sMul, [double]$vMul) {
+    if (-not $hex -or -not $hex.StartsWith('#')) { return $hex }
+    $u = $hex.ToUpper()
+    $ck = '{0}|{1}|{2}' -f $u, $sMul, $vMul
+    if ($script:SoftColorCache.ContainsKey($ck)) { return $script:SoftColorCache[$ck] }
+    $h6 = $u.TrimStart('#')
+    $aa = 'FF'
+    if ($h6.Length -eq 8) { $aa = $h6.Substring(0,2); $h6 = $h6.Substring(2) }
+    if ($h6.Length -ne 6) { return $hex }
+    try {
+        $r = [Convert]::ToInt32($h6.Substring(0,2),16) / 255.0
+        $g = [Convert]::ToInt32($h6.Substring(2,2),16) / 255.0
+        $b = [Convert]::ToInt32($h6.Substring(4,2),16) / 255.0
+        $mx = [math]::Max($r, [math]::Max($g, $b)); $mn = [math]::Min($r, [math]::Min($g, $b))
+        $v = $mx; $d = $mx - $mn
+        $s = if ($mx -eq 0) { 0.0 } else { $d / $mx }
+        $hdeg = 0.0
+        if ($d -ne 0) {
+            if ($mx -eq $r) { $hdeg = 60.0 * ((($g - $b) / $d) % 6) }
+            elseif ($mx -eq $g) { $hdeg = 60.0 * ((($b - $r) / $d) + 2) }
+            else { $hdeg = 60.0 * ((($r - $g) / $d) + 4) }
+            if ($hdeg -lt 0) { $hdeg += 360.0 }
+        }
+        $s = [math]::Min(1.0, $s * $sMul); $v = [math]::Min(1.0, $v * $vMul)
+        $c = $v * $s; $x = $c * (1 - [math]::Abs((($hdeg / 60.0) % 2) - 1)); $m0 = $v - $c
+        $rp = 0.0; $gp = 0.0; $bp = 0.0
+        if     ($hdeg -lt 60)  { $rp = $c; $gp = $x; $bp = 0 }
+        elseif ($hdeg -lt 120) { $rp = $x; $gp = $c; $bp = 0 }
+        elseif ($hdeg -lt 180) { $rp = 0;  $gp = $c; $bp = $x }
+        elseif ($hdeg -lt 240) { $rp = 0;  $gp = $x; $bp = $c }
+        elseif ($hdeg -lt 300) { $rp = $x; $gp = 0;  $bp = $c }
+        else                   { $rp = $c; $gp = 0;  $bp = $x }
+        $ri = [int][math]::Round(($rp + $m0) * 255); $gi = [int][math]::Round(($gp + $m0) * 255); $bi = [int][math]::Round(($bp + $m0) * 255)
+        $res = ('#{0}{1:X2}{2:X2}{3:X2}' -f $aa, $ri, $gi, $bi)
+        $script:SoftColorCache[$ck] = $res
+        return $res
+    } catch { return $hex }
+}
+# Suavizado del tema Azul: saturacion x0.87 y brillo x0.93 (~10-15% mas apagado).
+function Soften-WpiColor([string]$hex) { return (Convert-WpiHsv $hex 0.87 0.93) }
+# Subida GLOBAL de la paleta (+5% de brillo, mismo matiz y saturacion) para
+# TODOS los temas (Oscuro, Claro y Azul). Post-proceso centralizado.
+function Brighten-WpiColor([string]$hex) { return (Convert-WpiHsv $hex 1.0 1.05) }
 function Convert-XamlTheme([string]$s) {
     $m = Get-ThemeMap
-    if (-not $m) { return $s }
-    foreach ($k in $m.Keys) {
-        $s = [regex]::Replace($s, [regex]::Escape($k), $m[$k], [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($m) {
+        foreach ($k in $m.Keys) {
+            $s = [regex]::Replace($s, [regex]::Escape($k), $m[$k], [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        }
     }
+    if ($script:ThemeName -eq 'Blue') {
+        $s = [regex]::Replace($s, '#[0-9A-Fa-f]{8}', { param($mm) Soften-WpiColor $mm.Value })
+    }
+    # +5% de brillo en TODOS los temas (tambien Oscuro, que no tiene mapa).
+    $s = [regex]::Replace($s, '#[0-9A-Fa-f]{8}', { param($mm) Brighten-WpiColor $mm.Value })
     return $s
 }
 
@@ -3481,21 +6134,21 @@ try {
 $script:Strings = @{
     es = @{
         blk_inicio='INICIO'; blk_instalar='INSTALAR'; blk_optimizar='OPTIMIZAR'; blk_limpiar='LIMPIAR'
-        blk_mantener='MANTENER'; blk_iso='CREAR ISO'; blk_info='INFORMACION'
-        nav_quick='Inicio rapido (modo facil)'; nav_find='Buscar en todo (global)'; nav_allapps='Todas las apps'
+        blk_mantener='MANTENER'; blk_recovery='RECUPERACIÓN'; blk_iso='CREAR ISO'; blk_info='INFORMACIÓN'
+        nav_quick='Inicio rápido (modo fácil)'; nav_find='Buscar en todo (global)'; nav_allapps='Todas las apps'
         nav_search='Buscar en winget (todo)'; nav_snapshot='Clonar equipo / Snapshot'; nav_upgrades='Actualizaciones disponibles'
-        nav_tweaks='Tweaks y ajustes'; nav_winupdate='Windows Update'; nav_debloat='Quitar bloatware (Appx)'
-        nav_repair='Reparacion'; nav_features='Caracteristicas de Windows'; nav_drivers='Drivers y hardware'
-        nav_createiso='Crear ISO de Windows (avanzado)'; nav_summary='Resumen del sistema'; nav_guides='Guias en espanol'
+        nav_tweaks='Tweaks y ajustes'; nav_gaming='Gaming Optimizer'; nav_winupdate='Windows Update'; nav_debloat='Quitar bloatware (Appx)'
+        nav_repair='Reparación'; nav_recovery='Entorno de recuperación'; nav_features='Características de Windows'; nav_drivers='Drivers y hardware'
+        nav_createiso='Crear ISO de Windows (avanzado)'; nav_summary='Resumen del sistema'; nav_guides='Guías en español'
         nav_logs='Visor de logs'; lbl_lang='Idioma'
     }
     en = @{
         blk_inicio='START'; blk_instalar='INSTALL'; blk_optimizar='OPTIMIZE'; blk_limpiar='CLEAN'
-        blk_mantener='MAINTAIN'; blk_iso='CREATE ISO'; blk_info='INFORMATION'
+        blk_mantener='MAINTAIN'; blk_recovery='RECOVERY'; blk_iso='CREATE ISO'; blk_info='INFORMATION'
         nav_quick='Quick start (easy mode)'; nav_find='Search everything (global)'; nav_allapps='All apps'
         nav_search='Search in winget (all)'; nav_snapshot='Clone PC / Snapshot'; nav_upgrades='Available updates'
-        nav_tweaks='Tweaks and settings'; nav_winupdate='Windows Update'; nav_debloat='Remove bloatware (Appx)'
-        nav_repair='Repair'; nav_features='Windows features'; nav_drivers='Drivers and hardware'
+        nav_tweaks='Tweaks and settings'; nav_gaming='Gaming Optimizer'; nav_winupdate='Windows Update'; nav_debloat='Remove bloatware (Appx)'
+        nav_repair='Repair'; nav_recovery='Recovery hub'; nav_features='Windows features'; nav_drivers='Drivers and hardware'
         nav_createiso='Create Windows ISO (advanced)'; nav_summary='System summary'; nav_guides='Guides'
         nav_logs='Log viewer'; lbl_lang='Language'
     }
@@ -3573,24 +6226,24 @@ $script:TrMap['Ver guia en espanol']='View guide (Spanish)'
 $script:TrMap['Estado: pulsa "Re-detectar estado" o entra a esta seccion para escanear que ajustes ya estan aplicados.']='Status: click "Re-detect status" or open this section to scan which tweaks are already applied.'
 $script:TrMap['Programas que winget ha detectado instalados en tu PC y NO estan en el catalogo WPI (los instalaste tu a mano, la Store, etc.). Tu decides si tocar algo aqui.']='Programs that winget detected installed on your PC and are NOT in the WPI catalog (you installed them manually, the Store, etc.). You decide whether to touch anything here.'
 $script:TrMap['No se han encontrado actualizaciones pendientes. Tu equipo esta al dia.']='No pending updates found. Your PC is up to date.'
-$script:TrMap['Busca cualquier programa en TODO el repositorio de winget (no solo en el catalogo WPI de 200). Escribe un nombre y pulsa Buscar; marca lo que quieras e instalalo con el mismo motor (paralelismo, reintentos y log).']='Search for any program across the ENTIRE winget repository (not just the WPI catalog of 200). Type a name and click Search; mark what you want and install it with the same engine (parallelism, retries and log).'
+$script:TrMap['Buscador universal de software: consulta en vivo TODO el repositorio oficial de winget (miles de programas), no solo el catalogo interno del WPI. Escribe un nombre (ej. "obs", "7zip", "blender"), pulsa Buscar en winget, marca los resultados que te interesen e instalalos con el mismo motor profesional del WPI: paralelismo configurable, reintentos automaticos ante fallos, watchdog anti-cuelgues y registro forense de cada operacion. Con "Descargar instalador" puedes bajarte el .exe/.msi oficial sin instalarlo, para guardarlo o llevarlo a otro equipo.']='Universal software finder: it queries the ENTIRE official winget repository live (thousands of programs), not just the internal WPI catalog. Type a name (e.g. "obs", "7zip", "blender"), press Search on winget, check the results you want and install them with the same professional WPI engine: configurable parallelism, automatic retries on failure, anti-hang watchdog and a forensic log of every operation. With "Download installer" you can grab the official .exe/.msi without installing it, to keep it or take it to another PC.'
 $script:TrMap['Escribe un nombre (ej: "obs", "7zip", "blender") y pulsa Buscar en winget.']='Type a name (e.g. "obs", "7zip", "blender") and click Search on winget.'
-$script:TrMap['Elimina la basura que trae Windows de fabrica. Marca solo lo que quieras quitar (nada viene preseleccionado). Se borra para tu usuario y se evita que vuelva; todo es reinstalable desde la Microsoft Store. No se incluyen componentes criticos del sistema.']='Removes the junk Windows ships from the factory. Mark only what you want to remove (nothing is preselected). It is removed for your user and prevented from coming back; everything is reinstallable from the Microsoft Store. Critical system components are not included.'
+$script:TrMap['Limpieza selectiva del software preinstalado de Windows (Xbox, Cortana, Noticias, Solitario...). Nada viene preseleccionado: tu decides exactamente que quitar, casilla a casilla. Cada app marcada se desinstala para tu usuario y ademas se desaprovisiona del sistema para que no reaparezca con las grandes actualizaciones de Windows. Todo lo eliminado se puede reinstalar despues desde la Microsoft Store, y los componentes criticos del sistema quedan excluidos de la lista por seguridad. Cada eliminacion se verifica de verdad y queda registrada en el log forense.']='Selective cleanup of Windows preinstalled software (Xbox, Cortana, News, Solitaire...). Nothing comes preselected: you decide exactly what to remove, box by box. Each checked app is uninstalled for your user and also deprovisioned from the system so it does not come back with major Windows updates. Everything removed can be reinstalled later from the Microsoft Store, and critical system components are excluded from the list for safety. Every removal is genuinely verified and recorded in the forensic log.'
 $script:TrMap['Estado: entra a esta seccion o pulsa "Re-detectar estado" para ver que apps siguen instaladas.']='Status: open this section or click "Re-detect status" to see which apps are still installed.'
-$script:TrMap['Exporta TODO lo que tienes instalado (que winget reconozca) a un archivo, y reimportalo en otro PC para dejarlo igual de un golpe. Ideal si formateas a menudo o montas varias maquinas. Usa el formato oficial de winget import.']='Exports EVERYTHING you have installed (that winget recognizes) to a file, and re-imports it on another PC to set it up identically in one go. Ideal if you reformat often or build several machines. Uses the official winget import format.'
-$script:TrMap['Pasos para dejar listos los programas que necesitan algo extra (BIOS, firmware, claves...) y para los emuladores que NO estan en winget (Switch, Android). Pulsa cada titulo para desplegarlo. Al instalar o descargar una app con guia, la consola te avisa.']='Steps to get ready the programs that need something extra (BIOS, firmware, keys...) and the emulators that are NOT on winget (Switch, Android). Click each title to expand it. When you install or download an app with a guide, the console warns you.'
-$script:TrMap['Detecta tus piezas y el driver de la grafica que tienes ahora. Para actualizar drivers, lo seguro es la herramienta OFICIAL del fabricante (no usamos programas de "drivers todo en uno", suelen traer publicidad y drivers erroneos). Tambien tienes acceso directo a Windows Update opcional y al soporte de tu placa.']='Detects your parts and the graphics driver you have right now. To update drivers, the safe way is the manufacturer''s OFFICIAL tool (we do not use "all-in-one driver" programs, they usually bring ads and wrong drivers). You also get a direct link to optional Windows Update and to your motherboard support.'
-$script:TrMap['Exporta TODOS los drivers de terceros antes de formatear y reinyectalos despues (joya post-formateo). La copia es solo lectura del sistema; la restauracion es para un equipo recien reinstalado. Ambas corren por el motor con log.']='Exports ALL third-party drivers before reformatting and re-injects them afterwards (a post-format gem). The backup is read-only on the system; the restore is for a freshly reinstalled PC. Both run through the engine with a log.'
+$script:TrMap['Clonado logico de tu equipo en un archivo: exporta la lista COMPLETA de programas instalados que winget reconoce, en el formato oficial de winget import (compatible con cualquier herramienta estandar). Llevate ese archivo a otro PC, o a este mismo tras formatear, pulsa "Importar un archivo e instalar todo" y el motor del WPI instalara cada programa de una tacada, con paralelismo, reintentos automaticos y log forense. Es la forma mas rapida de dejar dos maquinas identicas o de recuperar tu software tras una reinstalacion, sin ir programa por programa.']='Logical clone of your PC in a single file: it exports the COMPLETE list of installed programs that winget recognizes, in the official winget import format (compatible with any standard tooling). Take that file to another PC, or back to this one after reformatting, press "Import a file and install everything" and the WPI engine will install every program in one go, with parallelism, automatic retries and a forensic log. It is the fastest way to make two machines identical or to recover your software after a reinstall, without going program by program.'
+$script:TrMap['Guias paso a paso, redactadas en espanol, para el software que necesita preparacion adicional despues de instalarse: emuladores que requieren BIOS o claves de consola (PlayStation, Switch...), firmware, configuracion inicial recomendada, y tambien los que NO existen en winget (emulador de Switch, emuladores de Android) con sus fuentes oficiales. Pulsa cada titulo para desplegar su guia completa, con los pasos en orden y avisos de legalidad donde tocan. Ademas, cuando instalas o descargas desde el WPI una app que tiene guia asociada, el registro en vivo te avisa para que la consultes aqui.']='Step-by-step guides for software that needs extra preparation after installing: emulators that require BIOS files or console keys (PlayStation, Switch...), firmware, recommended initial setup, and also the ones NOT available on winget (Switch emulator, Android emulators) with their official sources. Click each title to expand its full guide, with the steps in order and legality notes where relevant. In addition, when you install or download an app with an associated guide from WPI, the live log lets you know so you can check it here.'
+$script:TrMap['Radiografia completa de tu hardware, detectada en vivo: tarjeta grafica (con version y fecha del driver actual), procesador, memoria RAM, placa base, BIOS/UEFI y discos con su salud. Para actualizar drivers, la via segura es SIEMPRE la herramienta OFICIAL de cada fabricante (NVIDIA App, AMD Adrenalin, Intel DSA), que se te ofrece segun la GPU detectada; se evitan a proposito los programas de "drivers todo en uno", conocidos por meter publicidad y drivers equivocados. Tambien tienes acceso directo a las actualizaciones opcionales de Windows Update (que incluyen drivers firmados) y a la pagina de soporte de tu placa base.']='Complete X-ray of your hardware, detected live: graphics card (with current driver version and date), processor, RAM, motherboard, BIOS/UEFI and disks with their health. To update drivers, the safe route is ALWAYS each manufacturer''s OFFICIAL tool (NVIDIA App, AMD Adrenalin, Intel DSA), offered to you based on the detected GPU; "all-in-one driver" programs are deliberately avoided, as they are known for bundling ads and wrong drivers. You also get direct access to optional Windows Update entries (which include signed drivers) and to your motherboard''s support page.'
+$script:TrMap['Tu seguro de vida antes de formatear: "Hacer copia de drivers" exporta TODOS los drivers de terceros de este PC (archivos .inf con sus binarios) a la carpeta que elijas, usando Export-WindowsDriver, y verifica el recuento al terminar antes de proclamar exito. Tras reinstalar Windows, "Restaurar drivers desde carpeta" los reinyecta todos de golpe con pnputil, comprobando el codigo de retorno real: ideal para que red, chipset y grafica funcionen a la primera sin buscar nada por internet. La copia es de solo lectura y no modifica el sistema; ambas operaciones corren por el motor del WPI con log forense.']='Your life insurance before reformatting: "Back up drivers" exports ALL third-party drivers on this PC (.inf files with their binaries) to the folder you choose, using Export-WindowsDriver, and verifies the file count before claiming success. After reinstalling Windows, "Restore drivers from folder" re-injects them all at once with pnputil, checking the real return code: ideal so network, chipset and graphics work right away without hunting anything online. The backup is read-only and does not modify the system; both operations run through the WPI engine with a forensic log.'
 $script:TrMap['Apps gratuitas del catalogo utiles para el hardware que se ha detectado:']='Free catalog apps useful for the hardware that was detected:'
-$script:TrMap['Foto del estado actual de tu PC segun lo que gestiona el WPI. Solo lectura: no cambia nada. Se actualiza cada vez que entras aqui.']='Snapshot of your PC''s current state according to what WPI manages. Read-only: it changes nothing. It refreshes every time you enter here.'
-$script:TrMap['Captura todo tu PC en un solo JSON y replicalo en otro equipo. "Aplicar perfil completo" crea un punto de restauracion y relanza el WPI como administrador en modo desatendido.']='Captures your whole PC into a single JSON and replicates it on another machine. "Apply full profile" creates a restore point and relaunches WPI as administrator in unattended mode.'
-$script:TrMap['Mide el impacto real de tus cambios. Toma una "foto" del sistema (servicios, procesos, apps de inicio, RAM, arranque), aplica tweaks/debloat, y compara para ver el delta. La foto se guarda en wpi_baseline.json junto al WPI.']='Measures the real impact of your changes. Takes a "snapshot" of the system (services, processes, startup apps, RAM, boot), applies tweaks/debloat, and compares to see the delta. The snapshot is saved in wpi_baseline.json next to WPI.'
-$script:TrMap['Decide como y cuando se actualiza Windows. Cada accion se aplica al pulsar su boton y queda en el log forense. "Valores por defecto" deshace cualquier cambio de esta lista.']='Decide how and when Windows updates. Each action is applied when you click its button and stays in the forensic log. "Default values" undoes any change from this list.'
+$script:TrMap['Panel de control de SOLO LECTURA: fotografia el estado actual del equipo segun todo lo que gestiona el WPI. Muestra cuantos tweaks estan realmente aplicados (comprobados en vivo contra el sistema, no contra una lista guardada), cuanto bloatware sigue presente, el espacio libre del disco, el uso de RAM, si la proteccion de restauracion esta activa y la version de winget. No cambia absolutamente nada: es tu punto de partida para decidir que optimizar. Se recalcula cada vez que entras en esta seccion, y desde aqui puedes exportar un diagnostico completo del equipo a un archivo.']='READ-ONLY control panel: it photographs the current state of the PC according to everything WPI manages. It shows how many tweaks are genuinely applied (checked live against the system, not against a saved list), how much bloatware is still present, free disk space, RAM usage, whether restore protection is active and the winget version. It changes absolutely nothing: it is your starting point to decide what to optimize. It is recalculated every time you enter this section, and from here you can export a full diagnostic of the machine to a file.'
+$script:TrMap['Tu PC entero condensado en un solo archivo: el perfil maestro captura en un JSON las apps instaladas, los tweaks aplicados, el debloat realizado y la configuracion de Windows Update. "Exportar perfil maestro" genera el archivo; "Ver plan del perfil" te ensena EXACTAMENTE que haria antes de tocar nada (transparencia total); y "Aplicar perfil completo" crea primero un punto de restauracion y relanza el WPI como administrador en modo desatendido para replicarlo todo de principio a fin. Es la herramienta definitiva para clonar tu configuracion en otro equipo o recuperarla tras un formateo.']='Your entire PC condensed into a single file: the master profile captures in one JSON the installed apps, the applied tweaks, the debloat done and the Windows Update configuration. "Export master profile" generates the file; "View profile plan" shows you EXACTLY what it would do before touching anything (full transparency); and "Apply full profile" first creates a restore point and relaunches WPI as administrator in unattended mode to replicate everything end to end. It is the definitive tool to clone your setup onto another machine or recover it after a reformat.'
+$script:TrMap['Medidor de impacto real, con datos en vez de sensaciones: "Tomar foto del sistema" guarda una linea base del equipo (servicios activos, procesos en ejecucion, apps de inicio, RAM en uso y datos de arranque) en el archivo wpi_baseline.json, junto al WPI. Aplica despues tus tweaks o tu debloat con total libertad y pulsa "Comparar con la foto": veras el delta exacto entre el antes y el despues, que servicios y procesos desaparecieron, cuanta memoria liberaste y que cambio en el inicio de Windows. Es la prueba objetiva de que la optimizacion sirvio (o de que no toco nada).']='Real impact meter, with data instead of feelings: "Take system snapshot" saves a baseline of the machine (running services, active processes, startup apps, RAM in use and boot data) into wpi_baseline.json, next to WPI. Then apply your tweaks or debloat freely and press "Compare with snapshot": you will see the exact before/after delta, which services and processes disappeared, how much memory you freed and what changed in Windows startup. It is the objective proof that the optimization worked (or that it touched nothing).'
+$script:TrMap['Centro de control de Windows Update: tu decides como y cuando se actualiza el sistema, en lugar de que Windows decida por ti. Puedes pausar, diferir o ajustar el comportamiento de las actualizaciones mediante politicas reales del sistema; cada accion se ejecuta en el momento de pulsar su boton, se verifica y queda anotada en el log forense de la sesion. Nada es permanente ni opaco: el boton "Valores por defecto" revierte cualquier cambio hecho desde esta lista y devuelve Windows Update a su comportamiento original de fabrica. Requiere permisos de administrador.']='Windows Update control center: you decide how and when the system updates, instead of Windows deciding for you. You can pause, defer or adjust update behaviour through real system policies; each action runs the moment you press its button, is verified, and is recorded in the session forensic log. Nothing is permanent or opaque: the "Default values" button reverts any change made from this list and returns Windows Update to its original factory behaviour. Requires administrator rights.'
 $script:TrMap['Marca las apps que se instalaran solas en el primer arranque (via winget), DIVIDIDAS POR SECCION (Navegadores, Multimedia, etc.). Usa el buscador para filtrar. Por defecto se traen las que tengas marcadas en la pestana Apps.']='Mark the apps that will install themselves on first boot (via winget), SPLIT BY SECTION (Browsers, Multimedia, etc.). Use the search box to filter. By default it brings the ones you marked on the Apps tab.'
 $script:TrMap['Inyecta drivers (.inf) en la imagen para que el equipo arranque con red/chipset. Elige una carpeta con .inf, o si NO tienes ninguna, crea ahora mismo una copia de los drivers que tienes instalados con el boton de abajo.']='Injects drivers (.inf) into the image so the PC boots with network/chipset. Pick a folder with .inf files, or if you do NOT have any, create a backup of your currently installed drivers right now with the button below.'
 $script:TrMap['No tengo: crear copia (.inf) de mis drivers actuales']='I do not have any: create a backup (.inf) of my current drivers'
 $script:TrMap['Que es el "kit": una carpeta (WPI_ISO_Kit) con todo lo necesario: tu configuracion, el autounattend.xml, el script que crea la ISO, el preset de apps, una copia de WPI y las guias. NO hace falta generar el kit antes de crear la ISO: el boton "Confirmar y CREAR la ISO" ya lo prepara solo y lanza el proceso como administrador. "Generar kit" es OPCIONAL, solo si quieres revisar o editar esos archivos antes.']='What the "kit" is: a folder (WPI_ISO_Kit) with everything needed: your configuration, the autounattend.xml, the script that creates the ISO, the apps preset, a copy of WPI and the guides. You do NOT need to generate the kit before creating the ISO: the "Confirm and CREATE the ISO" button prepares it on its own and launches the process as administrator. "Generate kit" is OPTIONAL, only if you want to review or edit those files first.'
-$script:TrMap['Activa o desactiva componentes opcionales de Windows (DISM). Cada accion corre por el motor con log forense y es reversible (Habilitar/Deshabilitar). Las marcadas "pide reinicio" requieren reiniciar para completarse. Algunas solo existen en Windows Pro/Enterprise.']='Enables or disables optional Windows components (DISM). Each action runs through the engine with a forensic log and is reversible (Enable/Disable). Those marked "needs restart" require a restart to complete. Some only exist on Windows Pro/Enterprise.'
+$script:TrMap['Gestion profesional de los componentes opcionales de Windows mediante DISM (.NET 3.5, Telnet, Hyper-V, WSL2, Sandbox...). El estado de cada componente se lee EN VIVO del sistema: verde = activo, ambar = no comprobable o pendiente. Habilitar y Deshabilitar ejecutan el comando real, RE-VERIFICAN el resultado despues y lo registran en el log forense: aqui no hay exitos de mentira. Todo es reversible con el boton contrario. Las entradas marcadas "pide reinicio" necesitan reiniciar el equipo para completarse, y algunas caracteristicas solo existen en Windows Pro/Enterprise (si faltan en tu edicion, se indica con honestidad).']='Professional management of optional Windows components through DISM (.NET 3.5, Telnet, Hyper-V, WSL2, Sandbox...). The state of each component is read LIVE from the system: green = active, amber = not checkable or pending. Enable and Disable run the real command, RE-VERIFY the result afterwards and record it in the forensic log: there are no fake successes here. Everything is reversible with the opposite button. Entries marked "needs restart" require rebooting the PC to complete, and some features only exist on Windows Pro/Enterprise (if your edition lacks them, it is stated honestly).'
 $script:TrMap['Todo lo de reparacion en un solo sitio: la SUITE completa en 17 fases (motor externo) y, debajo, herramientas rapidas de un clic. Son acciones fuertes: corren con log forense y algunas piden reinicio.']='Everything about repair in one place: the complete 17-phase SUITE (external engine) and, below, quick one-click tools. These are strong actions: they run with a forensic log and some ask for a restart.'
 $script:TrMap['Acciones sueltas de un clic (SFC, DISM, red, Windows Update, winget...). Cada una corre por el motor con log forense.']='One-click standalone actions (SFC, DISM, network, Windows Update, winget...). Each one runs through the engine with a forensic log.'
 $script:TrMap['O&O ShutUp10++ es una herramienta gratuita y portable para ajustar al detalle la telemetria y la privacidad de Windows con su propia interfaz. Se abre su pagina oficial para descargarla.']='O&O ShutUp10++ is a free, portable tool to fine-tune Windows telemetry and privacy with its own interface. Its official page opens so you can download it.'
@@ -3702,6 +6355,262 @@ $script:TrMap['Marcar todas']='Mark all'
 $script:TrMap['Marcar todo']='Mark all'
 $script:TrMap['Marcar todos']='Mark all'
 $script:TrMap['Marcar visibles']='Mark visible'
+$script:TrMap['Marcar instaladas']='Mark installed'
+$script:TrMap['Detectando apps instaladas (winget)...']='Detecting installed apps (winget)...'
+$script:TrMap['Marcadas {0} apps del catalogo que ya tienes instaladas.']='Marked {0} catalog apps you already have installed.'
+$script:TrMap['Marcadas {0} apps que ya tienes instaladas.']='Marked {0} apps you already have installed.'
+$script:TrMap['No se ha detectado ninguna app del catalogo instalada en este PC (via winget).']='No installed catalog app was detected on this PC (via winget).'
+$script:TrMap['No se ha detectado ninguna app del catalogo instalada en este PC (via winget). Marca abajo las que quieras a mano.']='No installed catalog app was detected on this PC (via winget). Tick the ones you want below by hand.'
+$script:TrMap['No tienes apps marcadas en la pestana Apps, pero no necesitas salir de aqui: marca abajo las apps que quieras (estan divididas por seccion) o pulsa "Marcar instaladas" para traer de golpe las que ya tienes instaladas en este PC.']='You have no apps checked on the Apps tab, but you do not need to leave here: tick the apps you want below (grouped by section) or press "Mark installed" to pull in everything already installed on this PC at once.'
+$script:TrMap['Marca aqui mismo las apps del catalogo que ya tienes instaladas en este PC (via winget), sin salir del asistente.']='Check right here the catalog apps already installed on this PC (via winget), without leaving the wizard.'
+# --- Tooltips del asistente de ISO y boton flecha-atras (v7.4) ---
+$script:TrMap['Volver al paso anterior']='Go back to the previous step'
+$script:TrMap['Busca y carga el .iso original de Windows que vas a personalizar (no se modifica el original).']='Browse for and load the original Windows .iso you will customize (the original is not modified).'
+$script:TrMap['Donde se guardara la ISO final ya creada. Necesita varios GB libres.']='Where the finished ISO will be saved. Needs several GB free.'
+$script:TrMap['Como se llamara el archivo .iso resultante (ej: WPI_Custom.iso).']='What the resulting .iso file will be called (e.g. WPI_Custom.iso).'
+$script:TrMap['Carpeta temporal donde se monta y arma la imagen. Usa un disco con espacio; se puede borrar despues.']='Temporary folder where the image is mounted and assembled. Use a disk with space; it can be deleted afterwards.'
+$script:TrMap['Abre tu ISO y lista las ediciones de Windows que contiene (Home, Pro...).']='Opens your ISO and lists the Windows editions it contains (Home, Pro...).'
+$script:TrMap['Elige personalizar solo una edicion de Windows (mas rapido) o todas las que trae la ISO (mas lento).']='Choose to customize just one Windows edition (faster) or all editions in the ISO (slower).'
+$script:TrMap['Mete los drivers .inf de la carpeta de abajo DENTRO de la ISO (install.wim y boot.wim): Windows arranca con red y chipset listos, sin instalarlos a mano.']='Injects the .inf drivers from the folder below INTO the ISO (install.wim and boot.wim): Windows boots with network and chipset ready, no manual install.'
+$script:TrMap['Carpeta con los drivers (.inf) a inyectar. Si no tienes, usa el boton de abajo para copiar los de tu PC actual.']='Folder with the (.inf) drivers to inject. If you have none, use the button below to copy your current PC drivers.'
+$script:TrMap['Crea una cuenta local en el primer arranque y salta las pantallas de cuenta Microsoft/online.']='Creates a local account on first boot and skips the Microsoft/online account screens.'
+$script:TrMap['Permite instalar Windows 11 en equipos sin TPM 2.0 / Secure Boot o con CPU/RAM no soportada.']='Lets you install Windows 11 on PCs without TPM 2.0 / Secure Boot or with unsupported CPU/RAM.'
+$script:TrMap['PELIGRO: formatea y particiona el disco 0 sin preguntar. Solo para maquina virtual o disco desechable.']='DANGER: formats and partitions disk 0 without asking. Only for a virtual machine or a disposable disk.'
+$script:TrMap['Idioma y region de la instalacion (ej: es-ES para espanol de Espana).']='Installation language and region (e.g. es-ES for Spanish from Spain).'
+$script:TrMap['Nombre del usuario que se creara automaticamente en el primer arranque.']='Name of the user that will be created automatically on first boot.'
+$script:TrMap['Contrasena de esa cuenta. Puedes dejarla vacia, pero en Windows 11 es recomendable ponerla.']='Password for that account. You can leave it empty, but on Windows 11 setting one is recommended.'
+$script:TrMap['Marca solo los tweaks seguros recomendados (deja fuera los de riesgo).']='Checks only the recommended safe tweaks (leaves out the risky ones).'
+$script:TrMap['Desmarca todos los tweaks de esta lista.']='Unchecks every tweak in this list.'
+$script:TrMap['Marca todo el bloatware para quitarlo de fabrica.']='Checks all bloatware to remove it at the factory image level.'
+$script:TrMap['Desmarca todo: no se quitara ningun bloatware.']='Unchecks everything: no bloatware will be removed.'
+$script:TrMap['Copia aqui las apps que ya tengas marcadas en la pestana Apps.']='Copies here the apps you already have checked on the Apps tab.'
+$script:TrMap['Desmarca todas las apps de esta lista.']='Unchecks every app in this list.'
+$script:TrMap['Vuelve a revisar si tienes ADK, DISM, permisos de admin y espacio libre suficientes.']='Re-checks whether you have ADK, DISM, admin rights and enough free space.'
+$script:TrMap['Descarga e instala Windows ADK (aporta oscdimg, necesario para ensamblar la ISO).']='Downloads and installs Windows ADK (provides oscdimg, needed to assemble the ISO).'
+$script:TrMap['Exporta los drivers de este PC a una carpeta (.inf) y la pone lista para inyectar, sin buscarlos tu.']='Exports this PC drivers to a folder (.inf) and sets it ready to inject, without you searching for them.'
+# --- v7.4: navegacion, resumen ISO, desplegables, leyendas, deteccion/upgrade ---
+$script:TrMap['Volver a la seccion anterior']='Back to the previous section'
+$script:TrMap['Marcar instaladas en mi PC']='Mark those installed on my PC'
+$script:TrMap['Marca todos los programas del catalogo que ya tienes instalados en tu PC o maquina, sin salir del asistente.']='Marks every catalog program already installed on your PC or machine, without leaving the wizard.'
+$script:TrMap['Cerradas {0} apps abiertas para poder actualizarlas: {1}']='Closed {0} open apps so they can be updated: {1}'
+$script:TrMap['RESUMEN DE TU ISO A MEDIDA']='SUMMARY OF YOUR CUSTOM ISO'
+$script:TrMap['(SIN ELEGIR - vuelve al paso 2)']='(NOT SET - go back to step 2)'
+$script:TrMap['ISO origen']='Source ISO'
+$script:TrMap['ISO de salida']='Output ISO'
+$script:TrMap['Edicion']='Edition'
+$script:TrMap['TODAS las ediciones (cada una personalizada)']='ALL editions (each one customized)'
+$script:TrMap['solo la edicion indice']='only edition index'
+$script:TrMap['SI - desde']='YES - from'
+$script:TrMap['no (los instalaras a mano)']='no (you will install them by hand)'
+$script:TrMap['apps (offline, de fabrica)']='apps (offline, factory image)'
+$script:TrMap['Bloatware a quitar']='Bloatware to remove'
+$script:TrMap['ajustes (en el primer arranque)']='tweaks (on first boot)'
+$script:TrMap['Apps a instalar']='Apps to install'
+$script:TrMap['apps (en el primer arranque)']='apps (on first boot)'
+$script:TrMap['cuenta local/OOBE']='local account/OOBE'
+$script:TrMap['modo VM']='VM mode'
+$script:TrMap['Desatendido']='Unattended'
+$script:TrMap['Idioma / cuenta']='Language / account'
+$script:TrMap['Guia rapida: probar en VM o instalar en un PC fisico']='Quick guide: test in a VM or install on a physical PC'
+$script:TrMap['Aviso Rufus: pantalla "Experiencia de usuario de Windows"']='Rufus warning: the "Windows User Experience" screen'
+$script:TrMap['Que comprueba el boton "Comprobar la ISO" (recomendado antes de Rufus)']='What the "Check the ISO" button verifies (recommended before Rufus)'
+$script:TrMap['Que es el "kit" y cuando generarlo (opcional)']='What the "kit" is and when to generate it (optional)'
+$script:TrMap['si']='yes'
+$script:TrMap['no']='no'
+$script:TrMap['Tweaks']='Tweaks'
+$script:TrMap['Drivers']='Drivers'
+$script:TrMap['ISO']='ISO'
+$script:TrMap['Fecha']='Date'
+$script:TrMap['no comprobables']='not verifiable'
+$script:TrMap['Comprobar ISO']='Check ISO'
+$script:TrMap['No se encuentra WPI_Moderno.ps1 para incluir en la ISO. Operacion abortada.']='WPI_Moderno.ps1 could not be found to include in the ISO. Operation aborted.'
+$script:TrMap['Recordatorio importante']='Important reminder'
+$script:TrMap['Si Rufus muestra la ventana "Experiencia de usuario de Windows", deja TODAS las casillas SIN marcar y pulsa Aceptar. Si marcas algo, Rufus crea su propio autounattend y SOBREESCRIBE la configuracion de tu ISO (apps, tweaks y ajustes no se aplicarian).']='If Rufus shows the "Windows User Experience" window, leave ALL the checkboxes UNCHECKED and press OK. If you check anything, Rufus creates its own autounattend and OVERWRITES your ISO configuration (apps, tweaks and settings would not be applied).'
+$script:TrMap['Cancelar']='Cancel'
+$script:TrMap["Aun no existe la ISO:`n{0}`n`nCrea primero la ISO y vuelve a pulsar este boton.`n`nTambien puedes comprobarla a mano en PowerShell (administrador) con:`n`n{1}"]="The ISO does not exist yet:`n{0}`n`nCreate the ISO first and press this button again.`n`nYou can also check it manually in PowerShell (administrator) with:`n`n{1}"
+$script:TrMap["Se comprobara la ISO como ADMINISTRADOR en una consola aparte: monta la imagen y revisa C:\WPI, autounattend, ediciones, drivers y winget. Tarda 1-3 min.`n`nComando equivalente para hacerlo a mano:`n{0}`n`nComprobar ahora?"]="The ISO will be checked as ADMINISTRATOR in a separate console: it mounts the image and inspects C:\WPI, autounattend, editions, drivers and winget. It takes 1-3 min.`n`nEquivalent command to do it manually:`n{0}`n`nCheck now?"
+$script:TrMap['No se pudo lanzar la comprobacion:']='Could not launch the check:'
+$script:TrMap['Colores:']='Colors:'
+$script:TrMap['verde=aplicado']='green=applied'
+$script:TrMap['ambar=avanzado (con cuidado)']='amber=advanced (with care)'
+$script:TrMap['gris=accion puntual']='gray=one-off action'
+# --- v7.4 ronda 4: dialogos premium, cancelar, ir-arriba, app bloqueada ---
+$script:TrMap['Ir arriba']='Go to top'
+$script:TrMap['Subir arriba del todo de la lista']='Jump to the very top of the list'
+$script:TrMap['No se pudo actualizar: un servicio de Windows esta deshabilitado']='Could not update: a Windows service is disabled'
+$script:TrMap['Apps afectadas']='Affected apps'
+$script:TrMap['Motivo']='Reason'
+$script:TrMap['El instalador devolvio el error 0x80070422 ("el servicio no se puede iniciar porque esta deshabilitado"). Winget necesita servicios de Windows (Windows Update, BITS, Windows Installer) para instalar o actualizar; si alguno esta desactivado, la actualizacion NO se aplica aunque parezca terminar.']='The installer returned error 0x80070422 ("the service cannot be started because it is disabled"). Winget needs Windows services (Windows Update, BITS, Windows Installer) to install or update; if any is turned off, the update is NOT applied even though it looks finished.'
+$script:TrMap['Por que suele pasar']='Why this usually happens'
+$script:TrMap['Casi siempre porque en algun momento DESACTIVASTE Windows Update o algun servicio: desde el propio WPI, con otra herramienta de debloat/privacidad, o a mano. Recuerda si lo hiciste.']='Almost always because at some point you DISABLED Windows Update or a service: from WPI itself, with another debloat/privacy tool, or manually. Try to recall if you did.'
+$script:TrMap['Solucion rapida']='Quick fix'
+$script:TrMap['1) Abre la seccion "Windows Update" del WPI y aplica "Valores por defecto de Windows Update" (reactiva los servicios).  2) O en services.msc pon en Manual/Automatico e inicia: Windows Update (wuauserv), BITS y Windows Installer (msiserver).  3) Vuelve a "Buscar updates" y actualiza de nuevo.']='1) Open the WPI "Windows Update" section and apply "Windows Update default values" (re-enables the services).  2) Or in services.msc set to Manual/Automatic and start: Windows Update (wuauserv), BITS and Windows Installer (msiserver).  3) Go back to "Search updates" and update again.'
+$script:TrMap['Entendido']='Got it'
+# Dialogo de fin de tarea del motor (instalar/actualizar/descargar/desinstalar)
+$script:TrMap['Instalacion']='Installation'
+$script:TrMap['Actualizacion']='Update'
+$script:TrMap['Descarga']='Download'
+$script:TrMap['Desinstalacion']='Uninstallation'
+$script:TrMap["{0} terminada.`n`nCorrectas:  {1}`nFallidas:    {2}`nProcesadas: {3} de {4}"]="{0} finished.`n`nSucceeded:  {1}`nFailed:    {2}`nProcessed: {3} of {4}"
+$script:TrMap['NOTA: {0} aplicacion(es) requieren REINICIAR el equipo para terminar de aplicarse.']='NOTE: {0} app(s) require a computer RESTART to finish applying.'
+$script:TrMap['Fallos (detalle completo en el log forense):']='Failures (full detail in the forensic log):'
+$script:TrMap["TUTORIAL: estas tienen mini-guia en espanol:`n - {0}`n`nMiralas en el panel 'Guias en espanol'."]="TUTORIAL: these apps include a mini-guide (written in Spanish):`n - {0}`n`nSee them in the 'Guides' panel."
+$script:TrMap['Ver las guias ahora?']='View the guides now?'
+$script:TrMap['TODAS las ediciones']='ALL editions'
+$script:TrMap['Has elegido TODAS las ediciones de Windows: se personaliza cada una por separado, asi que tarda MUCHO mas y la ISO final ocupa bastante mas. Lo optimo es elegir SOLO la edicion que vayas a usar (pulsa "No, volver atras" y cambialo en el paso 2).']='You chose ALL Windows editions: each one is customized separately, so it takes MUCH longer and the final ISO is considerably bigger. The best option is to pick ONLY the edition you will use (press "No, go back" and change it in step 2).'
+$script:TrMap['Has elegido UNA sola edicion (lo optimo). La creacion de la ISO personalizada puede tardar entre 15 y 30 minutos, dependiendo de todo lo que hayas seleccionado (tweaks, apps, drivers). No cierres ni interrumpas el proceso hasta que finalice.']='You chose a SINGLE edition (the best option). Building your custom ISO can take between 15 and 30 minutes, depending on everything you selected (tweaks, apps, drivers). Please do not close or interrupt the process until it finishes.'
+$script:TrMap['Vas a CREAR tu ISO a medida con esta configuracion']='You are about to CREATE your custom ISO with this configuration'
+$script:TrMap['Ediciones y tiempo estimado']='Editions and estimated time'
+$script:TrMap['ADVERTENCIA: ediciones y tiempo estimado']='WARNING: editions and estimated time'
+$script:TrMap['Que pasara en el PRIMER ARRANQUE de Windows']='What will happen on the FIRST BOOT of Windows'
+$script:TrMap['Al arrancar Windows por primera vez, comenzara automaticamente la instalacion de los programas y la configuracion que has seleccionado. No necesitas hacer nada: el equipo se reiniciara por si solo al terminar. El tiempo total dependera de todo lo que hayas anadido a la ISO.']='When Windows starts for the first time, the installation of your selected apps and settings will begin automatically. You do not need to do anything: the PC will restart on its own once it is done. The total time will depend on everything you added to the ISO.'
+$script:TrMap['Recordatorio Rufus (cuando la grabes al USB)']='Rufus reminder (when you write it to USB)'
+$script:TrMap['Grabar a un USB (Rufus)']='Write to a USB (Rufus)'
+# F7: Entorno de Recuperacion
+$script:TrMap['ENTORNO DE RECUPERACIÓN']='RECOVERY HUB'
+$script:TrMap['Entorno de recuperación']='Recovery hub'
+$script:TrMap['Tu centro unico para VOLVER ATRAS ante cualquier incidencia: reune en un solo sitio todas las redes de seguridad que el WPI va creando (perfiles de tweaks, paquete de rescate, diario de cambios, arranques aparcados, puntos de restauracion del sistema) y las carga con un clic. La carpeta oficial <WPI>\Restauracion se crea sola y "Cargar" la abre directamente: nunca tendras que buscar un archivo de restauracion a mano. Todo lo que se restaura se VERIFICA contra el sistema antes de darse por bueno, como el resto del WPI.']='Your single place to GO BACK after any incident: it gathers in one spot every safety net WPI creates (tweak profiles, rescue pack, change journal, parked autoruns, system restore points) and loads them in one click. The official <WPI>\Restauracion folder is created automatically and "Load" opens it directly: you will never hunt for a restore file by hand. Everything restored is VERIFIED against the system before it counts, like the rest of WPI.'
+$script:TrMap['CARGAR UNA COPIA DE RESTAURACION']='LOAD A RESTORE COPY'
+$script:TrMap['Elige que quieres recuperar. "Cargar" abre directamente la carpeta oficial de copias, sin buscar nada a mano.']='Choose what to recover. "Load" opens the official copies folder directly, no manual searching.'
+$script:TrMap['Cargar  (abrir carpeta de copias)']='Load  (open copies folder)'
+# --- Rediseno premium del Entorno de Recuperacion (filas de accion) ---
+$script:TrMap['Cada opción explica qué es, cómo funciona y qué pasará antes de que pulses nada. Los drivers tienen su propia sección: Drivers y hardware.']='Each option explains what it is, how it works and what will happen before you press anything. Drivers have their own section: Drivers and hardware.'
+$script:TrMap['Qué es, cómo funciona y qué pasará']='What it is, how it works and what will happen'
+$script:TrMap['Cargar: abrir la carpeta de copias']='Load: open the copies folder'
+$script:TrMap['Tu punto de partida: aquí viven todos tus perfiles y paquetes de rescate.']='Your starting point: all your profiles and rescue packs live here.'
+$script:TrMap['QUÉ ES: la puerta de entrada a todas tus copias del WPI (perfiles de tweaks y paquetes de rescate). CÓMO FUNCIONA: abre en el Explorador la carpeta oficial Restauracion del WPI, que se crea sola y donde el WPI guarda cada copia automáticamente. QUÉ PASARÁ: solo se abre la carpeta; no se toca nada del sistema. Desde ahí puedes ver, copiar o llevarte tus copias a un USB.']='WHAT IT IS: the front door to every WPI backup (tweak profiles and rescue packs). HOW IT WORKS: opens WPI''s official Restauracion folder in File Explorer; it is created automatically and the WPI saves every backup there. WHAT WILL HAPPEN: only the folder opens; nothing on the system is touched. From there you can view, copy or take your backups to a USB drive.'
+$script:TrMap['Cargar perfil de tweaks']='Load tweaks profile'
+$script:TrMap['Marca en Tweaks lo que había aplicado un perfil guardado, para revisarlo antes de tocar nada.']='Checks in Tweaks what a saved profile had applied, so you can review it before touching anything.'
+$script:TrMap['QUÉ ES: el cargador de perfiles de tweaks guardados (.json), como el que incluye cada paquete de rescate. CÓMO FUNCIONA: eliges un perfil y el WPI marca en la sección Tweaks exactamente lo que aquel día estaba aplicado en tu equipo. QUÉ PASARÁ: al cargarlo NO se cambia nada todavía: solo se marca la selección para que la revises; los cambios se aplican únicamente si después pulsas aplicar en Tweaks.']='WHAT IT IS: the loader for saved tweak profiles (.json), like the one included in every rescue pack. HOW IT WORKS: you pick a profile and the WPI checks in the Tweaks section exactly what was applied on your PC that day. WHAT WILL HAPPEN: loading changes NOTHING yet: it only marks the selection for you to review; changes are applied only if you later press apply in Tweaks.'
+$script:TrMap['Elegir perfil...']='Choose profile...'
+$script:TrMap['Deshacer lo de hoy (diario de cambios)']="Undo today's changes (journal)"
+$script:TrMap['Revierte solo lo aplicado hoy, verificando cada reversión contra el sistema.']='Reverts only what was applied today, verifying every rollback against the system.'
+$script:TrMap['QUÉ ES: el botón de marcha atrás del día. CÓMO FUNCIONA: lee el diario de cambios del WPI (logs\wpi_journal.jsonl) y revierte SOLO los ajustes aplicados hoy, uno a uno y verificando cada reversión. QUÉ PASARÁ: los tweaks de hoy vuelven a su estado anterior; lo aplicado otros días no se toca. Al final verás un resumen honesto de lo revertido y de cualquier fallo.']='WHAT IT IS: the undo button for today. HOW IT WORKS: it reads the WPI change journal (logs\wpi_journal.jsonl) and reverts ONLY the settings applied today, one by one, verifying every rollback. WHAT WILL HAPPEN: today''s tweaks return to their previous state; anything applied on other days is not touched. At the end you get an honest summary of what was reverted and of any failure.'
+$script:TrMap['Deshacer hoy']='Undo today'
+$script:TrMap['Restaurar arranques automáticos aparcados']='Restore parked startup entries'
+$script:TrMap['Devuelve a su sitio los autoarranques que el primer arranque aparcó para acelerar el inicio.']='Puts back the startup entries the first boot parked to speed up startup.'
+$script:TrMap['QUÉ ES: la recuperación de los programas de arranque automático que el primer arranque del WPI aparcó para acelerar el inicio de Windows. CÓMO FUNCIONA: lee la copia de seguridad del registro (WPI_Autoruns_Backup en HKLM/HKCU) y la carpeta WPI_Desactivados, y devuelve cada entrada a su sitio verificándola una a una. QUÉ PASARÁ: esos programas volverán a arrancar solos con Windows, como antes del WPI; el inicio puede tardar algo más.']='WHAT IT IS: the recovery of the auto-start programs that WPI''s first boot parked to speed up Windows startup. HOW IT WORKS: it reads the registry backup (WPI_Autoruns_Backup under HKLM/HKCU) and the WPI_Desactivados folder, and puts every entry back in place, verifying them one by one. WHAT WILL HAPPEN: those programs will start with Windows again, as before the WPI; startup may take a bit longer.'
+$script:TrMap['Restaurar']='Restore'
+$script:TrMap['Restauración del sistema de Windows']='Windows System Restore'
+$script:TrMap['La más potente: vuelve el sistema completo a un punto anterior (herramienta oficial de Windows).']='The most powerful one: takes the whole system back to an earlier point (official Windows tool).'
+$script:TrMap['QUÉ ES: la herramienta oficial de Windows para devolver el SISTEMA COMPLETO a un punto anterior; la opción más potente de esta lista. CÓMO FUNCIONA: se abre rstrui.exe, eliges un punto de restauración (el WPI crea uno con cada paquete de rescate) y Windows revierte archivos de sistema, drivers y registro a ese momento. QUÉ PASARÁ: el equipo se reiniciará durante el proceso; tus documentos personales NO se borran, pero los programas instalados después de ese punto pueden desaparecer.']='WHAT IT IS: the official Windows tool to take the WHOLE SYSTEM back to an earlier point; the most powerful option in this list. HOW IT WORKS: rstrui.exe opens, you pick a restore point (the WPI creates one with every rescue pack) and Windows reverts system files, drivers and registry to that moment. WHAT WILL HAPPEN: the PC will restart during the process; your personal documents are NOT deleted, but programs installed after that point may disappear.'
+$script:TrMap['Abrir herramienta']='Open tool'
+# --- Rediseno premium: grupos rotulados de la barra de Tweaks ---
+$script:TrMap['Estado real del equipo']='Real state of this PC'
+$script:TrMap['Qué es, cómo funciona y qué pasará (copia de drivers)']='What it is, how it works and what will happen (driver backup)'
+$script:TrMap['QUÉ ES: la copia de seguridad de TODOS los drivers de terceros de este PC (gráfica, red, chipset, sonido...). CÓMO FUNCIONA: usa Export-WindowsDriver para volcar cada paquete (.inf con sus binarios) a la carpeta que elijas, y al terminar cuenta los .inf exportados antes de proclamar éxito. QUÉ PASARÁ: solo se LEE el sistema (no cambia nada); tendrás una carpeta lista para restaurar tras formatear. Puede ocupar desde cientos de MB hasta varios GB según tu equipo.']='WHAT IT IS: the backup of ALL third-party drivers on this PC (graphics, network, chipset, sound...). HOW IT WORKS: it uses Export-WindowsDriver to dump every package (.inf with its binaries) to the folder you choose, and when finished it counts the exported .inf files before claiming success. WHAT WILL HAPPEN: the system is only READ (nothing changes); you get a folder ready to restore after a reinstall. It can take from hundreds of MB to several GB depending on your PC.'
+$script:TrMap['Qué es, cómo funciona y qué pasará (restaurar drivers)']='What it is, how it works and what will happen (restore drivers)'
+$script:TrMap['QUÉ ES: la reinstalación en bloque de una copia de drivers hecha con "Hacer copia de drivers". CÓMO FUNCIONA: pnputil recorre la carpeta elegida e instala cada paquete .inf (incluidas subcarpetas), y el WPI comprueba el código de retorno real (0 correcto, 3010 pide reinicio, 259 sin novedades). QUÉ PASARÁ: se instalan drivers en el sistema; está pensado para un Windows RECIÉN reinstalado y puede pedir REINICIAR para completarse. En un equipo ya configurado, úsalo solo si sabes lo que haces.']='WHAT IT IS: the bulk reinstall of a driver backup made with "Back up drivers". HOW IT WORKS: pnputil walks the chosen folder and installs every .inf package (subfolders included), and the WPI checks the real return code (0 ok, 3010 restart needed, 259 nothing new). WHAT WILL HAPPEN: drivers are installed on the system; it is meant for a FRESHLY reinstalled Windows and may require a RESTART to complete. On an already configured PC, use it only if you know what you are doing.'
+$script:TrMap['Selección inteligente']='Smart selection'
+$script:TrMap['Perfiles']='Profiles'
+$script:TrMap['Red de seguridad']='Safety net'
+$script:TrMap['QUÉ ES: tu seguro total en un clic: una carpeta Rescate_<fecha> con TODAS tus redes de seguridad congeladas en ese momento. CÓMO FUNCIONA: crea un punto de restauración del sistema, guarda el perfil de tweaks con el estado REAL detectado en tu equipo, exporta la lista completa de apps (winget export), copia el diario de cambios y los arranques aparcados, y añade un LEEME con instrucciones; al terminar VERIFICA el contenido antes de dar el OK. QUÉ PASARÁ: tarda entre 30 y 90 segundos y no cambia nada del sistema: solo crea copias. Si algo no se puede incluir (por ejemplo, winget no disponible), el resumen lo dice con claridad.']='WHAT IT IS: your full insurance in one click: a Rescate_<date> folder with ALL your safety nets frozen at that moment. HOW IT WORKS: it creates a system restore point, saves the tweaks profile with the REAL state detected on your PC, exports the full list of apps (winget export), copies the change journal and the parked startup entries, and adds a README with instructions; when finished it VERIFIES the content before giving the OK. WHAT WILL HAPPEN: it takes 30 to 90 seconds and changes nothing on the system: it only creates copies. If something cannot be included (for example, winget not available), the summary says so clearly.'
+$script:TrMap['Abre la carpeta oficial Restauracion del WPI, donde viven tus perfiles y paquetes de rescate.']='Opens WPI''s official Restauracion folder, home of your profiles and rescue packs.'
+$script:TrMap['Carpeta de copias abierta: {0}']='Copies folder opened: {0}'
+$script:TrMap['Cargar perfil de tweaks...']='Load tweaks profile...'
+$script:TrMap['Abre un perfil .json guardado y marca en Tweaks lo que habia aplicado, para igualar o revertir revisando antes.']='Opens a saved .json profile and checks in Tweaks what it had applied, to match or revert after reviewing.'
+$script:TrMap['Revierte SOLO los ajustes aplicados hoy segun el diario de cambios (logs\wpi_journal.jsonl).']='Reverts ONLY the settings applied today according to the change journal (logs\wpi_journal.jsonl).'
+$script:TrMap['Restaurar arranques automaticos aparcados']='Restore parked startup entries'
+$script:TrMap['Devuelve a su sitio los autoarranques de terceros que el primer arranque aparco (copia WPI_Autoruns_Backup + carpeta WPI_Desactivados), con verificacion.']='Puts back the third-party startup entries parked by the first boot (WPI_Autoruns_Backup copy + WPI_Desactivados folder), with verification.'
+$script:TrMap['No habia arranques aparcados que restaurar.']='There were no parked startup entries to restore.'
+$script:TrMap['Restaurados y verificados {0} arranque(s) automatico(s).']='Restored and verified {0} startup entry(ies).'
+$script:TrMap["Restaurados: {0}. Con fallo: {1}.`nRevisa logs\autoruns_desactivados.json para los detalles."]="Restored: {0}. Failed: {1}.`nCheck logs\autoruns_desactivados.json for details."
+$script:TrMap['Restauracion del sistema de Windows...']='Windows System Restore...'
+$script:TrMap['Abre la Restauracion del sistema de Windows (rstrui) para volver a un punto de restauracion anterior.']='Opens Windows System Restore (rstrui) to go back to an earlier restore point.'
+$script:TrMap['No se pudo abrir la Restauracion del sistema.']='Could not open System Restore.'
+$script:TrMap['Restaurar drivers desde copia...']='Restore drivers from a backup...'
+$script:TrMap['Te lleva a Drivers y hardware, donde esta la restauracion de drivers desde una copia (.inf) con verificacion.']='Takes you to Drivers and hardware, where driver restore from a (.inf) backup lives, with verification.'
+$script:TrMap['Estas en Drivers y hardware: usa "Restaurar drivers desde copia".']='You are in Drivers and hardware: use "Restore drivers from backup".'
+$script:TrMap['PAQUETE DE RESCATE (un clic)']='RESCUE PACK (one click)'
+$script:TrMap['Congela AHORA todas tus redes de seguridad en una carpeta con fecha dentro de Restauracion: punto de restauracion del sistema, perfil de tweaks con el estado real, lista completa de apps (winget export), copia del diario y de los arranques aparcados, y un LEEME con instrucciones. Ideal antes de tocar nada importante.']='Freezes ALL your safety nets right NOW into a dated folder inside Restauracion: a system restore point, a tweaks profile with the real state, the full app list (winget export), copies of the journal and parked autoruns, and a README with instructions. Ideal before touching anything important.'
+$script:TrMap['Crear paquete de rescate ahora']='Create rescue pack now'
+$script:TrMap['Crea la carpeta Rescate_<fecha> con todo dentro y VERIFICA el contenido antes de dar el OK.']='Creates the Rescate_<date> folder with everything inside and VERIFIES the contents before saying OK.'
+$script:TrMap['Creando paquete de rescate (30-90 s: incluye punto de restauracion y export de apps)...']='Creating rescue pack (30-90 s: includes a restore point and the apps export)...'
+$script:TrMap['Paquete de rescate creado y verificado: {0} archivos en {1}']='Rescue pack created and verified: {0} files in {1}'
+$script:TrMap['Paquete de rescate creado y verificado']='Rescue pack created and verified'
+$script:TrMap['Donde esta']='Where it is'
+$script:TrMap['Contenido real']='Actual contents'
+$script:TrMap['Abrir carpeta']='Open folder'
+$script:TrMap['Cerrar']='Close'
+$script:TrMap['No se pudo crear el paquete de rescate:']='Could not create the rescue pack:'
+$script:TrMap['ESTADO DE TUS REDES DE SEGURIDAD (en vivo)']='STATUS OF YOUR SAFETY NETS (live)'
+$script:TrMap['Carpeta oficial']='Official folder'
+$script:TrMap['Paquetes de rescate']='Rescue packs'
+$script:TrMap['Perfiles guardados (.json)']='Saved profiles (.json)'
+$script:TrMap['Cambios en el diario (hoy)']='Journal changes (today)'
+$script:TrMap['Arranques aparcados']='Parked startup entries'
+$script:TrMap['Último punto de restauración']='Latest restore point'
+$script:TrMap['no comprobable sin permisos de administrador']='not checkable without administrator rights'
+$script:TrMap['ninguno todavia (crea uno con el paquete de rescate)']='none yet (create one with the rescue pack)'
+$script:TrMap['Punto de restauracion del sistema: CREADO.']='System restore point: CREATED.'
+$script:TrMap['Punto de restauracion: no creado ({0}). Windows solo permite uno cada 24 h.']='Restore point: not created ({0}). Windows only allows one every 24 h.'
+$script:TrMap['Perfil de tweaks con el estado real de este PC: guardado (perfil_tweaks.json).']='Tweaks profile with this PC''s real state: saved (perfil_tweaks.json).'
+$script:TrMap['Lista de apps instaladas (winget export): guardada (apps_winget.json).']='Installed apps list (winget export): saved (apps_winget.json).'
+$script:TrMap['Lista de apps: winget no genero el archivo (se omite).']='Apps list: winget did not produce the file (skipped).'
+$script:TrMap['Lista de apps: winget no disponible (se omite).']='Apps list: winget not available (skipped).'
+$script:TrMap['Copia incluida: {0}']='Copy included: {0}'
+$script:TrMap['PAQUETE DE RESCATE del WPI. Contiene las redes de seguridad de este equipo en el momento de crearlo. Como usarlo: (1) perfil_tweaks.json se carga desde Entorno de Recuperacion > Cargar perfil de tweaks; (2) apps_winget.json se importa con: winget import -i apps_winget.json; (3) el punto de restauracion del sistema se usa desde Restauracion del sistema (rstrui); (4) wpi_journal.jsonl y autoruns_desactivados.json son las copias del diario y de los arranques aparcados.']='WPI RESCUE PACK. It contains this PC''s safety nets at the moment it was created. How to use it: (1) perfil_tweaks.json loads from Recovery hub > Load tweaks profile; (2) apps_winget.json imports with: winget import -i apps_winget.json; (3) the system restore point is used from System Restore (rstrui); (4) wpi_journal.jsonl and autoruns_desactivados.json are the copies of the journal and the parked autoruns.'
+$script:TrMap['El paquete quedo incompleto (menos de 2 archivos). Revisa permisos de la carpeta Restauracion.']='The pack ended up incomplete (fewer than 2 files). Check the permissions of the Restauracion folder.'
+$script:TrMap['No se pudo cargar el perfil.']='Could not load the profile.'
+# F5: guia premium de drivers sin .inf + toast
+$script:TrMap['No hay drivers (.inf) en la carpeta elegida']='No drivers (.inf) in the selected folder'
+$script:TrMap['Que ha pasado']='What happened'
+$script:TrMap['En la carpeta elegida no se ha encontrado ningun archivo .inf (los drivers que se inyectan en la ISO):']='No .inf file (the drivers that get injected into the ISO) was found in the selected folder:'
+$script:TrMap['Donde colocar tus drivers (recomendado)']='Where to place your drivers (recommended)'
+$script:TrMap['Copia tus drivers (.inf con sus carpetas) dentro de la carpeta oficial "Drivers" del WPI, ya creada automaticamente para mantener todo ordenado y centralizado:']='Copy your drivers (.inf with their folders) into the official WPI "Drivers" folder, already created automatically to keep everything tidy and centralized:'
+$script:TrMap['Puedes usar cualquier otra carpeta si lo prefieres: la oficial existe para que siempre sepas donde estan.']='You can use any other folder if you prefer: the official one exists so you always know where they are.'
+$script:TrMap['No tienes drivers a mano?']='No drivers at hand?'
+$script:TrMap['En este mismo paso, el boton "No tengo: crear copia (.inf) de mis drivers actuales" exporta los drivers de este PC y deja la carpeta lista para inyectar, sin que busques nada.']='In this same step, the "I have none: create a (.inf) copy of my current drivers" button exports this PC''s drivers and leaves the folder ready to inject, no searching needed.'
+$script:TrMap['Continuar sin drivers']='Continue without drivers'
+$script:TrMap['Volver y colocar drivers']='Go back and place drivers'
+$script:TrMap['Carpeta oficial preparada: {0}  -  Copia ahi tus drivers (.inf) y vuelve a pulsar Siguiente.']='Official folder ready: {0}  -  Copy your drivers (.inf) there and press Next again.'
+$script:TrMap['NO TIENES DRIVERS PREPARADOS? Guardalos en la carpeta oficial "Drivers" del directorio raiz del WPI (se crea sola). El boton de abajo la selecciona como carpeta de este paso y te la abre para que copies dentro tus drivers (.inf con sus carpetas).']='NO DRIVERS READY? Save them in the official "Drivers" folder in the WPI root directory (it is created automatically). The button below selects it as this step''s folder and opens it so you can copy your drivers into it (.inf with their folders).'
+$script:TrMap['Usar la carpeta oficial "Drivers" (y abrirla)']='Use the official "Drivers" folder (and open it)'
+$script:TrMap['Selecciona la carpeta oficial "Drivers" del WPI como carpeta de este paso y la abre en el Explorador para que copies ahi tus drivers.']='Selects the official WPI "Drivers" folder as this step''s folder and opens it in Explorer so you can copy your drivers there.'
+$script:TrMap['Carpeta oficial seleccionada y abierta: {0}  -  Copia ahi tus drivers (.inf).']='Official folder selected and opened: {0}  -  Copy your drivers (.inf) there.'
+$script:TrMap['Usar la carpeta oficial (y abrirla)']='Use the official folder (and open it)'
+$script:TrMap['Carpeta oficial seleccionada y abierta: {0}  -  Copia ahi tus drivers (.inf) y vuelve a pulsar Siguiente.']='Official folder selected and opened: {0}  -  Copy your drivers (.inf) there and press Next again.'
+$script:TrMap['Carpeta con los drivers (.inf) a inyectar. La oficial es la carpeta "Drivers" del propio WPI (ya creada). Si no tienes drivers, usa el boton de abajo para copiar los de tu PC actual.']='Folder with the drivers (.inf) to inject. The official one is the "Drivers" folder inside WPI itself (already created). If you have none, use the button below to copy the ones from this PC.'
+$script:TrMap['Grabar a un USB con Rufus: que hace exactamente (no hace falta comprobar la ISO antes)']='Write to a USB with Rufus: exactly what it does (no need to check the ISO first)'
+$script:TrMap['Camino directo al pendrive: este boton es INDEPENDIENTE de "Comprobar ISO"; si ya confias en tu ISO puedes grabarla directamente sin comprobar nada antes (la comprobacion es solo un extra de tranquilidad). Que hace: 1) localiza tu ISO recien creada (o te deja elegir otra), 2) localiza Rufus en tu equipo y, si no lo tienes, te ofrece instalarlo con winget en un clic, 3) te muestra un aviso claro y abre Rufus con la ruta de la ISO ya copiada al portapapeles para que la pegues. En Rufus solo tienes que elegir tu USB en "Dispositivo", seleccionar la ISO en "Eleccion de arranque" y pulsar EMPEZAR. El borrado del pendrive lo hace SIEMPRE Rufus cuando tu lo confirmes: el WPI no toca ningun disco. Recuerda: si Rufus muestra la ventana "Experiencia de usuario de Windows", deja TODAS las casillas sin marcar para que no pise la configuracion de tu ISO.']='Straight path to the USB stick: this button is INDEPENDENT of "Check ISO"; if you already trust your ISO you can write it directly without checking anything first (the check is just extra peace of mind). What it does: 1) locates your freshly built ISO (or lets you pick another), 2) locates Rufus on your PC and, if you do not have it, offers to install it with winget in one click, 3) shows a clear notice and opens Rufus with the ISO path already copied to the clipboard so you can paste it. In Rufus you only need to pick your USB under "Device", select this ISO under "Boot selection" and press START. The USB wipe is ALWAYS done by Rufus when you confirm it: WPI never touches any disk. Remember: if Rufus shows the "Windows User Experience" window, leave ALL the checkboxes unchecked so it does not override your ISO configuration.'
+$script:TrMap['Probar la ISO en VirtualBox: configuracion recomendada y solucion a la pantalla negra (Windows 11)']='Testing the ISO in VirtualBox: recommended setup and the black-screen fix (Windows 11)'
+$script:TrMap['Guia rapida SOLO para Oracle VirtualBox. IMPORTANTE: todos estos ajustes se cambian SIEMPRE con la maquina virtual APAGADA. — CONFIGURACION RECOMENDADA PARA LA PRUEBA: maquina "Windows 11 (64-bit)" con 4 CPUs, 8 GB de RAM y 80 GB de disco; red NAT (la que viene por defecto); e instala las Guest Additions tras el primer arranque. Haz un snapshot antes de probar: podras volver al estado limpio en segundos. RECORDATORIO: dentro del Windows de prueba deja el monitor SIEMPRE ENCENDIDO y sin suspension por inactividad (Configuracion > Sistema > Energia, o en consola: powercfg /change monitor-timeout-ac 0 y powercfg /change standby-timeout-ac 0); si no, la pantalla se apaga sola y la VM parece colgada o apagada cuando en realidad esta trabajando. — VIRTUALIZACION ANIDADA (el ajuste que evita el atasco): en Configuracion > Sistema > Procesador activa "Habilitar VT-x/AMD-V anidado". Sin el, si dentro del Windows de prueba habilitas Hyper-V, Sandbox, WSL2 o la Plataforma de maquina virtual, el siguiente arranque se queda COLGADO EN PANTALLA NEGRA (comprobado en la auditoria real de esta suite) y Windows revierte esos cambios. Si tu VirtualBox no deja activarlo, no pruebes esas 4 caracteristicas dentro de la VM. — PANTALLA NEGRA EN WINDOWS 11 (dos soluciones, solo VirtualBox, siempre con la VM apagada): METODO 1: Configuracion > Sistema y desactiva UEFI y Secure Boot. METODO 2: Configuracion > Pantalla y en "Graphics Controller" elige VMSVGA; este metodo desactiva la aceleracion 3D, pero si no vas a usar nada 3D no hay ningun problema. Con cualquiera de los dos, Windows 11 vuelve a mostrarse con normalidad.']='Quick guide ONLY for Oracle VirtualBox. IMPORTANT: all of these settings must ALWAYS be changed with the virtual machine POWERED OFF. — RECOMMENDED SETUP FOR THE TEST: a "Windows 11 (64-bit)" machine with 4 CPUs, 8 GB of RAM and an 80 GB disk; NAT networking (the default); and install the Guest Additions after the first boot. Take a snapshot before testing: you can return to a clean state in seconds. REMINDER: inside the test Windows keep the monitor ALWAYS ON and disable idle sleep (Settings > System > Power, or in a console: powercfg /change monitor-timeout-ac 0 and powercfg /change standby-timeout-ac 0); otherwise the screen turns itself off and the VM looks hung or powered off while it is actually working. — NESTED VIRTUALIZATION (the setting that prevents the hang): in Settings > System > Processor enable "Enable Nested VT-x/AMD-V". Without it, if you enable Hyper-V, Sandbox, WSL2 or the Virtual Machine Platform inside the test Windows, the next boot HANGS ON A BLACK SCREEN (verified in this suite''s real VM audit) and Windows rolls those changes back. If your VirtualBox does not let you enable it, do not test those 4 features inside the VM. — BLACK SCREEN ON WINDOWS 11 (two fixes, VirtualBox only, always with the VM powered off): METHOD 1: Settings > System and disable UEFI and Secure Boot. METHOD 2: Settings > Display and under "Graphics Controller" choose VMSVGA; this method disables 3D acceleration, but if you were not going to use anything 3D there is no problem at all. With either method, Windows 11 displays normally again.'
+$script:TrMap['Grabar a USB (Rufus)']='Write to USB (Rufus)'
+$script:TrMap['Abre Rufus para grabar tu ISO a un pendrive. El USB lo eliges y confirmas tu en Rufus.']='Opens Rufus to write your ISO to a USB stick. You pick and confirm the USB in Rufus.'
+$script:TrMap['Elige la ISO que quieres grabar al USB']='Choose the ISO you want to write to the USB'
+$script:TrMap['No se encontro la ISO a grabar.']='The ISO to write was not found.'
+$script:TrMap['Rufus no esta instalado. Es la herramienta que graba la ISO al USB (esta en el catalogo de apps). Instalarlo ahora con winget?']='Rufus is not installed. It is the tool that writes the ISO to the USB (it is in the app catalog). Install it now with winget?'
+$script:TrMap['winget no esta disponible: instala Rufus desde la seccion de apps y vuelve a intentarlo.']='winget is not available: install Rufus from the apps section and try again.'
+$script:TrMap['No se pudo localizar Rufus tras instalarlo. Abrelo a mano y selecciona tu ISO.']='Could not locate Rufus after installing it. Open it manually and select your ISO.'
+$script:TrMap['Rufus abierto: elige tu USB y esta ISO, luego EMPEZAR.']='Rufus opened: pick your USB and this ISO, then START.'
+$script:TrMap['No se pudo abrir Rufus: {0}']='Could not open Rufus: {0}'
+$script:TrMap['Vas a grabar tu ISO a un USB con Rufus']='You are about to write your ISO to a USB with Rufus'
+$script:TrMap['Se abrira Rufus. En Rufus: 1) elige tu USB en "Dispositivo"  2) en "Eleccion de arranque" selecciona esta ISO  3) pulsa EMPEZAR. El USB se borrara por completo: eso lo hace Rufus cuando tu lo confirmes, no WPI.']='Rufus will open. In Rufus: 1) pick your USB under "Device"  2) under "Boot selection" choose this ISO  3) click START. The USB will be fully erased: Rufus does that when you confirm, not WPI.'
+$script:TrMap['Grabar la ISO a un USB (Rufus)']='Write the ISO to a USB (Rufus)'
+$script:TrMap['Abrir Rufus ahora']='Open Rufus now'
+$script:TrMap['Que ISO quieres grabar al USB?']='Which ISO do you want to write to the USB?'
+$script:TrMap['Usar la ISO de origen']='Use the source ISO'
+$script:TrMap['Elegir otra ISO...']='Choose another ISO...'
+$script:TrMap['Aun no hay ISO de salida creada']='There is no output ISO created yet'
+$script:TrMap['La ISO de salida del asistente todavia no existe, pero tienes una ISO de ORIGEN elegida en el paso 2. Puedes grabar esa ISO de origen tal cual, o elegir otro archivo .iso de tu equipo.']='The output ISO from the wizard does not exist yet, but you have a SOURCE ISO chosen in step 2. You can write that source ISO as is, or pick another .iso file from your PC.'
+$script:TrMap['ISO de origen elegida en el asistente']='Source ISO chosen in the wizard'
+$script:TrMap['No se pudo grabar a USB:']='Could not write to USB:'
+$script:TrMap['Al grabar la ISO al USB con Rufus aparece la ventana "Experiencia de usuario de Windows": deja TODAS las casillas SIN marcar y pulsa Aceptar. Si marcas algo, Rufus crea su propio autounattend y SOBREESCRIBE tu configuracion: no se aplicarian tus apps, tweaks ni ajustes.']='When you write the ISO to USB with Rufus, the "Windows User Experience" window appears: leave ALL boxes UNCHECKED and click OK. If you check anything, Rufus creates its own autounattend and OVERWRITES your configuration: your apps, tweaks and settings would not be applied.'
+$script:TrMap['Como se ejecuta']='How it runs'
+$script:TrMap['Se lanzara como ADMINISTRADOR en una consola aparte; monta la imagen y no debes cerrar esa consola hasta que termine. Si quieres revisar o cambiar algo, pulsa "No, volver atras".']='It will run as ADMINISTRATOR in a separate console; it mounts the image and you must not close that console until it finishes. If you want to review or change anything, press "No, go back".'
+$script:TrMap['Ultimo paso: confirmar y CREAR la ISO']='Last step: confirm and CREATE the ISO'
+$script:TrMap['Si, crear la ISO ahora']='Yes, create the ISO now'
+$script:TrMap['No, volver atras']='No, go back'
+$script:TrMap['ambar = tweak avanzado (mayor impacto, aplicalo con criterio)']='amber = advanced tweak (higher impact, apply with judgment)'
+$script:TrMap['Pasa el cursor por cada tweak para ver que hace.']='Hover over each tweak to see what it does.'
+$script:TrMap['Notas rapidas (Sticky Notes)']='Quick notes (Sticky Notes)'
+$script:TrMap['Start Experiences (Inicio)']='Start Experiences (Start menu)'
+$script:TrMap['Notas adhesivas del escritorio. Reinstalable desde la Store (WinUtil tambien la quita).']='Desktop sticky notes. Reinstallable from the Store (WinUtil removes it too).'
+$script:TrMap['Componente de recomendaciones/anuncios del menu Inicio (WinUtil tambien lo quita).']='Recommendations/ads component of the Start menu (WinUtil removes it too).'
+$script:TrMap['Alarmas y reloj']='Alarms & Clock'
+$script:TrMap['Noticias Bing (Finanzas/Deportes)']='Bing News (Finance/Sports)'
+$script:TrMap['Alarmas, temporizador y reloj. Reinstalable desde la Store.']='Alarms, timer and clock. Reinstallable from the Store.'
+$script:TrMap['Apps de finanzas y deportes de Bing.']='Bing finance and sports apps.'
 $script:TrMap['Ninguna']='None'
 $script:TrMap['Ninguno']='None'
 $script:TrMap['Presets:']='Presets:'
@@ -3711,6 +6620,52 @@ $script:TrMap['Quitar todas']='Unmark all'
 $script:TrMap['Quitar todos']='Unmark all'
 $script:TrMap['Recargar catalogo.json (reinicia la app)']='Reload catalogo.json (restarts the app)'
 $script:TrMap['Re-detectar estado']='Re-detect status'
+$script:TrMap['Verificar todo']='Verify everything'
+$script:TrMap['Deshacer lo de hoy']='Undo today'
+$script:TrMap['Programar mantenimiento mensual (limpieza + informe)']='Schedule monthly maintenance (cleanup + report)'
+$script:TrMap['DNS: cambiar a Cloudflare (1.1.1.1)']='DNS: switch to Cloudflare (1.1.1.1)'
+$script:TrMap['Configura los servidores DNS del adaptador de red activo a Cloudflare (1.1.1.1 / 1.0.0.1). Reversible con "DNS: volver a automatico".']='Sets the active network adapter DNS servers to Cloudflare (1.1.1.1 / 1.0.0.1). Reversible with "DNS: back to automatic".'
+$script:TrMap['DNS: cambiar a Quad9 (9.9.9.9, con filtro de malware)']='DNS: switch to Quad9 (9.9.9.9, malware filtering)'
+$script:TrMap['Configura el DNS del adaptador activo a Quad9 (9.9.9.9 / 149.112.112.112), que bloquea dominios maliciosos conocidos. Reversible.']='Sets the active adapter DNS to Quad9 (9.9.9.9 / 149.112.112.112), which blocks known malicious domains. Reversible.'
+$script:TrMap['DNS: cambiar a Google (8.8.8.8)']='DNS: switch to Google (8.8.8.8)'
+$script:TrMap['Configura el DNS del adaptador activo a Google (8.8.8.8 / 8.8.4.4). Reversible con "DNS: volver a automatico".']='Sets the active adapter DNS to Google (8.8.8.8 / 8.8.4.4). Reversible with "DNS: back to automatic".'
+$script:TrMap['DNS: volver a automatico (DHCP del router)']='DNS: back to automatic (router DHCP)'
+$script:TrMap['Restablece el DNS del adaptador activo a automatico (lo que asigne el router por DHCP). Deshace cualquier cambio de DNS anterior.']='Resets the active adapter DNS to automatic (whatever the router assigns via DHCP). Undoes any previous DNS change.'
+$script:TrMap['Silenciar Microsoft Edge (arranque automatico y accesos)']='Silence Microsoft Edge (auto-launch and shortcuts)'
+$script:TrMap['Evita que Edge se abra solo al iniciar sesion y quita sus accesos directos del Escritorio y la barra. NO desinstala Edge (sigue disponible): es totalmente reversible.']='Stops Edge from opening by itself at sign-in and removes its Desktop/taskbar shortcuts. Does NOT uninstall Edge (still available): fully reversible.'
+$script:TrMap['Validar IDs (winget)']='Validate IDs (winget)'
+$script:TrMap['Comprueba en el repositorio de winget que cada ID marcado existe. Los que fallen apareceran en el registro para que los quites antes de crear la ISO.']='Checks the winget repository to confirm each marked ID exists. Any that fail will appear in the log so you can remove them before building the ISO.'
+$script:TrMap['Marca primero las apps que quieres validar.']='Mark the apps you want to validate first.'
+$script:TrMap['winget no esta disponible: no se pueden validar los IDs ahora.']='winget is not available: IDs cannot be validated right now.'
+$script:TrMap['Validando {0} IDs contra winget...']='Validating {0} IDs against winget...'
+$script:TrMap['Validar IDs']='Validate IDs'
+$script:TrMap['Perfiles por persona (marcan un set pensado para ti):']='Persona profiles (mark a set tailored to you):'
+$script:TrMap['Gamer']='Gamer'
+$script:TrMap['Creador']='Creator'
+$script:TrMap['Oficina']='Office'
+$script:TrMap['Minimalista']='Minimalist'
+$script:TrMap['Perfil {0}: marcados {1} ajustes. Revisa la seleccion y pulsa APLICAR SELECCIONADOS.']='{0} profile: {1} settings checked. Review the selection and press APPLY SELECTED.'
+$script:TrMap['Crea una tarea programada que, una vez al mes, limpia temporales/papelera, vacia la cache DNS y deja un informe. Se verifica que la tarea queda creada.']='Creates a scheduled task that once a month clears temp files/recycle bin, flushes the DNS cache and leaves a report. The task is verified after creation.'
+$script:TrMap['Revertir']='Revert'
+$script:TrMap['No hay cambios registrados hoy en el diario (o ya se revirtieron).']='No changes recorded in today''s journal (or they were already reverted).'
+$script:TrMap['Los cambios de hoy no tienen reversion automatica.']='Today''s changes have no automatic revert.'
+$script:TrMap['Se revertiran {0} cambio(s) hechos HOY a su valor por defecto de Windows.']='{0} change(s) made TODAY will be reverted to their Windows default.'
+$script:TrMap['Sin reversion automatica ({0}): {1}']='No automatic revert ({0}): {1}'
+$script:TrMap['Continuar?']='Continue?'
+$script:TrMap['Auditoria de estado del sistema (WPI)']='System status audit (WPI)'
+$script:TrMap['DERIVA detectada (estaba aplicado y ahora NO)']='DRIFT detected (was applied and now is NOT)'
+$script:TrMap['revertido desde el ultimo perfil guardado']='reverted since the last saved profile'
+$script:TrMap['con deriva']='with drift'
+$script:TrMap['Detalle completo']='Full detail'
+$script:TrMap['Grupo']='Group'
+$script:TrMap['Ajuste']='Setting'
+$script:TrMap['Estado']='State'
+$script:TrMap['aplicado']='applied'
+$script:TrMap['sin aplicar']='not applied'
+$script:TrMap['Auditoria terminada: {0} aplicados, {1} sin aplicar, {2} no comprobables.']='Audit finished: {0} applied, {1} not applied, {2} not checkable.'
+$script:TrMap['ATENCION: {0} ajuste(s) con DERIVA (estaban aplicados y ahora ya no; revisa el informe).']='WARNING: {0} setting(s) with DRIFT (were applied and now are not; check the report).'
+$script:TrMap['Informe guardado en: {0}']='Report saved to: {0}'
+$script:TrMap['Auditoria: {0} aplicados, {1} sin aplicar, {2} con deriva.']='Audit: {0} applied, {1} not applied, {2} with drift.'
 $script:TrMap['Refrescar']='Refresh'
 $script:TrMap['REGISTRO EN VIVO']='LIVE LOG'
 $script:TrMap['Restaurar drivers desde carpeta']='Restore drivers from folder'
@@ -3751,12 +6706,23 @@ $script:TrMap['VISOR DE LOGS']='LOG VIEWER'
 $script:TrMap['TWEAKS Y AJUSTES (se aplican solo los marcados; casi todos reversibles)']='TWEAKS AND SETTINGS (only marked ones apply; almost all reversible)'
 $script:TrMap['Instala tus programas']='Install your programs'
 $script:TrMap['Optimiza Windows (Tweaks)']='Optimize Windows (Tweaks)'
+$script:TrMap['Prepara tu PC para jugar (Gaming)']='Get your PC ready to play (Gaming)'
+$script:TrMap['Chequeo previo honesto, Modo Juego por sesion 100% reversible, radar de overlays y medicion real. Sin promesas de FPS.']='Honest pre-check, 100% reversible per-session Game Mode, overlay radar and real measurement. No FPS promises.'
 $script:TrMap['Quita el bloatware']='Remove bloatware'
 $script:TrMap['Repara Windows']='Repair Windows'
 $script:TrMap['Crea tu ISO a medida']='Create your custom ISO'
 $script:TrMap['Mira el estado de tu equipo']='Check your PC status'
 $script:TrMap['Ir a Programas ->']='Go to Programs ->'
 $script:TrMap['Ir a Tweaks ->']='Go to Tweaks ->'
+$script:TrMap['Ir a Gaming ->']='Go to Gaming ->'
+$script:TrMap['Abrir los manuales de Winzard']='Open the Winzard manuals'
+$script:TrMap['Abre la carpeta de manuales en tu idioma: un manual por seccion y un documento completo.']='Opens the manuals folder in your language: one manual per section plus a complete document.'
+$script:TrMap['Manuales de Winzard: pulsa uno y leelo aqui mismo, sin salir de la app.']='Winzard manuals: click one and read it right here, without leaving the app.'
+$script:TrMap['Manual completo']='Complete manual'
+$script:TrMap['Manual de Winzard - se lee aqui mismo, sin salir de la app']='Winzard manual - read it right here, without leaving the app'
+$script:TrMap['Abrir la carpeta de manuales']='Open the manuals folder'
+$script:TrMap['Se abre en una ventana de lectura premium, dentro de Winzard.']='Opens in a premium reading window, inside Winzard.'
+$script:TrMap['No se encontro la carpeta de manuales junto al WPI.']='The manuals folder was not found next to the WPI.'
 $script:TrMap['Ir a Limpiar ->']='Go to Clean ->'
 $script:TrMap['Ir a Reparacion ->']='Go to Repair ->'
 $script:TrMap['Ir a Crear ISO ->']='Go to Create ISO ->'
@@ -3822,6 +6788,18 @@ $script:TrMap['Comparativa antes / despues']='Before / after comparison'
 $script:TrMap['Crear ISO']='Create ISO'
 $script:TrMap['Desinstalacion masiva']='Mass uninstall'
 $script:TrMap['Fallback a Chocolatey']='Chocolatey fallback'
+# Dialogo premium del Fallback Choco (F4 de la mision integral)
+$script:TrMap['Fallback a Chocolatey (plan B de descarga)']='Chocolatey fallback (download plan B)'
+$script:TrMap['Para que sirve']='What it is for'
+$script:TrMap['Es tu red de seguridad cuando winget falla: por defecto el WPI instala todo con winget (el gestor oficial de Microsoft), pero algunos instaladores fallan puntualmente (servidor caido, paquete retirado, instalador que rechaza el modo silencioso). Con esta opcion activada, cada app que winget NO consiga instalar se reintenta automaticamente con Chocolatey, el otro gran gestor de paquetes de Windows. Solo actua como plan B: si winget instala bien, Chocolatey ni se usa.']='It is your safety net when winget fails: by default WPI installs everything with winget (Microsoft''s official manager), but some installers fail occasionally (server down, package withdrawn, installer that rejects silent mode). With this option enabled, every app that winget could NOT install is automatically retried with Chocolatey, the other major Windows package manager. It only acts as plan B: if winget installs fine, Chocolatey is never used.'
+$script:TrMap['Como se usa (3 pasos)']='How to use it (3 steps)'
+$script:TrMap['1) Marca esta casilla (ya lo has hecho).  2) Marca tus apps y pulsa INSTALAR como siempre.  3) Si winget falla con alguna, veras en el registro en vivo "winget fallo. Probando con Chocolatey..." y el resultado real del reintento. No tienes que hacer nada mas: la descarga alternativa es automatica y queda registrada en el log forense (metodo usado incluido).']='1) Check this box (already done).  2) Select your apps and press INSTALL as usual.  3) If winget fails on any of them, the live log will show "winget failed. Trying Chocolatey..." and the real result of the retry. Nothing else to do: the alternative download is automatic and recorded in the forensic log (method used included).'
+$script:TrMap['Detalles honestos']='Honest details'
+$script:TrMap['Es "best-effort": esa app puede no existir en Chocolatey o tener otro nombre alli (se avisa en el log). El resultado del reintento se VERIFICA contra Chocolatey antes de darlo por bueno. Esta opcion no instala Chocolatey por ti.']='It is best-effort: that app may not exist on Chocolatey or may use a different name there (the log tells you). The retry result is VERIFIED against Chocolatey before it counts as success. This option does not install Chocolatey for you.'
+$script:TrMap['Estado en este equipo: Chocolatey detectado']='Status on this PC: Chocolatey detected'
+$script:TrMap['Estado en este equipo: Chocolatey NO instalado']='Status on this PC: Chocolatey NOT installed'
+$script:TrMap['Chocolatey esta instalado: el plan B podra usarse en cuanto haga falta, sin tocar nada mas.']='Chocolatey is installed: plan B will be available whenever needed, nothing else to set up.'
+$script:TrMap['Mientras no instales Chocolatey, esta opcion no hara nada (winget seguira siendo el unico metodo). Puedes instalarlo desde https://chocolatey.org/install o buscando "Chocolatey" en el panel "Buscar en winget".']='Until you install Chocolatey, this option does nothing (winget stays the only method). You can install it from https://chocolatey.org/install or by searching "Chocolatey" in the "Search in winget" panel.'
 $script:TrMap['Falta algo imprescindible']='Something required is missing'
 $script:TrMap['Falta Windows ADK']='Windows ADK missing'
 $script:TrMap['Importar equipo']='Import machine'
@@ -3849,6 +6827,7 @@ $script:TrMap['Escribe al menos 2 caracteres para buscar.']='Type at least 2 cha
 $script:TrMap['Falta la carpeta de salida (paso "Origen y salida").']='The output folder is missing (step "Source and output").'
 $script:TrMap['Falta la ISO de Windows origen (paso "Origen y salida"). Vuelve atras y eligela.']='The source Windows ISO is missing (step "Source and output"). Go back and choose it.'
 $script:TrMap['Hay un proceso en marcha. Si cierras ahora, las instalaciones en curso seguiran en segundo plano sin supervision. Cerrar igualmente?']='A process is running. If you close now, the installations in progress will keep running in the background unsupervised. Close anyway?'
+$script:TrMap['Cancelando: cerrando por la fuerza la tarea en curso y bloqueando nuevas operaciones...']='Cancelling: force-closing the current task and blocking new operations...'
 $script:TrMap['Marca primero las apps cuyo instalador quieres descargar (sin instalarlas).']='First mark the apps whose installer you want to download (without installing them).'
 $script:TrMap['No has marcado ningun ajuste reversible.']='You have not selected any reversible tweak.'
 $script:TrMap['No has marcado ningun resultado.']='You have not selected any result.'
@@ -3901,6 +6880,7 @@ $script:TrMap["Kit generado en:`n{0}`n`nContiene config, autounattend.xml, el sc
 $script:TrMap["Exportadas {0} apps en formato winget.`nUso en cualquier PC:`nwinget import -i `"{1}`""]="Exported {0} apps in winget format.`nUse on any PC:`nwinget import -i `"{1}`""
 $script:TrMap["Preset guardado: {0} apps.`nUso desatendido:`nIniciar_WPI.bat -Preset `"{1}`""]="Preset saved: {0} apps.`nUnattended use:`nIniciar_WPI.bat -Preset `"{1}`""
 $script:TrMap["Los instaladores se guardaran en:`n{0}`n(cada app en su subcarpeta)`n`nSi   = usar esa carpeta`nNo   = elegir otra carpeta`nCancelar = no descargar"]="The installers will be saved in:`n{0}`n(each app in its subfolder)`n`nYes   = use that folder`nNo   = choose another folder`nCancel = do not download"
+$script:TrMap["{0}`n`n - {1}`n`nNOTA: si alguna de estas apps esta abierta, se cerrara automaticamente para que la actualizacion se aplique de verdad (una app abierta bloquea sus archivos y winget se quedaria en la version vieja).`n`nEl resto se queda EXACTAMENTE como esta. Continuar?"]="{0}`n`n - {1}`n`nNOTE: if any of these apps is open, it will be closed automatically so the update actually applies (an open app locks its files and winget would stay on the old version).`n`nEverything else stays EXACTLY as it is. Continue?"
 $script:TrMap["No se pudo crear la carpeta:`n{0}"]="Could not create the folder:`n{0}"
 $script:TrMap["Vas a DESINSTALAR {0} aplicaciones de este equipo:`n`n - {1}`n`nEsta accion no se puede deshacer desde aqui. Continuar?"]="You are about to UNINSTALL {0} applications from this PC:`n`n - {1}`n`nThis action cannot be undone from here. Continue?"
 $script:TrMap["{0}`n`n - {1}`n`nEl resto se queda EXACTAMENTE como esta. Continuar?"]="{0}`n`n - {1}`n`nThe rest stays EXACTLY as it is. Continue?"
@@ -3951,6 +6931,7 @@ $script:TrMap['Tweaks: {0} de {1} ya aplicados.']='Tweaks: {0} of {1} already ap
 $script:TrMap['{0}   ·   YA INSTALADA']='{0}   ·   ALREADY INSTALLED'
 $script:TrMap['{0}   -   tiene guia en espanol (clic derecho > Ver guia)']='{0}   -   has a Spanish guide (right-click > View guide)'
 $script:TrMap['Buscar app por nombre o ID']='Search app by name or ID'
+$script:TrMap['Buscar app por nombre, ID o descripcion']='Search app by name, ID or description'
 $script:TrMap['Deteccion: ninguna app del catalogo esta instalada todavia.']='Detection: no catalog app is installed yet.'
 $script:TrMap['Deteccion: {0} apps del catalogo ya instaladas (nombre en verde).']='Detection: {0} catalog apps already installed (name in green).'
 # --- P3c: categorias (apps + tweaks/debloat/features) ---
@@ -4017,7 +6998,7 @@ $script:TrMap['Detiene el servicio de indexado. Reduce uso de disco; la busqueda
 $script:TrMap['Detiene y deshabilita los servicios de actualizacion. Solo temporal y bajo tu responsabilidad.']='Stops and disables the update services. Temporary and at your own risk.'
 $script:TrMap['DISM /Online /Cleanup-Image /RestoreHealth. Repara el almacen de componentes. Puede tardar.']='DISM /Online /Cleanup-Image /RestoreHealth. Repairs the component store. May take a while.'
 $script:TrMap['DISM /RestoreHealth: repara el almacen de componentes de Windows.']='DISM /RestoreHealth: repairs the Windows component store.'
-$script:TrMap['Editor de texto enriquecido clasico de Windows.']='Classic Windows rich text editor.'
+$script:TrMap['Editor de texto enriquecido clasico. AVISO: Microsoft lo retiro de Windows 11 24H2+ (queda en NotPresent y ya no se puede instalar en esas versiones; verificado en VM build 26100).']='Classic rich text editor. NOTICE: Microsoft removed it from Windows 11 24H2+ (it stays NotPresent and can no longer be installed on those versions; verified in a VM, build 26100).'
 $script:TrMap['Editor de video preinstalado.']='Preinstalled video editor.'
 $script:TrMap['Ejecuta distribuciones Linux dentro de Windows. Pide reinicio.']='Runs Linux distributions inside Windows. Requires a restart.'
 $script:TrMap['Ejecuta sfc /scannow para reparar archivos de Windows danados. Puede tardar.']='Runs sfc /scannow to repair damaged Windows files. May take a while.'
@@ -4084,7 +7065,44 @@ $script:TrMap['sfc /scannow: repara archivos de sistema danados.']='sfc /scannow
 $script:TrMap['Skype preinstalado.']='Preinstalled Skype.'
 $script:TrMap['Soporte para documentos XPS (impresion y visor).']='Support for XPS documents (printing and viewer).'
 $script:TrMap['Teams de consumo (no el de empresa).']='Consumer Teams (not the business one).'
-$script:TrMap['Version de sistema del Bloc de notas.']='System version of Notepad.'
+$script:TrMap['Version de sistema del Bloc de notas. Deshabilitar quita TAMBIEN la app moderna del Bloc de notas (Store), que es la que abre Windows 11.']='System version of Notepad. Disabling ALSO removes the modern Notepad (Store) app, which is the one Windows 11 opens.'
+$script:TrMap['Copia de drivers']='Driver backup'
+$script:TrMap['estado: no comprobable (ejecuta WPI como administrador)']='status: cannot be checked (run WPI as administrator)'
+$script:TrMap['Desactivar servicios prescindibles (perfil seguro)']='Disable non-essential services (safe profile)'
+$script:TrMap['Deshabilita servicios que la mayoria no usa: MapsBroker, SysMain, TrkWks, dmwappushservice, RetailDemo y RemoteRegistry. Cada uno se verifica tras aplicarlo.']='Disables services most people never use: MapsBroker, SysMain, TrkWks, dmwappushservice, RetailDemo and RemoteRegistry. Each one is verified after applying.'
+$script:TrMap['usas un disco duro mecanico (SysMain ayuda en HDD) o apps de mapas sin conexion.']='you use a mechanical hard drive (SysMain helps on HDDs) or offline maps apps.'
+$script:TrMap['Denegar acceso global a la camara']='Deny global camera access'
+$script:TrMap['Bloquea el acceso a la camara para todas las apps (interruptor global de Windows).']='Blocks camera access for all apps (the global Windows switch).'
+$script:TrMap['usas la camara en videollamadas: tendras que reactivarla.']='you use the camera for video calls: you will need to re-enable it.'
+$script:TrMap['Denegar acceso global al microfono']='Deny global microphone access'
+$script:TrMap['Bloquea el acceso al microfono para todas las apps (interruptor global de Windows).']='Blocks microphone access for all apps (the global Windows switch).'
+$script:TrMap['usas el microfono en llamadas o juegos: tendras que reactivarlo.']='you use the microphone in calls or games: you will need to re-enable it.'
+$script:TrMap['Desactivar experiencias personalizadas (diagnostico)']='Disable tailored experiences (diagnostics)'
+$script:TrMap['Windows deja de usar tus datos de diagnostico para consejos, anuncios y recomendaciones personalizadas.']='Windows stops using your diagnostic data for personalized tips, ads and recommendations.'
+$script:TrMap['Quitar recomendaciones del menu Inicio']='Remove Start menu recommendations'
+$script:TrMap['Oculta la seccion "Recomendado" (archivos y apps sugeridos) del menu Inicio de Windows 11.']='Hides the "Recommended" section (suggested files and apps) from the Windows 11 Start menu.'
+$script:TrMap['Desactivar Widgets por politica (a fondo)']='Disable Widgets by policy (deep)'
+$script:TrMap['Apaga los Widgets a nivel de sistema (politica Dsh). Complementa el ocultar el boton de la barra.']='Turns Widgets off system-wide (Dsh policy). Complements hiding the taskbar button.'
+$script:TrMap['Quitar "Compartir" del menu contextual']='Remove "Share" from the context menu'
+$script:TrMap['Elimina la entrada "Compartir" del clic derecho de archivos (menos ruido en el menu).']='Removes the "Share" entry from the file right-click menu (less clutter).'
+$script:TrMap['Activar historial del portapapeles (Win+V)']='Enable clipboard history (Win+V)'
+$script:TrMap['Guarda un historial de lo copiado, accesible con Win+V. Muy util para trabajar.']='Keeps a history of what you copy, accessible with Win+V. Very handy for work.'
+$script:TrMap['Activar rutas largas (LongPaths)']='Enable long paths (LongPaths)'
+$script:TrMap['Permite rutas de mas de 260 caracteres (imprescindible para desarrollo, node_modules, etc.).']='Allows paths longer than 260 characters (essential for development, node_modules, etc.).'
+$script:TrMap['Tecla Impr Pant abre Recortes']='Print Screen opens Snipping Tool'
+$script:TrMap['La tecla Imprimir Pantalla abre la herramienta Recortes en vez de solo copiar al portapapeles.']='The Print Screen key opens the Snipping Tool instead of just copying to the clipboard.'
+$script:TrMap['Activar NumLock al iniciar sesion']='Enable NumLock at sign-in'
+$script:TrMap['El teclado numerico arranca encendido en la pantalla de inicio de sesion y el escritorio.']='The numeric keypad starts ON at the sign-in screen and desktop.'
+$script:TrMap['Quitar avisos de sincronizacion del Explorador']='Remove sync provider ads in File Explorer'
+$script:TrMap['Oculta los anuncios/avisos del proveedor de sincronizacion (OneDrive y similares) dentro del Explorador.']='Hides sync provider ads/notifications (OneDrive and similar) inside File Explorer.'
+$script:TrMap['Activar Sentido de almacenamiento (limpieza automatica)']='Enable Storage Sense (automatic cleanup)'
+$script:TrMap['Windows limpia temporales y papelera automaticamente cuando falta espacio (Storage Sense).']='Windows automatically cleans temp files and the recycle bin when space runs low (Storage Sense).'
+$script:TrMap['AVISO: desactivar las actualizaciones deja tu PC SIN parches de seguridad. Hazlo solo de forma temporal y reactivalo con "Valores por defecto". Continuar?']='WARNING: disabling updates leaves your PC WITHOUT security patches. Do it only temporarily and re-enable it with "Windows Update defaults". Continue?'
+$script:TrMap['Esto reinicia la pila de red. Perderas la conexion un momento y conviene REINICIAR despues. Continuar?']='This resets the network stack. You will briefly lose connectivity and a RESTART afterwards is recommended. Continue?'
+$script:TrMap['Elige la carpeta donde guardar la copia de drivers']='Choose the folder where the driver backup will be saved'
+$script:TrMap['Elige la carpeta con la copia de drivers (.inf)']='Choose the folder containing the driver backup (.inf)'
+$script:TrMap['Elige donde guardar la copia de tus drivers (.inf)']='Choose where to save your driver backup (.inf)'
+$script:TrMap['Elige donde guardar los instaladores descargados']='Choose where to save the downloaded installers'
 $script:TrMap['Visor de modelos 3D.']='3D model viewer.'
 $script:TrMap['Windows deja de recopilar y enviar tu actividad reciente.']='Windows stops collecting and sending your recent activity.'
 # --- P3c: caveats (Evitalo si: ...) ---
@@ -4119,7 +7137,7 @@ $script:TrMap['estado: HABILITADO (instalada)']='status: ENABLED (installed)'
 $script:TrMap['estado: no instalada']='status: not installed'
 $script:TrMap['estado: no presente']='status: not present'
 $script:TrMap['Crear un punto de restauracion antes de aplicar (recomendado)']='Create a restore point before applying (recommended)'
-$script:TrMap['Marca los ajustes y pulsa APLICAR. Los marcados en ambar son "avanzados" (mayor impacto). REVERTIR deshace los que tengan vuelta atras. Antes de aplicar se crea un punto de restauracion si dejas la casilla activada.']='Mark the tweaks and press APPLY. Those marked in amber are "advanced" (greater impact). REVERT undoes the ones that can be undone. Before applying, a restore point is created if you leave the box checked.'
+$script:TrMap['Centro de optimizacion del sistema: marca los ajustes que quieras y pulsa APLICAR SELECCIONADOS; nada se toca hasta que tu lo ordenes. Cada tweak ejecuta comandos reales (registro, servicios, powercfg) y VERIFICA el resultado despues de aplicarlo, dejando constancia en el log forense de la sesion. Los marcados en ambar son "avanzados": mayor impacto, pensados para quien sabe lo que activa. REVERTIR SELECCIONADOS deshace los que tienen vuelta atras, y si dejas activada la casilla superior se crea un punto de restauracion del sistema antes de aplicar, para que siempre exista un camino de vuelta.']='System optimization hub: check the tweaks you want and press APPLY SELECTED; nothing is touched until you say so. Each tweak runs real commands (registry, services, powercfg) and VERIFIES the result after applying it, recording everything in the session forensic log. Amber entries are "advanced": higher impact, meant for users who know what they are enabling. REVERT SELECTED undoes the ones that support rollback, and if you keep the top checkbox enabled a system restore point is created before applying, so there is always a way back.'
 # --- P3c: nombres de tweaks ---
 $script:TrMap['Aceleracion de GPU por hardware (HAGS)']='Hardware GPU acceleration (HAGS)'
 $script:TrMap['Acelerar el apagado del sistema']='Speed up system shutdown'
@@ -4169,6 +7187,13 @@ $script:TrMap['Buscar actualizaciones ahora']='Check for updates now'
 $script:TrMap['Clipchamp (editor de video)']='Clipchamp (video editor)'
 $script:TrMap['Comprobar archivos del sistema (SFC)']='Check system files (SFC)'
 $script:TrMap['Configuracion recomendada (retrasar updates)']='Recommended configuration (delay updates)'
+$script:TrMap['No se pudo leer el preset JSON (formato no valido).']='Could not read the JSON preset (invalid format).'
+$script:TrMap['Contrasena']='Password'
+$script:TrMap['Se ejecutara "{0}" con el motor asincrono (veras el progreso abajo y puedes cancelar). Continuar?']='"{0}" will run in the async engine (you will see the progress below and can cancel). Continue?'
+$script:TrMap['Herramientas rapidas']='Quick tools'
+$script:TrMap['Ya hay un trabajo en marcha; espera a que termine o pulsa CANCELAR.']='A job is already running; wait for it to finish or press CANCEL.'
+$script:TrMap['VACIA: la cuenta entra sola sin contrasena. Ponle una despues en Configuracion > Cuentas si el equipo no es de pruebas.']='EMPTY: the account signs in automatically without a password. Set one later in Settings > Accounts if this is not a test machine.'
+$script:TrMap['El JSON no contiene IDs de winget reconocibles.']='The JSON does not contain recognizable winget IDs.'
 $script:TrMap['Desactivar Windows Update por completo']='Disable Windows Update completely'
 $script:TrMap['El Tiempo (Bing Weather)']='Weather (Bing Weather)'
 $script:TrMap['Family (Seguridad familiar)']='Family (Family Safety)'
@@ -4218,6 +7243,7 @@ $script:TrMap['Administrador de discos']='Disk Management'
 $script:TrMap['Editor de directivas (gpedit)']='Policy Editor (gpedit)'
 $script:TrMap['Liberador de espacio']='Disk Cleanup'
 $script:TrMap['Informacion del sistema']='System Information'
+$script:TrMap['Informacion']='Information'
 $script:TrMap['Sistema']='System'
 $script:TrMap['Equipo']='PC'
 $script:TrMap['principal']='primary'
@@ -4283,6 +7309,301 @@ $script:TrMap['Emulador de Switch (Eden / Citron) - NO esta en winget']='Switch 
 $script:TrMap['Emuladores de Android (los mas top)']='Android Emulators (top picks)'
 $script:TrMap['Crear guias.json editable']='Create editable guides.json'
 $script:TrMap['Recargar guias.json (reinicia)']='Reload guides.json (restarts)'
+# --- FASE A: tweaks gaming/avanzados nuevos (nombres, descripciones, caveats, avisos) ---
+$script:TrMap['Desactivar MPO (superposicion multiplano)']='Disable MPO (multi-plane overlay)'
+$script:TrMap['Apaga el Multi-Plane Overlay del escritorio. Es un ARREGLO para parpadeos, pantallas negras o tirones con algunas GPU y monitores, no un acelerador.']='Turns off the desktop Multi-Plane Overlay. It is a FIX for flicker, black screens or stutter with some GPUs and monitors, not an accelerator.'
+$script:TrMap['no tienes sintomas de parpadeo o tirones: sin ellos no aporta nada.']='you have no flicker or stutter symptoms: without them it adds nothing.'
+$script:TrMap['Este ajuste es un ARREGLO para parpadeos o tirones de imagen con algunas GPU, no un acelerador. Aplicalo solo si tienes esos sintomas. Continuar?']='This setting is a FIX for image flicker or stutter with some GPUs, not an accelerator. Apply it only if you have those symptoms. Continue?'
+$script:TrMap['Desactivar optimizaciones de pantalla completa (FSO)']='Disable Fullscreen Optimizations (FSO)'
+$script:TrMap['Fuerza la pantalla completa exclusiva clasica en vez de la optimizada. El efecto DEPENDE de cada juego: puede bajar la latencia o dar problemas con alt-tab y HDR.']='Forces classic exclusive fullscreen instead of the optimized one. The effect DEPENDS on each game: it can lower latency or cause issues with alt-tab and HDR.'
+$script:TrMap['usas HDR o gestion de color: la pantalla completa exclusiva los puede desactivar.']='you use HDR or color management: exclusive fullscreen can turn them off.'
+$script:TrMap['El efecto depende de CADA juego: en unos baja la latencia y en otros da problemas con alt-tab o HDR. Pruebalo juego a juego. Continuar?']='The effect depends on EACH game: in some it lowers latency and in others it causes alt-tab or HDR issues. Try it game by game. Continue?'
+$script:TrMap['Perfil multimedia prioritario para juegos (MMCSS)']='Priority multimedia profile for games (MMCSS)'
+$script:TrMap['Sube la prioridad del perfil "Games" que Windows aplica a los juegos (CPU, GPU y E/S). Afina prioridades en equipos cargados; no fabrica rendimiento.']='Raises the priority of the "Games" profile Windows applies to games (CPU, GPU and I/O). Fine-tunes priorities on busy systems; it does not manufacture performance.'
+$script:TrMap['Optimizaciones para juegos en ventana (flip model)']='Optimizations for windowed games (flip model)'
+$script:TrMap['Activa el modelo de presentacion moderno para juegos DX10/11 en ventana o sin bordes (menor latencia). Es el mismo interruptor oficial de Configuracion > Pantalla > Graficos.']='Enables the modern presentation model for DX10/11 games in windowed or borderless mode (lower latency). It is the same official switch as Settings > Display > Graphics.'
+$script:TrMap['Retardo de confirmaciones TCP off (algoritmo de Nagle)']='TCP acknowledgement delay off (Nagle algorithm)'
+$script:TrMap['Envia las confirmaciones TCP sin agrupar (TcpAckFrequency=1) en las interfaces de red activas. Puede bajar la latencia en algunos juegos online; en descargas grandes no ayuda.']='Sends TCP acknowledgements without batching (TcpAckFrequency=1) on active network interfaces. May lower latency in some online games; it does not help large downloads.'
+$script:TrMap['tu prioridad son las descargas/transferencias grandes, no la latencia.']='your priority is large downloads/transfers, not latency.'
+$script:TrMap['Preferir IPv4 y apagar tuneles IPv6 (Teredo)']='Prefer IPv4 and turn off IPv6 tunnels (Teredo)'
+$script:TrMap['Prioriza IPv4 sobre IPv6 y apaga los tuneles (Teredo/ISATAP/6to4). Menos latencia en redes sin IPv6 real. Guarda tu valor previo y lo restaura al revertir.']='Prefers IPv4 over IPv6 and turns off tunnels (Teredo/ISATAP/6to4). Less latency on networks without real IPv6. Saves your previous value and restores it on revert.'
+$script:TrMap['juegas multijugador de Xbox Live: Teredo puede ser necesario para sus salas.']='you play Xbox Live multiplayer: Teredo may be required for its lobbies.'
+$script:TrMap['Impedir programas del fabricante al arrancar (WPBT)']='Stop vendor programs at boot (WPBT)'
+$script:TrMap['Windows deja de ejecutar el software que el firmware del fabricante incrusta en cada arranque (tabla WPBT): evita bloatware persistente de fabrica.']='Windows stops running the software the vendor firmware embeds on every boot (WPBT table): prevents persistent factory bloatware.'
+$script:TrMap['usas un anti-robo del fabricante (p.ej. Computrace): depende de este mecanismo.']='you use a vendor anti-theft tool (e.g. Computrace): it depends on this mechanism.'
+$script:TrMap['Edge sin extras (debloat por politicas)']='Edge without extras (policy debloat)'
+$script:TrMap['Apaga por politica los extras de Microsoft Edge: Rewards, asistente de compras, Collections, widget, recomendaciones, encuestas y telemetria de personalizacion. No desinstala Edge.']='Turns off Microsoft Edge extras by policy: Rewards, shopping assistant, Collections, widget, recommendations, surveys and personalization telemetry. It does not uninstall Edge.'
+$script:TrMap['Reloj del sistema en UTC (para dual-boot)']='System clock in UTC (for dual-boot)'
+$script:TrMap['El reloj hardware pasa a UTC, como esperan Linux y macOS: corrige el desfase de hora al alternar sistemas en dual-boot.']='The hardware clock switches to UTC, as Linux and macOS expect: fixes the time drift when alternating systems in dual-boot.'
+$script:TrMap['NO tienes dual-boot: sin otro sistema no aporta nada.']='you do NOT dual-boot: without another OS it adds nothing.'
+$script:TrMap['Agrupar procesos de servicio segun tu RAM (svchost)']='Group service processes based on your RAM (svchost)'
+$script:TrMap['Sube el umbral de division de svchost al tamano real de tu RAM: Windows agrupa servicios y reduce el numero de procesos residentes. Efecto modesto y visible en el Administrador de tareas.']='Raises the svchost split threshold to your real RAM size: Windows groups services and reduces the number of resident processes. Modest effect, visible in Task Manager.'
+$script:TrMap['Desactivar Reanudar entre dispositivos (Cross-Device)']='Disable Cross-Device Resume'
+$script:TrMap['Apaga la funcion de Windows 11 24H2+ que permite reanudar en el PC actividades del movil (y comparte estado entre dispositivos).']='Turns off the Windows 11 24H2+ feature that lets the PC resume phone activities (and shares state between devices).'
+$script:TrMap['Desactivar telemetria de PowerShell 7']='Disable PowerShell 7 telemetry'
+$script:TrMap['Fija la variable de entorno oficial de exclusion (POWERSHELL_TELEMETRY_OPTOUT=1). Solo afecta a PowerShell 7+; inofensiva si no lo tienes.']='Sets the official opt-out environment variable (POWERSHELL_TELEMETRY_OPTOUT=1). Only affects PowerShell 7+; harmless if you do not have it.'
+$script:TrMap['Barras de desplazamiento siempre visibles']='Scrollbars always visible'
+$script:TrMap['Windows deja de encoger y ocultar las barras de desplazamiento en las apps modernas (accesibilidad y comodidad).']='Windows stops shrinking and hiding scrollbars in modern apps (accessibility and comfort).'
+# --- FASE A: nota contextual por GPU para los avisos de MPO/FSO ---
+$script:TrMap['GPU detectada: {0} ({1}).']='Detected GPU: {0} ({1}).'
+$script:TrMap['En GPU NVIDIA este ajuste se usa sobre todo para corregir parpadeos con G-Sync o con varios monitores.']='On NVIDIA GPUs this setting is mostly used to fix flicker with G-Sync or multiple monitors.'
+$script:TrMap['En GPU AMD este ajuste se usa sobre todo para corregir parpadeos o pantallas negras con FreeSync.']='On AMD GPUs this setting is mostly used to fix flicker or black screens with FreeSync.'
+$script:TrMap['En GPU Intel raramente hace falta: aplicalo solo si tienes sintomas claros.']='On Intel GPUs it is rarely needed: apply it only if you have clear symptoms.'
+$script:TrMap['GPU no identificada: aplicalo solo si tienes sintomas claros.']='GPU not identified: apply it only if you have clear symptoms.'
+# --- FASE B1: Gaming Optimizer (panel @GAMING) ---
+$script:TrMap['Modo Juego: ya hay una sesion activa.']='Game Mode: a session is already active.'
+$script:TrMap['Modo Juego: no se pudo leer el plan de energia actual; no se cambia nada.']='Game Mode: could not read the current power plan; nothing is changed.'
+$script:TrMap['Modo Juego: plan de energia cambiado a "{0}" (antes: "{1}").']='Game Mode: power plan switched to "{0}" (before: "{1}").'
+$script:TrMap['Modo Juego: el plan de energia ya era "{0}"; no se cambia.']='Game Mode: the power plan was already "{0}"; nothing to change.'
+$script:TrMap['Modo Juego: pausado {0} (PID {1}).']='Game Mode: paused {0} (PID {1}).'
+$script:TrMap['Modo Juego: no se pudo pausar {0} (PID {1}).']='Game Mode: could not pause {0} (PID {1}).'
+$script:TrMap['Modo Juego: sesion ACTIVADA. Todo queda registrado y es reversible con "Restaurar todo".']='Game Mode: session ENABLED. Everything is journaled and reversible with "Restore everything".'
+$script:TrMap['Modo Juego: error al activar; se ha revertido lo hecho. Detalle: {0}']='Game Mode: error while enabling; changes were rolled back. Detail: {0}'
+$script:TrMap['Modo Juego: no hay sesion activa que restaurar.']='Game Mode: there is no active session to restore.'
+$script:TrMap['Modo Juego: reanudado {0} (PID {1}).']='Game Mode: resumed {0} (PID {1}).'
+$script:TrMap['Modo Juego: {0} ya no existia (no hace falta reanudarlo).']='Game Mode: {0} no longer exists (nothing to resume).'
+$script:TrMap['Modo Juego: plan de energia restaurado a "{0}".']='Game Mode: power plan restored to "{0}".'
+$script:TrMap['Modo Juego: sesion DESACTIVADA; todo restaurado.']='Game Mode: session DISABLED; everything restored.'
+$script:TrMap['Modo Juego por sesion (Gaming Optimizer)']='Per-session Game Mode (Gaming Optimizer)'
+$script:TrMap['GPU principal: {0}']='Main GPU: {0}'
+$script:TrMap['GPU: solo se detectan adaptadores virtuales (maquina virtual o escritorio remoto).']='GPU: only virtual adapters detected (virtual machine or remote desktop).'
+$script:TrMap['CPU: {0} ({1} nucleos / {2} hilos)']='CPU: {0} ({1} cores / {2} threads)'
+$script:TrMap['RAM instalada: {0} GB']='Installed RAM: {0} GB'
+$script:TrMap['Disco del sistema (C:): {0}']='System disk (C:): {0}'
+$script:TrMap['tipo no identificado']='type not identified'
+$script:TrMap['GAMING OPTIMIZER  ·  PREPARACION HONESTA PARA JUGAR']='GAMING OPTIMIZER  ·  HONEST GAME-READY PREPARATION'
+$script:TrMap['Chequeo real de tu equipo, motor en tiempo real delegado en Process Lasso y un Modo Juego por sesion 100% reversible. Sin promesas de FPS: aqui se habla de estabilidad, latencia, frametimes y microtirones.']='A real check of your PC, a real-time engine delegated to Process Lasso and a 100% reversible per-session Game Mode. No FPS promises here: we talk stability, latency, frametimes and micro-stutter.'
+$script:TrMap['SESION DE MODO JUEGO PENDIENTE DE RESTAURAR']='GAME MODE SESSION PENDING RESTORE'
+$script:TrMap['Se encontro una sesion de Modo Juego de una ejecucion anterior (gaming_session.json): hay cambios sin deshacer. Puedes restaurar ahora el plan de energia y reanudar los procesos pausados.']='A Game Mode session from a previous run was found (gaming_session.json): there are changes left to undo. You can restore the power plan and resume the paused processes now.'
+$script:TrMap['Restaurar todo ahora']='Restore everything now'
+$script:TrMap['CHEQUEO PREVIO  ·  ESTA TU PC LISTO PARA JUGAR?']='PRE-CHECK  ·  IS YOUR PC READY TO PLAY?'
+$script:TrMap['Solo lectura: esta tarjeta analiza y recomienda, pero no cambia nada por su cuenta.']='Read-only: this card analyzes and recommends, but changes nothing on its own.'
+$script:TrMap['Ajustes gaming del catalogo (verde = ya aplicado):']='Gaming tweaks from the catalog (green = already applied):'
+$script:TrMap['{0} de {1} ajustes gaming ya aplicados en este PC.']='{0} of {1} gaming tweaks already applied on this PC.'
+$script:TrMap['Carga actual (solo informativo): esto es lo que mas pesa de fondo ahora mismo.']='Current load (informational only): this is what weighs the most in the background right now.'
+$script:TrMap['Top 5 por RAM:']='Top 5 by RAM:'
+$script:TrMap['Top 5 por CPU acumulada desde su arranque:']='Top 5 by accumulated CPU since start:'
+$script:TrMap['Recomendaciones (nada se aplica automaticamente):']='Recommendations (nothing is applied automatically):'
+$script:TrMap['Tu plan de energia actual no es el de maximo rendimiento: el Modo Juego por sesion puede cambiarlo solo mientras juegas y devolverlo despues.']='Your current power plan is not the maximum performance one: the per-session Game Mode can switch it only while you play and put it back afterwards.'
+$script:TrMap['GPU virtual detectada (maquina virtual o escritorio remoto): los ajustes de MPO/FSO no aplican aqui.']='Virtual GPU detected (virtual machine or remote desktop): the MPO/FSO settings do not apply here.'
+$script:TrMap['Tienes {0} ajuste(s) gaming sin aplicar: revisalos en "Tweaks y ajustes" (los avanzados, solo si los necesitas).']='You have {0} gaming tweak(s) not applied: review them in "Tweaks and settings" (advanced ones only if you need them).'
+$script:TrMap['El disco del sistema parece HDD: pasar a un SSD es la mejora real mas notable en tiempos de carga.']='The system disk looks like an HDD: moving to an SSD is the most noticeable real upgrade for loading times.'
+$script:TrMap['Todo listo: no hay recomendaciones pendientes.']='All set: no pending recommendations.'
+$script:TrMap['Refrescar chequeo']='Refresh check'
+$script:TrMap['MOTOR EN TIEMPO REAL  ·  PROCESS LASSO (DELEGADO)']='REAL-TIME ENGINE  ·  PROCESS LASSO (DELEGATED)'
+$script:TrMap['Winzard no reimplementa un planificador de procesos: el trabajo en tiempo real (ProBalance, afinidades, prioridades) se delega en Process Lasso y se configura SIEMPRE desde su propia interfaz.']='Winzard does not reimplement a process scheduler: real-time work (ProBalance, affinities, priorities) is delegated to Process Lasso and is ALWAYS configured from its own interface.'
+$script:TrMap['[OK] Process Lasso esta instalado.']='[OK] Process Lasso is installed.'
+$script:TrMap['Process Lasso no se ha detectado en este equipo (se busca en Archivos de programa).']='Process Lasso was not detected on this PC (checked in Program Files).'
+$script:TrMap['Instalar Process Lasso (winget)']='Install Process Lasso (winget)'
+$script:TrMap['Abrir Process Lasso']='Open Process Lasso'
+$script:TrMap['ProBalance modera los procesos que acaparan la CPU para mantener el sistema fluido; no fabrica rendimiento. Es gratis para uso personal (la version Pro es de pago).']='ProBalance tames processes that hog the CPU to keep the system responsive; it does not manufacture performance. Free for personal use (the Pro edition is paid).'
+$script:TrMap['MODO JUEGO POR SESION  ·  100% REVERSIBLE']='PER-SESSION GAME MODE  ·  100% REVERSIBLE'
+$script:TrMap['Al activarlo: guarda tu plan de energia actual, cambia al de maximo rendimiento, comprueba el Game Mode de Windows y PAUSA (no cierra) los procesos que tu hayas marcado en la lista. Al desactivarlo todo vuelve exactamente a como estaba y queda constancia en el diario.']='When enabled: it saves your current power plan, switches to maximum performance, checks Windows Game Mode and PAUSES (does not close) the processes YOU marked in the list. When disabled everything goes back exactly as it was, with a journal entry.'
+$script:TrMap['Game Mode de Windows: ACTIVADO.']='Windows Game Mode: ON.'
+$script:TrMap['Game Mode de Windows: desactivado (puedes activarlo desde el panel "Tweaks y ajustes").']='Windows Game Mode: off (you can enable it from the "Tweaks and settings" panel).'
+$script:TrMap['DESACTIVAR Y RESTAURAR TODO']='DISABLE AND RESTORE EVERYTHING'
+$script:TrMap['ACTIVAR MODO JUEGO (sesion)']='ENABLE GAME MODE (session)'
+$script:TrMap['Activar el Modo Juego por sesion? Se cambiara el plan de energia al de maximo rendimiento y se pausaran {0} proceso(s) de tu lista. Todo es reversible con un clic.']='Enable the per-session Game Mode? The power plan will switch to maximum performance and {0} process(es) from your list will be paused. Everything is reversible with one click.'
+$script:TrMap['Lista de pausa: procesos que se pausaran al activar (los eliges tu; ninguno viene marcado)']='Pause list: processes to pause on activation (you pick them; none comes pre-checked)'
+$script:TrMap['Marca solo procesos que reconozcas (launchers, actualizadores, apps de fondo). Se pausan con el mecanismo nativo de Windows y se reanudan al restaurar; nunca se cierran. Los procesos criticos del sistema no se listan.']='Only check processes you recognize (launchers, updaters, background apps). They are paused with the native Windows mechanism and resumed on restore; they are never closed. Critical system processes are not listed.'
+$script:TrMap['no esta en ejecucion ahora']='not running right now'
+$script:TrMap['{0} proceso(s) marcados para pausar.']='{0} process(es) marked to pause.'
+$script:TrMap['Actualizar lista de procesos']='Refresh process list'
+$script:TrMap['Presets (ninguno viene preseleccionado):']='Presets (none comes preselected):'
+$script:TrMap['Competitivo = plan de energia maximo + ProBalance (Process Lasso) + tu lista de pausa. Equilibrado = solo ProBalance, sin tocar el plan ni los procesos.']='Competitive = maximum power plan + ProBalance (Process Lasso) + your pause list. Balanced = ProBalance only, without touching the plan or any process.'
+$script:TrMap['Preset Competitivo']='Competitive preset'
+$script:TrMap['Aplicar el preset Competitivo? Activa el Modo Juego por sesion (plan maximo + pausa de {0} proceso(s)) y abre Process Lasso si esta instalado.']='Apply the Competitive preset? It enables the per-session Game Mode (maximum plan + pausing {0} process(es)) and opens Process Lasso if installed.'
+$script:TrMap['Process Lasso no esta instalado: el preset se aplico sin ProBalance (usa el boton Instalar).']='Process Lasso is not installed: the preset was applied without ProBalance (use the Install button).'
+$script:TrMap['Preset Equilibrado']='Balanced preset'
+$script:TrMap['Preset Equilibrado: Process Lasso abierto (ProBalance se gestiona alli). No se ha tocado nada mas.']='Balanced preset: Process Lasso opened (ProBalance is managed there). Nothing else was touched.'
+$script:TrMap['Preset Equilibrado: instala primero Process Lasso (boton "Instalar Process Lasso").']='Balanced preset: install Process Lasso first ("Install Process Lasso" button).'
+$script:TrMap['TRANSPARENCIA TOTAL  ·  QUE ESTA CAMBIADO AHORA MISMO']='FULL TRANSPARENCY  ·  WHAT IS CHANGED RIGHT NOW'
+$script:TrMap['Modo Juego por sesion: ACTIVO desde {0}.']='Per-session Game Mode: ACTIVE since {0}.'
+$script:TrMap['Plan de energia actual: {0}']='Current power plan: {0}'
+$script:TrMap['Plan original guardado: {0} (se restaurara al desactivar).']='Saved original plan: {0} (it will be restored on disable).'
+$script:TrMap['Procesos en pausa ahora ({0}):']='Processes paused right now ({0}):'
+$script:TrMap['Reanudar']='Resume'
+$script:TrMap['No hay procesos en pausa.']='No processes are paused.'
+$script:TrMap['Restaurar todo']='Restore everything'
+$script:TrMap['Modo Juego por sesion: inactivo. El Gaming Optimizer no tiene nada cambiado en tu sistema ahora mismo.']='Per-session Game Mode: inactive. The Gaming Optimizer has nothing changed on your system right now.'
+$script:TrMap['Cada accion de este panel queda registrada en el Live Log y en el diario (wpi_journal.jsonl).']='Each action in this panel is recorded in the Live Log and the journal (wpi_journal.jsonl).'
+# --- FASE B2: orquestacion gaming (deteccion automatica, perfiles, launchers, medicion) ---
+$script:TrMap['Optimizar para jugar (modo facil)']='Optimize for gaming (easy mode)'
+$script:TrMap['Optimizar para jugar (modo facil)? Se hara: 1) chequeo del equipo, 2) activar el Game Mode de Windows si no lo esta (reversible), 3) abrir Process Lasso si esta instalado (perfil Equilibrado). Nada mas.']='Optimize for gaming (easy mode)? This will: 1) check your PC, 2) enable Windows Game Mode if it is off (reversible), 3) open Process Lasso if installed (Balanced profile). Nothing else.'
+$script:TrMap['Modo facil: Game Mode de Windows activado (reversible desde Tweaks o con "Deshacer lo de hoy").']='Easy mode: Windows Game Mode enabled (reversible from Tweaks or "Undo today").'
+$script:TrMap['Modo facil: Process Lasso no esta instalado; puedes instalarlo con su boton (opcional).']='Easy mode: Process Lasso is not installed; you can install it with its button (optional).'
+$script:TrMap['Modo facil aplicado: chequeo refrescado, Game Mode revisado y ProBalance delegado en Process Lasso.']='Easy mode applied: check refreshed, Game Mode reviewed and ProBalance delegated to Process Lasso.'
+$script:TrMap['Un solo boton seguro: chequeo + Game Mode + ProBalance (perfil Equilibrado). Debajo tienes el detalle experto en tarjetas.']='One safe button: check + Game Mode + ProBalance (Balanced profile). Below you have the expert detail in cards.'
+$script:TrMap['DETECCION AUTOMATICA DE JUEGO  ·  APAGADA POR DEFECTO']='AUTOMATIC GAME DETECTION  ·  OFF BY DEFAULT'
+$script:TrMap['Asocia tus juegos y, con el interruptor maestro encendido, Winzard activa el Modo Juego cuando el juego arranca y lo revierte cuando se cierra. Es orquestacion de lo de arriba, no un motor nuevo.']='Associate your games and, with the master switch on, Winzard enables Game Mode when the game starts and reverts it when it closes. It orchestrates what is above, it is not a new engine.'
+$script:TrMap['Interruptor maestro: vigilar los juegos asociados (comprobacion ligera cada 5 s)']='Master switch: watch the associated games (light check every 5 s)'
+$script:TrMap['Vigilante ACTIVO. Juego en curso: {0}.']='Watcher ACTIVE. Game running: {0}.'
+$script:TrMap['Vigilante ACTIVO: esperando a que arranque un juego asociado.']='Watcher ACTIVE: waiting for an associated game to start.'
+$script:TrMap['Vigilante apagado: no se comprueba nada en segundo plano.']='Watcher off: nothing is checked in the background.'
+$script:TrMap['Juegos asociados ({0}):']='Associated games ({0}):'
+$script:TrMap['No hay juegos asociados todavia. Escribe el proceso de tu juego (ej.: eldenring) o elige su .exe.']='No games associated yet. Type your game process (e.g. eldenring) or pick its .exe.'
+$script:TrMap['Competitivo']='Competitive'
+$script:TrMap['Equilibrado']='Balanced'
+$script:TrMap['usar lista de pausa']='use pause list'
+$script:TrMap['Quitar']='Remove'
+$script:TrMap['Afinidad en Process Lasso']='Affinity in Process Lasso'
+$script:TrMap['Anadir juego (proceso)']='Add game (process)'
+$script:TrMap['Elegir .exe...']='Pick .exe...'
+$script:TrMap['Ejecutables']='Executables'
+$script:TrMap['Escribe el nombre del proceso del juego (sin .exe).']='Type the game process name (without .exe).'
+$script:TrMap['Ese proceso ya esta asociado.']='That process is already associated.'
+$script:TrMap['Deteccion automatica: {0} detectado; perfil {1} aplicado.']='Automatic detection: {0} detected; {1} profile applied.'
+$script:TrMap['Deteccion automatica: {0} ha terminado; se restaura todo.']='Automatic detection: {0} has finished; everything is being restored.'
+$script:TrMap['Deteccion automatica de juego ACTIVADA (vigilante cada 5 s).']='Automatic game detection ENABLED (watcher every 5 s).'
+$script:TrMap['Deteccion automatica de juego desactivada.']='Automatic game detection disabled.'
+$script:TrMap['Launchers detectados (sus procesos de fondo son candidatos a la lista de pausa; nada viene marcado)']='Detected launchers (their background processes are pause-list candidates; nothing comes pre-checked)'
+$script:TrMap['No se han detectado launchers (Steam, Epic Games, GOG Galaxy, Battle.net).']='No launchers detected (Steam, Epic Games, GOG Galaxy, Battle.net).'
+$script:TrMap['[OK] {0} detectado.']='[OK] {0} detected.'
+$script:TrMap['pausar {0} al activar el Modo Juego']='pause {0} when Game Mode activates'
+$script:TrMap['MEDICION HONESTA  ·  FRAMETIMES DE VERDAD']='HONEST MEASUREMENT  ·  REAL FRAMETIMES'
+$script:TrMap['Mide tus frametimes antes y despues de verdad: Winzard no inventa cifras ni promete FPS. PresentMon (Intel) y CapFrameX son las herramientas de referencia.']='Measure your frametimes before and after for real: Winzard does not make up numbers nor promise FPS. PresentMon (Intel) and CapFrameX are the reference tools.'
+$script:TrMap['Instalar PresentMon (winget)']='Install PresentMon (winget)'
+$script:TrMap['Instalar CapFrameX (winget)']='Install CapFrameX (winget)'
+$script:TrMap['Deteccion automatica: ACTIVADA.']='Automatic detection: ENABLED.'
+$script:TrMap['Deteccion automatica: apagada.']='Automatic detection: off.'
+# --- FASE C: confianza (DryRun del Modo Juego y export del catalogo) ---
+$script:TrMap['Ver plan (sin tocar nada)']='View plan (nothing is changed)'
+$script:TrMap['PLAN DE ACTIVACION (no se ha tocado nada):']='ACTIVATION PLAN (nothing has been changed):'
+$script:TrMap['PLAN DE RESTAURACION (no se ha tocado nada):']='RESTORE PLAN (nothing has been changed):'
+$script:TrMap['Plan de energia: {0} -> {1}']='Power plan: {0} -> {1}'
+$script:TrMap['Plan de energia: sin cambio (no se toco al activar).']='Power plan: no change (it was not touched on activation).'
+$script:TrMap['Plan de energia: ya esta en el maximo ({0}); sin cambio.']='Power plan: already at maximum ({0}); no change.'
+$script:TrMap['Plan de energia: sin cambio (no hay plan de maximo rendimiento disponible).']='Power plan: no change (no high-performance plan available).'
+$script:TrMap['Game Mode de Windows: desactivado (solo se avisa; no se cambia).']='Windows Game Mode: disabled (informational only; nothing is changed).'
+$script:TrMap['Procesos que se pausarian ({0}):']='Processes that would be paused ({0}):'
+$script:TrMap['Procesos que se reanudarian ({0}):']='Processes that would be resumed ({0}):'
+$script:TrMap['ninguno marcado (la lista de pausa esta vacia)']='none selected (the pause list is empty)'
+$script:TrMap['ninguno (no habia procesos pausados)']='none (there were no paused processes)'
+$script:TrMap['Modo Juego: plan mostrado (sin tocar nada).']='Game Mode: plan shown (nothing changed).'
+$script:TrMap['Modo Juego por sesion: ACTIVO desde {0} ({1} proceso(s) en pausa)']='Per-session Game Mode: ACTIVE since {0} ({1} paused process(es))'
+$script:TrMap['Modo Juego por sesion: sin cambios en el sistema']='Per-session Game Mode: no changes on the system'
+$script:TrMap['Exportar catalogo (auditoria)']='Export catalog (audit)'
+$script:TrMap['Catalogo exportado: {0} tweaks.']='Catalog exported: {0} tweaks.'
+$script:TrMap['Catalogo de tweaks exportado para auditoria ({0} tweaks):']='Tweaks catalog exported for audit ({0} tweaks):'
+$script:TrMap['La lista de claves de registro es informativa (extraida por regex); no cambia nada del sistema.']='The registry key list is informational (extracted via regex); nothing on the system is changed.'
+$script:TrMap['No se pudo exportar el catalogo.']='The catalog could not be exported.'
+# --- SESION 10 / v7.6: tweaks auditados de WinUtil (Name + Desc) ---
+$script:TrMap['Desactivar Optimizacion de entrega (updates P2P)']='Disable Delivery Optimization (P2P updates)'
+$script:TrMap['Impide que tu PC comparta y reciba actualizaciones de otros equipos por P2P (solo descargara de Microsoft). Ahorra ancho de banda de subida.']='Prevents your PC from sharing and receiving updates from other computers via P2P (downloads from Microsoft only). Saves upload bandwidth.'
+$script:TrMap['Mostrar pantalla azul detallada (BSoD clasico)']='Show detailed blue screen (classic BSoD)'
+$script:TrMap['La pantalla azul de error vuelve a mostrar los parametros tecnicos del fallo (util para diagnosticar cuelgues) en vez de solo la carita.']='The blue error screen shows the technical crash parameters again (useful for diagnosing hangs) instead of just the sad face.'
+$script:TrMap['Quitar desenfoque de la pantalla de inicio de sesion']='Remove logon screen blur'
+$script:TrMap['Elimina el desenfoque (acrylic) del fondo en la pantalla de inicio de sesion: veras tu fondo nitido. Solo estetico y reversible.']='Removes the acrylic blur from the logon screen background: you will see your wallpaper sharp. Purely cosmetic and reversible.'
+$script:TrMap['Ocultar la pagina Principal de Configuracion']='Hide the Settings Home page'
+$script:TrMap['Oculta la pagina "Principal" (con recomendaciones y tarjetas) de la app Configuracion; se abrira directamente en Sistema. Reversible.']='Hides the "Home" page (with recommendations and cards) of the Settings app; it will open directly on System. Reversible.'
+$script:TrMap['Quitar Inicio y Galeria del Explorador']='Remove Home and Gallery from File Explorer'
+$script:TrMap['Desancla las vistas "Inicio" y "Galeria" del panel lateral del Explorador de archivos (quedan las carpetas de siempre). Reversible; reinicia el Explorador para verlo.']='Unpins the "Home" and "Gallery" views from the File Explorer side panel (the usual folders remain). Reversible; restart Explorer to see it.'
+$script:TrMap['Quitar avisos al abrir archivos RDP sin firmar']='Remove warnings when opening unsigned RDP files'
+$script:TrMap['Suprime los avisos nuevos de Windows al abrir archivos .rdp sin firmar (para quien usa Escritorio remoto a menudo). Solo si sabes que tus .rdp son de confianza.']='Suppresses the new Windows warnings when opening unsigned .rdp files (for frequent Remote Desktop users). Only if you know your .rdp files are trusted.'
+$script:TrMap['Desactivar almacenamiento reservado (Reserved Storage)']='Disable Reserved Storage'
+$script:TrMap['Libera los ~7 GB que Windows reserva para sus actualizaciones. Windows puede tardar un momento en aplicarlo y no lo permite con una actualizacion a medias (se avisa honesto).']='Frees the ~7 GB Windows reserves for its updates. Windows may take a moment to apply it and does not allow it mid-update (honest warning shown).'
+$script:TrMap['Bloquear instalacion automatica de software de fabricantes (Razer y similares)']='Block automatic vendor software installation (Razer and similar)'
+$script:TrMap['Impide que Windows instale solo el software promocional del fabricante al conectar perifericos (Razer Synapse y similares); el hardware sigue funcionando con los drivers base. Tambien desactiva la busqueda de drivers promocionales.']='Prevents Windows from auto-installing vendor promotional software when plugging in peripherals (Razer Synapse and similar); the hardware keeps working with base drivers. Also disables promotional driver searching.'
+$script:TrMap['Desactivar deteccion automatica de tipo de carpeta']='Disable automatic folder type discovery'
+$script:TrMap['El Explorador deja de adivinar el tipo de cada carpeta por su contenido (causa lentitud al abrir carpetas grandes). OJO: tambien resetea las vistas guardadas y la agrupacion. Cierra sesion para aplicarlo.']='File Explorer stops guessing each folder type from its contents (causes slowness when opening large folders). NOTE: it also resets saved views and grouping. Sign out to apply.'
+$script:TrMap['DNS: cambiar a OpenDNS (con filtro familiar opcional)']='DNS: switch to OpenDNS (optional family filter)'
+# --- S10-bis: coherencia toggle=estado (auto-detect en interruptores) ---
+$script:TrMap['Estado detectado en este PC: {0} de {1} ajustes ya aplicados ({2} comprobables). Interruptor encendido y verde = ya aplicado; APLICAR solo ejecuta lo que falta.']='State detected on this PC: {0} of {1} settings already applied ({2} checkable). Toggle ON and green = already applied; APPLY only runs what is missing.'
+$script:TrMap['Todo lo marcado ya esta aplicado en este PC: no hay nada que ejecutar.']='Everything selected is already applied on this PC: nothing to run.'
+$script:TrMap['Se omiten {0} ajuste(s) que ya estaban aplicados.']='Skipping {0} setting(s) that were already applied.'
+$script:TrMap['Estado en este PC: {0} de {1} apps de la lista siguen instaladas. Interruptor encendido y verde = ya quitada; enciende una ambar para quitarla (QUITAR solo actua sobre las instaladas).']='State on this PC: {0} of {1} apps in the list are still installed. Toggle ON and green = already removed; turn on an amber one to remove it (REMOVE only acts on installed apps).'
+$script:TrMap['Todo lo marcado ya esta quitado de este PC: no hay nada que hacer.']='Everything selected is already removed from this PC: nothing to do.'
+# --- S10-bis: tweaks auditados de Win11Debloat (Name + Desc) ---
+$script:TrMap['Impedir el cifrado automatico de BitLocker']='Prevent BitLocker automatic encryption'
+$script:TrMap['Evita que Windows cifre el disco por su cuenta en equipos nuevos o reinstalados (y te deje sin la clave a mano). NO descifra nada ya cifrado: solo impide el cifrado automatico futuro.']='Prevents Windows from encrypting the drive on its own on new or reinstalled PCs (leaving you without the key at hand). It does NOT decrypt anything already encrypted: it only prevents future automatic encryption.'
+$script:TrMap['Desactivar Encontrar mi dispositivo (Find My Device)']='Disable Find My Device'
+$script:TrMap['Apaga el rastreo de ubicacion del equipo asociado a tu cuenta Microsoft. En un PC de sobremesa no aporta nada y deja de enviarse la ubicacion.']='Turns off the device location tracking tied to your Microsoft account. On a desktop PC it adds nothing and your location stops being sent.'
+$script:TrMap['Desactivar Windows Spotlight en el escritorio']='Disable Windows Spotlight on the desktop'
+$script:TrMap['Evita que el fondo de escritorio pase a Spotlight (imagenes de Microsoft con iconos y sugerencias). Tu fondo elegido se queda quieto.']='Prevents the desktop wallpaper from switching to Spotlight (Microsoft images with icons and suggestions). Your chosen wallpaper stays put.'
+$script:TrMap['Desactivar la IA de Paint (Cocreator y relleno generativo)']='Disable Paint AI (Cocreator and generative fill)'
+$script:TrMap['Apaga por politica las funciones de IA de Paint: Cocreator, Image Creator, relleno y borrado generativo y quitar fondo. Paint sigue funcionando como siempre.']='Turns off Paint AI features by policy: Cocreator, Image Creator, generative fill and erase, and background removal. Paint keeps working as always.'
+$script:TrMap['Desactivar la IA del Bloc de notas (Notepad)']='Disable Notepad AI'
+$script:TrMap['Apaga por politica la funcion de reescritura con IA del Bloc de notas moderno. El editor sigue igual para todo lo demas.']='Turns off the AI rewrite feature of modern Notepad by policy. The editor stays the same for everything else.'
+$script:TrMap['Desactivar Click to Do (analisis de pantalla con IA)']='Disable Click to Do (AI screen analysis)'
+$script:TrMap['Apaga Click to Do (24H2+ con Copilot), que analiza con IA el contenido de tu pantalla para sugerir acciones sobre texto e imagenes.']='Turns off Click to Do (24H2+ with Copilot), which uses AI to analyze your screen content and suggest actions on text and images.'
+$script:TrMap['Impedir arranque automatico del servicio de IA (WSAIFabricSvc)']='Prevent automatic start of the AI service (WSAIFabricSvc)'
+$script:TrMap['El servicio de IA de Windows pasa de arranque automatico a manual: no correra de fondo salvo que algo lo pida. En ediciones sin ese servicio se avisa y no se toca nada.']='The Windows AI service switches from automatic to manual start: it will not run in the background unless something requests it. On editions without that service you are told and nothing is touched.'
+$script:TrMap['Evitar reinicios automaticos tras actualizaciones (con sesion abierta)']='Prevent automatic reboots after updates (while signed in)'
+$script:TrMap['Windows Update no reiniciara el equipo solo mientras haya una sesion iniciada. Los reinicios pendientes te los pedira, no te los impondra.']='Windows Update will not reboot the PC on its own while a session is signed in. Pending reboots will be requested, not imposed.'
+$script:TrMap['Desactivar resaltados de busqueda (Search Highlights)']='Disable Search Highlights'
+$script:TrMap['Quita el contenido dinamico y promocional (iconitos, efemerides, tendencias) del cuadro de busqueda de Windows. La busqueda sigue funcionando igual.']='Removes the dynamic, promotional content (icons, anniversaries, trends) from the Windows search box. Search keeps working the same.'
+$script:TrMap['Quitar el movil (Phone Link) del menu Inicio']='Remove the phone (Phone Link) from the Start menu'
+$script:TrMap['Oculta el panel lateral del movil (Phone Link) integrado en el menu Inicio. La app Phone Link sigue disponible si la usas.']='Hides the phone side panel (Phone Link) built into the Start menu. The Phone Link app remains available if you use it.'
+# --- S10-bis: Gaming descargado de texto (lineas cortas + desplegables (i)) ---
+$script:TrMap['Sin promesas de FPS: estabilidad, latencia y frametimes, con todo reversible y verificado.']='No FPS promises: stability, latency and frametimes, everything reversible and verified.'
+$script:TrMap['Un clic seguro: chequeo + Game Mode + ProBalance. El detalle experto, en las tarjetas de abajo.']='One safe click: check-up + Game Mode + ProBalance. The expert detail lives in the cards below.'
+$script:TrMap['El trabajo en tiempo real (ProBalance, afinidades, prioridades) se delega en Process Lasso.']='Real-time work (ProBalance, affinities, priorities) is delegated to Process Lasso.'
+$script:TrMap['QUÉ ES: el módulo en tiempo real del Gaming Optimizer, delegado en Process Lasso (Bitsum), la herramienta de referencia para moderar procesos. Winzard no reimplementa un planificador propio a ciegas: usa el mejor. QUÉ HACE: ProBalance detecta procesos que acaparan la CPU y les baja la prioridad un instante para que el sistema no dé tirones; las afinidades y prioridades por juego se configuran SIEMPRE desde la propia interfaz de Process Lasso. QUÉ PASARÁ: Instalar lo descarga por winget (gratis para uso personal; la versión Pro es de pago) y Abrir lanza su ventana; Winzard no toca ni un proceso por su cuenta y no fabrica rendimiento: modera los excesos.']='WHAT IT IS: the real-time module of the Gaming Optimizer, delegated to Process Lasso (Bitsum), the reference tool for moderating processes. Winzard does not blindly reimplement its own scheduler: it uses the best one. WHAT IT DOES: ProBalance detects CPU-hogging processes and briefly lowers their priority so the system does not stutter; per-game affinities and priorities are ALWAYS configured from Process Lasso itself. WHAT WILL HAPPEN: Install downloads it via winget (free for personal use; the Pro edition is paid) and Open launches its window; Winzard never touches a process on its own and does not manufacture performance: it moderates excesses.'
+$script:TrMap['Plan de energia al maximo + pausa de TU lista de procesos; al desactivar, todo vuelve a como estaba.']='Power plan to maximum + pause of YOUR process list; on deactivation everything returns as it was.'
+$script:TrMap['QUÉ ES: un modo de preparación por sesión, pensado para encenderse al ir a jugar y apagarse al terminar; nada queda cambiado de forma permanente. QUÉ HACE al activarlo: guarda tu plan de energía actual, cambia al de máximo rendimiento verificando el cambio, comprueba el Game Mode de Windows y PAUSA (nunca cierra) únicamente los procesos que tú hayas marcado en la lista de pausa, con el mismo mecanismo nativo que usa el Monitor de recursos. QUÉ PASARÁ al desactivarlo: cada proceso se reanuda comprobando que sigue siendo el mismo, el plan de energía original se restaura y todo queda registrado en el diario; si Winzard se cerrara a mitad, el banner de sesión pendiente lo restaura con un clic. El botón "Ver plan (sin tocar nada)" te enseña por adelantado exactamente qué haría.']='WHAT IT IS: a per-session preparation mode, meant to be switched on when you go play and off when you finish; nothing is changed permanently. WHAT IT DOES on activation: saves your current power plan, switches to the maximum-performance one verifying the change, checks Windows Game Mode and PAUSES (never closes) only the processes you selected in the pause list, using the same native mechanism Resource Monitor uses. WHAT WILL HAPPEN on deactivation: every process is resumed verifying it is still the same one, the original power plan is restored and everything is logged in the journal; if Winzard were closed mid-session, the pending-session banner restores it in one click. The "View plan (nothing is changed)" button shows you in advance exactly what it would do.'
+$script:TrMap['Con el interruptor maestro encendido, el Modo Juego se activa y revierte solo con tus juegos.']='With the master switch on, Game Mode activates and reverts itself with your games.'
+$script:TrMap['QUÉ ES: la orquestación automática del Modo Juego por sesión de arriba; no es un motor nuevo ni un servicio residente. QUÉ HACE: con el interruptor maestro encendido, un vigilante ligero comprueba cada 5 segundos si arranca alguno de TUS juegos asociados; al detectarlo aplica su perfil (Competitivo = Modo Juego por sesión con tu lista de pausa si la activas; Equilibrado = solo abre Process Lasso) y, cuando el juego se cierra, lo revierte todo solo. QUÉ PASARÁ: viene APAGADO por defecto y no vigila nada hasta que tú lo enciendas; solo mira los procesos que tú asocies, nunca pisa una sesión manual y cada activación/reversión queda en el Live Log y el diario.']='WHAT IT IS: the automatic orchestration of the per-session Game Mode above; it is not a new engine nor a resident service. WHAT IT DOES: with the master switch on, a lightweight watcher checks every 5 seconds whether one of YOUR associated games starts; on detection it applies its profile (Competitive = per-session Game Mode with your pause list if enabled; Balanced = just opens Process Lasso) and, when the game closes, it reverts everything by itself. WHAT WILL HAPPEN: it ships OFF by default and watches nothing until you turn it on; it only looks at the processes you associate, never steps on a manual session, and every activation/reversal is recorded in the Live Log and the journal.'
+$script:TrMap['Mide antes y despues con herramientas de referencia; Winzard no inventa cifras.']='Measure before and after with reference tools; Winzard does not make up numbers.'
+$script:TrMap['QUÉ ES: la forma honesta de saber si un cambio mejoró algo: medir frametimes reales antes y después, en vez de creerse promesas de FPS. QUÉ HACE: instala por winget las dos herramientas de referencia del sector: PresentMon (Intel, el estándar abierto de captura de frametimes) y CapFrameX (análisis y comparativas con percentiles P1/P0.2 y gráficas). QUÉ PASARÁ: se instalan como cualquier app (desinstalables cuando quieras), Winzard no las configura ni interpreta por ti, y tus conclusiones salen de TUS datos: si una métrica no mejora, el cambio no valía — eso también es información.']='WHAT IT IS: the honest way to know whether a change improved anything: measuring real frametimes before and after, instead of believing FPS promises. WHAT IT DOES: installs via winget the two reference tools of the field: PresentMon (Intel, the open standard for frametime capture) and CapFrameX (analysis and comparisons with P1/P0.2 percentiles and charts). WHAT WILL HAPPEN: they install like any app (uninstallable whenever you want), Winzard neither configures nor interprets them for you, and your conclusions come from YOUR data: if a metric does not improve, the change was not worth it — that is information too.'
+$script:TrMap['Configura el DNS del adaptador activo a OpenDNS (208.67.222.222 / 208.67.220.220), de Cisco. Reversible con "DNS: volver a automatico".']='Sets the active adapter DNS to OpenDNS (208.67.222.222 / 208.67.220.220), by Cisco. Reversible with "DNS: back to automatic".'
+# --- S10-ter: Gaming nivel superior (subnavegacion + radar + red + juegos + medir + silencio) ---
+$script:TrMap['Preparar']='Prepare'
+$script:TrMap['Jugar']='Play'
+$script:TrMap['Automatizar']='Automate'
+$script:TrMap['Medir']='Measure'
+$script:TrMap['ACTIVADA']='ENABLED'
+$script:TrMap['desactivada']='disabled'
+$script:TrMap['no disponible en esta GPU/driver']='not available on this GPU/driver'
+$script:TrMap['por defecto del sistema']='system default'
+$script:TrMap['Aceleracion de GPU por hardware (HAGS): {0}']='Hardware-accelerated GPU scheduling (HAGS): {0}'
+$script:TrMap['Optimizacion para pantallas de refresco variable (VRR): {0}']='Optimization for variable refresh rate displays (VRR): {0}'
+$script:TrMap['HAGS y VRR se cambian en Ajustes > Sistema > Pantalla > Graficos (Winzard solo informa: dependen de tu GPU y driver).']='HAGS and VRR are changed in Settings > System > Display > Graphics (Winzard only reports: they depend on your GPU and driver).'
+$script:TrMap['RADAR DE OVERLAYS  ·  FUENTES REALES DE MICROTIRONES']='OVERLAY RADAR  ·  REAL SOURCES OF STUTTER'
+$script:TrMap['Que se dibuja o graba encima de tus juegos ahora mismo (solo lectura).']='What is being drawn or recorded on top of your games right now (read-only).'
+$script:TrMap['QUÉ ES: un radar de overlays y grabadores: capas que se inyectan o dibujan encima del juego (Game Bar, Discord, NVIDIA, OBS, RivaTuner, Steam) y que son causa REAL y frecuente de microtirones. QUÉ HACE: comprueba en el momento qué overlays están activos o corriendo y te dice dónde se apaga cada uno; Winzard no cierra ni toca ninguno por su cuenta. QUÉ PASARÁ: nada — es informativo puro; tú decides cuáles apagar en su propia app, y con "Refrescar" vuelves a comprobar en segundos.']='WHAT IT IS: a radar of overlays and recorders: layers injected or drawn on top of the game (Game Bar, Discord, NVIDIA, OBS, RivaTuner, Steam) that are a REAL and frequent cause of stutter. WHAT IT DOES: checks on the spot which overlays are active or running and tells you where each one is turned off; Winzard never closes or touches any of them on its own. WHAT WILL HAPPEN: nothing — it is purely informational; you decide which ones to turn off in their own app, and "Refresh" re-checks in seconds.'
+$script:TrMap['Se apaga con el tweak "Desactivar Game Bar y grabacion en segundo plano".']='Turned off with the "Game Bar and background recording - Disable" tweak.'
+$script:TrMap['Discord esta abierto: su overlay se configura en Discord > Ajustes > Overlay.']='Discord is open: its overlay is configured in Discord > Settings > Overlay.'
+$script:TrMap['El overlay de NVIDIA (GeForce/App) esta corriendo; se configura en la app de NVIDIA.']='The NVIDIA overlay (GeForce/App) is running; it is configured in the NVIDIA app.'
+$script:TrMap['OBS esta abierto: grabar o emitir mientras juegas consume GPU (es su trabajo).']='OBS is open: recording or streaming while playing uses GPU (that is its job).'
+$script:TrMap['Proceso auxiliar de Game Bar en ejecucion.']='Game Bar helper process running.'
+$script:TrMap['RivaTuner esta corriendo: su OSD se inyecta en los juegos (util para medir; apagalo si da conflictos).']='RivaTuner is running: its OSD injects into games (useful for measuring; turn it off if it conflicts).'
+$script:TrMap['Se configura en Steam > Parametros > En el juego.']='Configured in Steam > Settings > In Game.'
+$script:TrMap['ACTIVO']='ACTIVE'
+$script:TrMap['inactivo']='inactive'
+$script:TrMap['ambar = activo (pasa el raton para ver donde se apaga)  ·  verde = inactivo']='amber = active (hover to see where it turns off)  ·  green = inactive'
+$script:TrMap['Refrescar radar']='Refresh radar'
+$script:TrMap['RED PARA JUGAR ONLINE  ·  PING Y JITTER REALES']='NETWORK FOR ONLINE PLAY  ·  REAL PING AND JITTER'
+$script:TrMap['Prueba honesta de 10 segundos contra 1.1.1.1; sin humo, solo numeros.']='Honest 10-second test against 1.1.1.1; no smoke, just numbers.'
+$script:TrMap['QUÉ ES: una medición rápida de la calidad de tu conexión para el juego online: latencia (ping) y su estabilidad (jitter), que es lo que de verdad se nota en partida. QUÉ HACE: envía 10 pings (1 por segundo) a 1.1.1.1 (Cloudflare) y calcula media, mínimo, máximo, jitter y pérdida de paquetes, con un veredicto honesto: verde fluido, ámbar aceptable, y aviso claro si hay pérdida o picos. QUÉ PASARÁ: solo se envían esos 10 pings y nada más; no se cambia ningún ajuste de red — para eso están los tweaks de DNS y de red en sus paneles, cada uno con su reversión.']='WHAT IT IS: a quick measurement of your connection quality for online play: latency (ping) and its stability (jitter), which is what you actually feel in a match. WHAT IT DOES: sends 10 pings (1 per second) to 1.1.1.1 (Cloudflare) and computes average, minimum, maximum, jitter and packet loss, with an honest verdict: green smooth, amber acceptable, and a clear warning if there is loss or spikes. WHAT WILL HAPPEN: only those 10 pings are sent and nothing else; no network setting is changed — that is what the DNS and network tweaks are for in their panels, each with its own undo.'
+$script:TrMap['Sin medir todavia.']='Not measured yet.'
+$script:TrMap['Medir red (10 s)']='Measure network (10 s)'
+$script:TrMap['Midiendo... (10 pings, 1 por segundo)']='Measuring... (10 pings, 1 per second)'
+$script:TrMap['OJO: hay perdida de paquetes; revisa cable/Wi-Fi antes de jugar online.']='WATCH OUT: there is packet loss; check cable/Wi-Fi before playing online.'
+$script:TrMap['Veredicto: FLUIDA para online.']='Verdict: SMOOTH for online play.'
+$script:TrMap['Veredicto: aceptable; puede notarse en shooters competitivos.']='Verdict: acceptable; may be noticeable in competitive shooters.'
+$script:TrMap['Veredicto: alta o inestable; prueba cable en vez de Wi-Fi.']='Verdict: high or unstable; try a cable instead of Wi-Fi.'
+$script:TrMap['Ping medio {0} ms (min {1} / max {2})  ·  jitter {3} ms  ·  perdidos {4}/{5}.']='Average ping {0} ms (min {1} / max {2})  ·  jitter {3} ms  ·  lost {4}/{5}.'
+$script:TrMap['No se pudo medir (sin respuesta de la red).']='Could not measure (no response from the network).'
+$script:TrMap['JUEGOS INSTALADOS DETECTADOS  ·  ASOCIAR CON UN CLIC']='DETECTED INSTALLED GAMES  ·  ASSOCIATE IN ONE CLICK'
+$script:TrMap['Toda tu biblioteca (Steam, Epic, GOG, Xbox, Ubisoft, Riot, EA, Battle.net y cualquier juego ya ejecutado), sin escribir nada.']='Your whole library (Steam, Epic, GOG, Xbox, Ubisoft, Riot, EA, Battle.net and any game already played), without typing anything.'
+$script:TrMap['QUÉ ES: la lectura (solo lectura) de TODOS los juegos instalados en el PC para que los asocies a la detección automática sin teclear el nombre del proceso. QUÉ HACE: lee las bibliotecas de Steam (manifiestos), Epic (ejecutable exacto), GOG y Ubisoft (registro), Xbox/Game Pass (carpeta XboxGames de cada disco), Riot y los juegos de EA y Battle.net (desinstaladores); y como red genérica, el registro GameConfigStore de Windows, donde queda apuntado CUALQUIER juego que hayas ejecutado alguna vez, sea del lanzador que sea. QUÉ PASARÁ al pulsar Asociar: el juego se añade a "Juegos asociados" con perfil Equilibrado y su lista de pausa activada — nada más; puedes cambiarle el perfil o quitarlo cuando quieras, y ningún juego se asocia solo.']='WHAT IT IS: a read-only scan of ALL the games installed on the PC so you can associate them to automatic detection without typing the process name. WHAT IT DOES: it reads the Steam (manifests), Epic (exact executable), GOG and Ubisoft (registry) libraries, Xbox/Game Pass (XboxGames folder on every drive), Riot and the EA and Battle.net games (uninstallers); and as a generic net, the Windows GameConfigStore registry, where ANY game you have ever run gets recorded, whatever its launcher. WHAT WILL HAPPEN when you press Associate: the game is added to "Associated games" with the Balanced profile and its pause list enabled — nothing else; you can change its profile or remove it whenever you want, and no game associates itself.'
+$script:TrMap['Ver juegos detectados']='View detected games'
+$script:TrMap['No se han detectado juegos instalados (Steam, Epic, GOG).']='No installed games detected (Steam, Epic, GOG).'
+$script:TrMap['Asociar']='Associate'
+$script:TrMap['Asociado']='Associated'
+$script:TrMap['Juego asociado desde la biblioteca: {0} ({1}).']='Game associated from the library: {0} ({1}).'
+$script:TrMap['Medir ahora (con un juego en marcha):']='Measure now (with a game running):'
+$script:TrMap['QUÉ ES: una captura real de frametimes de 60 segundos con la versión de CONSOLA de PresentMon (Intel), para comparar antes y después de un cambio con números y no con sensaciones. QUÉ HACE: lanza la captura en segundo plano mientras juegas, guarda el CSV en la carpeta logs de Winzard y al terminar calcula la media y los percentiles p95 y p99 (los picos que se sienten como tirones). QUÉ PASARÁ: necesita la edición de consola de PresentMon (la app gráfica de winget no se puede automatizar; el botón te lleva a sus descargas oficiales de GitHub si falta); la captura dura 60 segundos exactos, no cambia nada del sistema y el veredicto son TUS números: si p99 se acerca a la media, la fluidez es buena.']='WHAT IT IS: a real 60-second frametime capture using the CONSOLE edition of PresentMon (Intel), to compare before and after a change with numbers instead of feelings. WHAT IT DOES: launches the capture in the background while you play, saves the CSV into the Winzard logs folder and, when done, computes the average and the p95 and p99 percentiles (the spikes you feel as stutter). WHAT WILL HAPPEN: it needs the console edition of PresentMon (the winget GUI app cannot be automated; the button takes you to its official GitHub downloads if missing); the capture lasts exactly 60 seconds, changes nothing on the system, and the verdict is YOUR numbers: if p99 is close to the average, smoothness is good.'
+$script:TrMap['Medir 60 s (PresentMon consola)']='Measure 60 s (PresentMon console)'
+$script:TrMap['Descargas de PresentMon']='PresentMon downloads'
+$script:TrMap['Falta la version de CONSOLA de PresentMon: usa "Descargas de PresentMon" y deja el .exe en la carpeta de Winzard o en Archivos de programa.']='The CONSOLE edition of PresentMon is missing: use "PresentMon downloads" and drop the .exe in the Winzard folder or in Program Files.'
+$script:TrMap['Capturando 60 s con {0}... juega con normalidad.']='Capturing 60 s with {0}... play normally.'
+$script:TrMap['Frametimes de {0} fotogramas: media {1} ms  ·  p95 {2} ms  ·  p99 {3} ms. CSV: {4}']='Frametimes of {0} frames: average {1} ms  ·  p95 {2} ms  ·  p99 {3} ms. CSV: {4}'
+$script:TrMap['La captura no dio datos utiles (necesita un juego presentando fotogramas durante los 60 s).']='The capture produced no useful data (it needs a game presenting frames during the 60 s).'
+$script:TrMap['Silenciar notificaciones durante la sesion (se restauran al desactivar)']='Mute notifications during the session (restored on deactivation)'
+$script:TrMap['Al activar la sesion, las notificaciones nuevas dejan de sonar y saltar (mismo ajuste documentado del tweak de notificaciones); al desactivarla vuelven exactamente a como estaban.']='When the session activates, new notifications stop sounding and popping (same documented setting as the notifications tweak); when it deactivates they return exactly as they were.'
+$script:TrMap['Modo Juego: notificaciones silenciadas durante la sesion.']='Game Mode: notifications muted during the session.'
+$script:TrMap['Modo Juego: notificaciones restauradas a su estado anterior.']='Game Mode: notifications restored to their previous state.'
 # << TRMAP_ENTRIES >>
 # Traduce una frase exacta (si Lang=en y esta en el mapa); si no, la deja igual.
 function Tr([string]$s) {
@@ -4296,7 +7617,7 @@ function Tr([string]$s) {
 # Aviso traducido: envoltorio de MessageBox que pasa texto y titulo por Tr.
 # Acepta tambien una sola llamada con parentesis (array) para el reemplazo global.
 function Show-WpiMessage {
-    param($Text, $Title = 'WPI Moderno', $Buttons = 'OK', $Icon = 'Information')
+    param($Text, $Title = 'Winzard', $Buttons = 'OK', $Icon = 'Information')
     if ($Text -is [array]) {
         $a = $Text
         $Text = $(if ($a.Count -ge 1) { $a[0] } else { '' })
@@ -4305,8 +7626,235 @@ function Show-WpiMessage {
         if ($a.Count -ge 4) { $Icon = $a[3] }
     }
     $mb = [System.Windows.MessageBox]
-    return $mb::Show((Tr (Repair-WpiText ([string]$Text))), (Tr (Repair-WpiText ([string]$Title))), $Buttons, $Icon)
+    $txtF = (Tr (Repair-WpiText ([string]$Text)))
+    $titF = (Tr (Repair-WpiText ([string]$Title)))
+    # UX (VT2-4): con OWNER el dialogo se centra SOBRE Winzard. Sin owner, en 4K/DPI
+    # aparecia descentrado en una esquina (llego a salir medio fuera de pantalla) y el
+    # usuario podia no verlo y creer que el boton no hacia nada.
+    try {
+        if ($window -and $window.IsLoaded) { return $mb::Show($window, $txtF, $titF, $Buttons, $Icon) }
+    } catch {}
+    return $mb::Show($txtF, $titF, $Buttons, $Icon)
 }
+
+# Dialogo PREMIUM reutilizable (ventana propia, tema oscuro, secciones tipo
+# tarjeta). $Sections = array de hashtables @{ Head=''; Body=''; Color='' }.
+# Devuelve $true si se pulsa el boton primario (Yes) y $false si el secundario
+# (No) o se cierra. Se usa para avisos importantes y confirmaciones criticas.
+$script:PremiumDlgResult = $false
+function Show-WpiPremiumDialog {
+    param(
+        [string]$Title,
+        [object[]]$Sections = @(),
+        [string]$YesText = 'Aceptar',
+        [string]$NoText = '',
+        [string]$AltText = '',
+        [string]$Accent = ''
+    )
+    if (-not $Accent) { $Accent = '#FF00E5FF' }
+    $script:PremiumDlgResult = $false
+    $win = New-Object Windows.Window
+    $win.Title = (Tr (Repair-WpiText $Title))
+    $win.WindowStartupLocation = 'CenterScreen'
+    $win.SizeToContent = 'Height'; $win.Width = 660; $win.MaxHeight = 840
+    $win.ResizeMode = 'NoResize'; $win.WindowStyle = 'SingleBorderWindow'
+    $win.Background = Get-ThemeBrush('#FF0C0C14')
+    try { $win.Resources = $window.Resources } catch {}
+    try { $win.Owner = $window } catch {}
+    $col = New-Object Windows.Controls.StackPanel
+    # Cabecera con banda de acento
+    $hdr = New-Object Windows.Controls.Border; $hdr.Background = Get-ThemeBrush($Accent); $hdr.Padding = New-Object Windows.Thickness(20,13,20,13)
+    $hdrTxt = New-Object Windows.Controls.TextBlock; $hdrTxt.Text = (Tr (Repair-WpiText $Title)); $hdrTxt.FontSize = 16.5; $hdrTxt.FontWeight = 'Bold'; $hdrTxt.Foreground = Get-ThemeBrush('#FF08111C'); $hdrTxt.TextWrapping = 'Wrap'
+    $hdr.Child = $hdrTxt; $col.Children.Add($hdr) | Out-Null
+    # Cuerpo scrollable con tarjetas
+    $sv = New-Object Windows.Controls.ScrollViewer; $sv.VerticalScrollBarVisibility = 'Auto'; $sv.MaxHeight = 640
+    $body = New-Object Windows.Controls.StackPanel; $body.Margin = New-Object Windows.Thickness(20,16,20,6)
+    foreach ($sec in $Sections) {
+        $card = New-Object Windows.Controls.Border
+        $cCol = $(if ($sec.Color) { $sec.Color } else { '#FF2C2C3A' })
+        $card.Background = Get-ThemeBrush('#FF15151F'); $card.BorderBrush = Get-ThemeBrush($cCol); $card.BorderThickness = New-Object Windows.Thickness(1)
+        $card.CornerRadius = New-Object Windows.CornerRadius(9); $card.Padding = New-Object Windows.Thickness(14,11,14,12); $card.Margin = New-Object Windows.Thickness(0,0,0,11)
+        $cc = New-Object Windows.Controls.StackPanel
+        if ($sec.Head) {
+            $h = New-Object Windows.Controls.TextBlock; $h.Text = (Tr (Repair-WpiText $sec.Head)); $h.FontWeight = 'Bold'; $h.FontSize = 13.5; $h.TextWrapping = 'Wrap'
+            $h.Foreground = Get-ThemeBrush($(if ($sec.Color) { $sec.Color } else { $Accent })); $h.Margin = New-Object Windows.Thickness(0,0,0,5)
+            $cc.Children.Add($h) | Out-Null
+        }
+        if ($sec.Body) {
+            $bt = New-Object Windows.Controls.TextBlock; $bt.Text = (Tr (Repair-WpiText $sec.Body)); $bt.TextWrapping = 'Wrap'; $bt.FontSize = 12.5; $bt.Foreground = Get-ThemeBrush('#FFE6E6EE'); $bt.LineHeight = 18
+            $cc.Children.Add($bt) | Out-Null
+        }
+        $card.Child = $cc; $body.Children.Add($card) | Out-Null
+    }
+    $sv.Content = $body; $col.Children.Add($sv) | Out-Null
+    # Botonera (No a la izquierda, Yes destacado a la derecha)
+    $btnRow = New-Object Windows.Controls.StackPanel; $btnRow.Orientation = 'Horizontal'; $btnRow.HorizontalAlignment = 'Right'; $btnRow.Margin = New-Object Windows.Thickness(20,4,20,18)
+    # IMPORTANTE: se usa DialogResult sobre el OBJETO ventana (referencia
+    # compartida) en vez de $script:... dentro de un closure. GetNewClosure crea
+    # una COPIA del scope, asi que asignar $script:Var dentro no llegaba al scope
+    # real -> el dialogo se cerraba pero devolvia $false y no arrancaba nada.
+    # $this = el boton; $this.Tag = la ventana. Fijar DialogResult la cierra y
+    # hace que ShowDialog devuelva ese valor.
+    if ($NoText) {
+        $bNo = New-Object Windows.Controls.Button; $bNo.Content = (Tr $NoText); $bNo.Padding = New-Object Windows.Thickness(18,8,18,8); $bNo.Margin = New-Object Windows.Thickness(0,0,10,0)
+        $bNo.Background = Get-ThemeBrush('#FF2A2A38'); $bNo.BorderBrush = Get-ThemeBrush('#FF54546A'); $bNo.Foreground = Get-ThemeBrush('#FFEDEDF5')
+        $bNo.Tag = $win
+        $bNo.Add_Click({ try { $this.Tag.DialogResult = $false } catch { $this.Tag.Close() } })
+        $btnRow.Children.Add($bNo) | Out-Null
+    }
+    # Tercer boton OPCIONAL (AltText): eleccion intermedia. Marca la ventana con
+    # Tag='WPI_ALT' antes de cerrarla; la funcion devuelve entonces la cadena 'alt'
+    # (los llamantes sin AltText siguen recibiendo $true/$false como siempre).
+    if ($AltText) {
+        $bAlt = New-Object Windows.Controls.Button; $bAlt.Content = (Tr $AltText); $bAlt.Padding = New-Object Windows.Thickness(18,8,18,8); $bAlt.Margin = New-Object Windows.Thickness(0,0,10,0)
+        $bAlt.Background = Get-ThemeBrush('#FF243042'); $bAlt.BorderBrush = Get-ThemeBrush('#FF3C5876'); $bAlt.Foreground = Get-ThemeBrush('#FFEDEDF5')
+        $bAlt.Tag = $win
+        $bAlt.Add_Click({ try { $this.Tag.Tag = 'WPI_ALT'; $this.Tag.DialogResult = $true } catch { $this.Tag.Close() } })
+        $btnRow.Children.Add($bAlt) | Out-Null
+    }
+    $bYes = New-Object Windows.Controls.Button; $bYes.Content = (Tr $YesText); $bYes.Padding = New-Object Windows.Thickness(24,8,24,8); $bYes.FontWeight = 'Bold'
+    $bYes.Background = Get-ThemeBrush($Accent); $bYes.BorderBrush = Get-ThemeBrush($Accent); $bYes.Foreground = Get-ThemeBrush('#FF08111C')
+    $bYes.Tag = $win
+    $bYes.Add_Click({ try { $this.Tag.DialogResult = $true } catch { $this.Tag.Close() } })
+    $btnRow.Children.Add($bYes) | Out-Null
+    $col.Children.Add($btnRow) | Out-Null
+    $win.Content = $col
+    try { Translate-Tree $win } catch {}
+    $dr = $win.ShowDialog()
+    if ($AltText -and ($dr -eq $true) -and ([string]$win.Tag -eq 'WPI_ALT')) { return 'alt' }
+    return ($dr -eq $true)
+}
+# VISOR PREMIUM DE MANUALES (VT2-4, pedido del usuario): lee un manual .md DENTRO de
+# Winzard en una ventana premium (misma familia visual que Show-WpiPremiumDialog:
+# banda de acento, cuerpo scrollable, tema-consciente via Get-ThemeBrush). Render
+# ligero de Markdown: titulos, listas, tablas/codigo en monoespaciada, citas y
+# separadores. Sin salir de la app y sin navegador.
+function Show-WpiManualViewer {
+    param([string]$Path, [string]$Titulo = '', [string]$Accent = '')
+    if (-not (Test-Path -LiteralPath $Path)) { Show-WpiMessage((L2 'No se encuentra el manual.' 'Manual not found.'), 'Winzard') | Out-Null; return }
+    if (-not $Accent) { $Accent = $Theme.Maintain }
+    if (-not $Titulo) { $Titulo = [IO.Path]::GetFileNameWithoutExtension($Path) -replace '^\d+_', '' -replace '_', ' ' }
+    $md = ''
+    try { $md = [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8) } catch { $md = Get-Content -LiteralPath $Path -Raw }
+    $win = New-Object Windows.Window
+    $win.Title = $Titulo + '  -  Winzard'
+    $win.Width = 920; $win.Height = 780; $win.MinWidth = 560; $win.MinHeight = 420
+    $win.ResizeMode = 'CanResizeWithGrip'; $win.WindowStyle = 'SingleBorderWindow'
+    $win.Background = Get-ThemeBrush('#FF0C0C14')
+    try { $win.Owner = $window; $win.WindowStartupLocation = 'CenterOwner' } catch { $win.WindowStartupLocation = 'CenterScreen' }
+    $dock = New-Object Windows.Controls.DockPanel
+    # cabecera con banda de acento
+    $hdr = New-Object Windows.Controls.Border; $hdr.Background = Get-ThemeBrush($Accent); $hdr.Padding = New-Object Windows.Thickness(22,13,22,13)
+    $hsp = New-Object Windows.Controls.StackPanel
+    $hT = New-Object Windows.Controls.TextBlock; $hT.Text = $Titulo; $hT.FontSize = 17; $hT.FontWeight = 'Bold'; $hT.Foreground = Get-ThemeBrush('#FF08111C')
+    $hS = New-Object Windows.Controls.TextBlock; $hS.Text = (Tr 'Manual de Winzard - se lee aqui mismo, sin salir de la app'); $hS.FontSize = 11.5; $hS.Foreground = Get-ThemeBrush('#CC08111C'); $hS.Margin = New-Object Windows.Thickness(0,2,0,0)
+    $hsp.Children.Add($hT) | Out-Null; $hsp.Children.Add($hS) | Out-Null
+    $hdr.Child = $hsp
+    [Windows.Controls.DockPanel]::SetDock($hdr, [Windows.Controls.Dock]::Top); $dock.Children.Add($hdr) | Out-Null
+    # botonera inferior
+    $bRow = New-Object Windows.Controls.StackPanel; $bRow.Orientation = 'Horizontal'; $bRow.HorizontalAlignment = 'Right'; $bRow.Margin = New-Object Windows.Thickness(22,10,22,14)
+    $bDir = New-Object Windows.Controls.Button; $bDir.Content = (Tr 'Abrir la carpeta de manuales'); $bDir.Padding = New-Object Windows.Thickness(14,7,14,7); $bDir.Margin = New-Object Windows.Thickness(0,0,10,0)
+    $bDir.Background = Get-ThemeBrush('#FF2A2A38'); $bDir.BorderBrush = Get-ThemeBrush('#FF54546A'); $bDir.Foreground = Get-ThemeBrush('#FFEDEDF5')
+    $bDir.Tag = (Split-Path -LiteralPath $Path -Parent)
+    $bDir.Add_Click({ try { Start-Process explorer.exe ('"' + [string]$this.Tag + '"') } catch {} })
+    $bRow.Children.Add($bDir) | Out-Null
+    $bOk = New-Object Windows.Controls.Button; $bOk.Content = (Tr 'Cerrar'); $bOk.Padding = New-Object Windows.Thickness(26,7,26,7); $bOk.FontWeight = 'Bold'
+    $bOk.Background = Get-ThemeBrush($Accent); $bOk.BorderBrush = Get-ThemeBrush($Accent); $bOk.Foreground = Get-ThemeBrush('#FF08111C')
+    $bOk.Tag = $win; $bOk.Add_Click({ try { $this.Tag.Close() } catch {} })
+    $bRow.Children.Add($bOk) | Out-Null
+    [Windows.Controls.DockPanel]::SetDock($bRow, [Windows.Controls.Dock]::Bottom); $dock.Children.Add($bRow) | Out-Null
+    # cuerpo: render ligero del markdown
+    $sv = New-Object Windows.Controls.ScrollViewer; $sv.VerticalScrollBarVisibility = 'Auto'; $sv.Padding = New-Object Windows.Thickness(0)
+    $body = New-Object Windows.Controls.StackPanel; $body.Margin = New-Object Windows.Thickness(24,16,24,10); $body.MaxWidth = 860
+    $enCodigo = $false; $bloque = New-Object System.Collections.Generic.List[string]
+    $volcarMono = {
+        param($lineas, $cont)
+        if (@($lineas).Count -eq 0) { return }
+        $card = New-Object Windows.Controls.Border
+        $card.Background = Get-ThemeBrush('#FF15151F'); $card.BorderBrush = Get-ThemeBrush('#FF2C2C3A'); $card.BorderThickness = New-Object Windows.Thickness(1)
+        $card.CornerRadius = New-Object Windows.CornerRadius(7); $card.Padding = New-Object Windows.Thickness(12,9,12,9); $card.Margin = New-Object Windows.Thickness(0,4,0,10)
+        $tbm = New-Object Windows.Controls.TextBlock; $tbm.Text = ($lineas -join "`n"); $tbm.FontFamily = New-Object Windows.Media.FontFamily('Consolas')
+        $tbm.FontSize = 11.5; $tbm.Foreground = Get-ThemeBrush('#FFD8E2EC'); $tbm.TextWrapping = 'NoWrap'
+        $svh = New-Object Windows.Controls.ScrollViewer; $svh.HorizontalScrollBarVisibility = 'Auto'; $svh.VerticalScrollBarVisibility = 'Disabled'; $svh.Content = $tbm
+        $card.Child = $svh; $cont.Children.Add($card) | Out-Null
+    }
+    $limpia = { param($s) ($s -replace '\[([^\]]+)\]\(([^)]+)\)', '$1' -replace '\*\*([^*]+)\*\*', '$1' -replace '\*([^*]+)\*', '$1' -replace '``([^``]+)``', '$1' -replace '`([^`]+)`', '$1') }
+    $tabla = New-Object System.Collections.Generic.List[string]
+    foreach ($ln in ($md -split "`r?`n")) {
+        if ($ln -match '^\s*```') { if ($enCodigo) { & $volcarMono $bloque $body; $bloque.Clear() }; $enCodigo = -not $enCodigo; continue }
+        if ($enCodigo) { $bloque.Add($ln); continue }
+        if ($ln -match '^\s*\|') { $tabla.Add($ln); continue }
+        elseif ($tabla.Count -gt 0) { & $volcarMono $tabla $body; $tabla.Clear() }
+        $t = [string]$ln
+        if ($t -match '^\s*$') { continue }
+        if ($t -match '^---+\s*$') {
+            $sep = New-Object Windows.Controls.Border; $sep.Height = 1; $sep.Background = Get-ThemeBrush('#FF2C2C3A'); $sep.Margin = New-Object Windows.Thickness(0,10,0,12)
+            $body.Children.Add($sep) | Out-Null; continue
+        }
+        $tb = New-Object Windows.Controls.TextBlock; $tb.TextWrapping = 'Wrap'
+        if ($t -match '^#{1}\s+(.*)') { $tb.Text = (& $limpia $Matches[1]); $tb.FontSize = 19; $tb.FontWeight = 'Bold'; $tb.Foreground = Get-ThemeBrush($Accent); $tb.Margin = New-Object Windows.Thickness(0,10,0,8) }
+        elseif ($t -match '^#{2}\s+(.*)') { $tb.Text = (& $limpia $Matches[1]); $tb.FontSize = 15.5; $tb.FontWeight = 'Bold'; $tb.Foreground = Get-ThemeBrush($Accent); $tb.Margin = New-Object Windows.Thickness(0,12,0,6) }
+        elseif ($t -match '^#{3,6}\s+(.*)') { $tb.Text = (& $limpia $Matches[1]); $tb.FontSize = 13.5; $tb.FontWeight = 'Bold'; $tb.Foreground = Get-ThemeBrush('#FFB8C6D8'); $tb.Margin = New-Object Windows.Thickness(0,9,0,5) }
+        elseif ($t -match '^\s*>\s?(.*)') {
+            $q = New-Object Windows.Controls.Border; $q.BorderBrush = Get-ThemeBrush($Accent); $q.BorderThickness = New-Object Windows.Thickness(3,0,0,0); $q.Padding = New-Object Windows.Thickness(10,2,0,2); $q.Margin = New-Object Windows.Thickness(0,3,0,6)
+            $qt = New-Object Windows.Controls.TextBlock; $qt.Text = (& $limpia $Matches[1]); $qt.TextWrapping = 'Wrap'; $qt.FontSize = 12.3; $qt.FontStyle = 'Italic'; $qt.Foreground = Get-ThemeBrush('#FFC9D4E0'); $qt.LineHeight = 18
+            $q.Child = $qt; $body.Children.Add($q) | Out-Null; continue
+        }
+        elseif ($t -match '^\s*(?:[-*]|\d+[.)])\s+(.*)') { $tb.Text = ([char]0x2022 + '  ' + (& $limpia $Matches[1])); $tb.FontSize = 12.5; $tb.Foreground = Get-ThemeBrush('#FFE6E6EE'); $tb.LineHeight = 19; $tb.Margin = New-Object Windows.Thickness(14,1,0,2) }
+        else { $tb.Text = (& $limpia $t); $tb.FontSize = 12.5; $tb.Foreground = Get-ThemeBrush('#FFE6E6EE'); $tb.LineHeight = 19; $tb.Margin = New-Object Windows.Thickness(0,2,0,3) }
+        $body.Children.Add($tb) | Out-Null
+    }
+    if ($tabla.Count -gt 0) { & $volcarMono $tabla $body }
+    if ($bloque.Count -gt 0) { & $volcarMono $bloque $body }
+    $sv.Content = $body; $dock.Children.Add($sv) | Out-Null
+    $win.Content = $dock
+    [void]$win.ShowDialog()
+}
+
+# Aviso EFIMERO premium (toast): tarjeta flotante sin bordes que aparece con
+# fundido junto a la esquina inferior derecha de la ventana y se cierra sola a
+# los N segundos. No bloquea ni roba el foco. El texto pasa por Tr (bilingue).
+$script:WpiToastTimers = New-Object System.Collections.ArrayList
+function Show-WpiToast {
+    param([string]$Text, [string]$Accent = '#FF00E5FF', [int]$Seconds = 7)
+    try {
+        $t = New-Object Windows.Window
+        $t.WindowStyle = 'None'; $t.AllowsTransparency = $true
+        $t.Background = [Windows.Media.Brushes]::Transparent
+        $t.ShowActivated = $false; $t.Topmost = $true; $t.ShowInTaskbar = $false
+        $t.SizeToContent = 'WidthAndHeight'
+        $bd = New-Object Windows.Controls.Border
+        $bd.Background = Get-ThemeBrush('#F2101018'); $bd.BorderBrush = Get-ThemeBrush($Accent)
+        $bd.BorderThickness = New-Object Windows.Thickness(1.5)
+        $bd.CornerRadius = New-Object Windows.CornerRadius(10)
+        $bd.Padding = New-Object Windows.Thickness(16,12,16,12); $bd.MaxWidth = 500
+        $tb = New-Object Windows.Controls.TextBlock
+        $tb.Text = Repair-WpiText (Tr $Text); $tb.TextWrapping = 'Wrap'; $tb.FontSize = 12.5
+        $tb.Foreground = Get-ThemeBrush('#FFF2F6FA')
+        $bd.Child = $tb; $t.Content = $bd
+        try {
+            $t.Owner = $window
+            $t.WindowStartupLocation = 'Manual'
+            $t.Left = [double]$window.Left + [double]$window.ActualWidth - 540
+            $t.Top  = [double]$window.Top + [double]$window.ActualHeight - 150
+        } catch { $t.WindowStartupLocation = 'CenterScreen' }
+        $t.Opacity = 0
+        $t.Show()
+        $fadeIn = New-Object Windows.Media.Animation.DoubleAnimation(0.0, 1.0, (New-Object Windows.Duration([TimeSpan]::FromMilliseconds(220))))
+        $t.BeginAnimation([Windows.Window]::OpacityProperty, $fadeIn)
+        $tmr = New-Object Windows.Threading.DispatcherTimer
+        $tmr.Interval = [TimeSpan]::FromSeconds([math]::Max(2, $Seconds))
+        $tmr.Tag = $t
+        $tmr.Add_Tick({
+            $this.Stop()
+            try { [void]$script:WpiToastTimers.Remove($this) } catch {}
+            try { $this.Tag.Close() } catch {}
+        })
+        [void]$script:WpiToastTimers.Add($tmr)   # referencia viva (evita GC)
+        $tmr.Start()
+    } catch {}
+}
+
 # Recorre el arbol logico y traduce textos de TextBlock, botones, casillas, etc.
 function Translate-Tree($node) {
     if ($script:Lang -ne 'en' -or $null -eq $node) { return }
@@ -4331,16 +7879,17 @@ $script:ToolTipText = @{
         BtnPresetLast='Recupera la selección de la última vez que usaste WPI.'
         BtnSave='Guarda tu selección actual en un perfil para usarla después.'
         BtnLoad='Carga una selección guardada previamente.'
-        BtnDetect='Busca en tu PC qué apps del catálogo ya están instaladas y las marca.'
+        BtnDetect='Busca qué apps del catálogo ya están instaladas y resalta su nombre en verde (solo informativo, no marca casillas).'
         BtnClearSel='Quita todas las selecciones actuales.'
         SpeedBox='Número de instalaciones paralelas. Más hilos = más velocidad pero más carga del sistema.'
         ScopeBox='Instala para todos los usuarios, solo el tuyo, o deja que winget decida automáticamente.'
         ChkChoco='Si una app falla con winget, intenta instalarla con Chocolatey si está disponible.'
         BtnAll='Selecciona todas las apps visibles en la lista actual.'
         BtnNone='Quita la marca de todas las apps seleccionadas.'
+        BtnMarkInst='Marca automáticamente las casillas de las apps del catálogo que ya tienes instaladas en este PC. Un clic: listo para guardar el perfil o crear una ISO con lo que ya usas.'
         BtnUninstall='Desinstala del sistema las apps marcadas. Acción irreversible.'
         BtnDownload='Descarga el instalador .exe o .msi directamente, sin usar winget.'
-        BtnValidate='Comprueba que los IDs de winget de las apps seleccionadas son válidos y existen.'
+        BtnValidate='Comprueba que los identificadores (ID) de winget de las apps marcadas existen en el repositorio oficial. El ID es el nombre técnico único de cada app (por ejemplo Mozilla.Firefox o Google.Chrome). Úsalo cuando una app falle al instalar: así descartas que el ID esté mal escrito o haya cambiado, y sabes si hay que probar otro ID.'
         BtnList='Busca si hay actualizaciones disponibles para las apps instaladas.'
         BtnUpgrade='Actualiza todas tus apps instaladas a la última versión disponible.'
         BtnInstall='Instala las apps marcadas con winget. Puedes marcar varias a la vez.'
@@ -4349,7 +7898,7 @@ $script:ToolTipText = @{
         Prog='Progreso global de la operación actual.'
         BtnOpenLog='Abre el log forense de la sesión actual.'
         BtnOpenLogs='Abre la carpeta donde WPI guarda los logs.'
-        BtnCancel='Cancela el proceso en curso cuando sea posible.'
+        BtnCancel='Cancela la tarea activa, detiene el proceso winget o instalador en curso con cierre forzado y evita que se lancen mas operaciones de la cola.'
         ChkRestore='Crea un punto de restauración antes de aplicar ajustes.'
         APLICAR_SELECCIONADOS='Aplica los ajustes marcados. Se crea un punto de restauración si está activada la opción.'
         REVERTIR_SELECCIONADOS='Deshace los ajustes que tienen vuelta atrás.'
@@ -4373,16 +7922,17 @@ $script:ToolTipText = @{
         BtnPresetLast='Restores the selection from the last time you used WPI.'
         BtnSave='Saves your current selection to a profile for later use.'
         BtnLoad='Loads a previously saved selection.'
-        BtnDetect='Scans your PC for already-installed apps from the catalog and marks them.'
+        BtnDetect='Finds which catalog apps are already installed and highlights their name in green (informational only, does not check boxes).'
         BtnClearSel='Removes all current selections.'
         SpeedBox='Number of parallel installations. More threads = faster but more system load.'
         ScopeBox='Installs for all users, only your user, or lets winget decide automatically.'
         ChkChoco='If an app fails with winget, tries Chocolatey when available.'
         BtnAll='Selects all apps currently visible in the list.'
         BtnNone='Unchecks all currently selected apps.'
+        BtnMarkInst='Automatically checks the boxes of the catalog apps already installed on this PC. One click: ready to save a profile or build an ISO with what you already use.'
         BtnUninstall='Uninstalls the checked apps from the system. This action is irreversible.'
         BtnDownload='Downloads the .exe or .msi installer directly, bypassing winget.'
-        BtnValidate='Checks that the winget IDs of selected apps are valid and exist.'
+        BtnValidate='Checks that the winget identifiers (IDs) of the marked apps exist in the official repository. The ID is each app''s unique technical name (for example Mozilla.Firefox or Google.Chrome). Use it when an app fails to install: you rule out a mistyped or changed ID and learn whether you need to try a different ID.'
         BtnList='Searches for available updates for your installed apps.'
         BtnUpgrade='Updates all your installed apps to the latest available version.'
         BtnInstall='Installs the checked apps via winget. You can select multiple at once.'
@@ -4391,7 +7941,7 @@ $script:ToolTipText = @{
         Prog='Overall progress of the current operation.'
         BtnOpenLog='Opens the forensic log for the current session.'
         BtnOpenLogs='Opens the folder where WPI stores logs.'
-        BtnCancel='Cancels the running process when possible.'
+        BtnCancel='Cancels the active task, force-stops the current winget or installer process, and prevents more queued operations from starting.'
         ChkRestore='Creates a restore point before applying tweaks.'
         APLICAR_SELECCIONADOS='Applies the checked tweaks. A restore point is created first if the option is enabled.'
         REVERTIR_SELECCIONADOS='Undoes the tweaks that support reverting.'
@@ -4424,7 +7974,9 @@ function Set-WpiToolTip($Control, [string]$Key, [string]$Fallback = '') {
     try {
         $Control.ToolTip = Repair-WpiText (Tr $tip)
         [Windows.Controls.ToolTipService]::SetInitialShowDelay($Control, 700)
-        [Windows.Controls.ToolTipService]::SetShowDuration($Control, 5500)
+        # 20 s: los tooltips largos (fallbacks descriptivos) deben poder leerse
+        # enteros; 5,5 s cortaba la lectura a la mitad.
+        [Windows.Controls.ToolTipService]::SetShowDuration($Control, 20000)
         [Windows.Controls.ToolTipService]::SetBetweenShowDelay($Control, 250)
     } catch {}
 }
@@ -4445,6 +7997,12 @@ function Apply-WpiToolTips($node) {
         }
         if ($textKey -and -not $node.ToolTip) { Set-WpiToolTip $node $textKey }
         elseif ($node.ToolTip -is [string]) { $node.ToolTip = Repair-WpiText (Tr ([string]$node.ToolTip)) }
+        elseif ($node.ToolTip -is [Windows.Controls.TextBlock]) {
+            # Blindaje: la plantilla global de ToolTip solo pinta texto plano; un
+            # TextBlock como contenido mostraria su ToString() (el nombre de la
+            # clase). Se extrae y traduce su texto real.
+            $node.ToolTip = Repair-WpiText (Tr ([string]$node.ToolTip.Text))
+        }
 
         if (($node -is [Windows.Controls.Button]) -and -not $node.ToolTip -and $textKey) {
             $fallback = if ($script:Lang -eq 'en') { ('Runs this action: {0}' -f $textKey) } else { ('Ejecuta esta accion: {0}' -f $textKey) }
@@ -4479,7 +8037,7 @@ function Apply-WpiToolTips($node) {
 $script:XamlRaw = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="WPI Moderno"
+        Title="Winzard"
         Width="1480" Height="880" MinWidth="1180" MinHeight="700"
         WindowStartupLocation="CenterScreen">
   <Window.Background>
@@ -4497,8 +8055,16 @@ $script:XamlRaw = @'
       <Setter Property="BorderThickness" Value="1"/>
       <Setter Property="Padding" Value="10,7"/>
       <Setter Property="FontSize" Value="12"/>
-      <Setter Property="MaxWidth" Value="420"/>
+      <Setter Property="MaxWidth" Value="460"/>
       <Setter Property="Placement" Value="Mouse"/>
+      <Setter Property="HasDropShadow" Value="True"/>
+      <Setter Property="ContentTemplate">
+        <Setter.Value>
+          <DataTemplate>
+            <TextBlock Text="{Binding}" TextWrapping="Wrap" MaxWidth="430"/>
+          </DataTemplate>
+        </Setter.Value>
+      </Setter>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ToolTip">
@@ -4546,17 +8112,19 @@ $script:XamlRaw = @'
         </Setter.Value>
       </Setter>
     </Style>
+    <!-- v7.6: densidad estilo WinUtil (antes: Margin 6,3 / MinWidth 250 /
+         FontSize 13 / Padding 7,5). Mas filas y columnas por pantalla. -->
     <Style TargetType="CheckBox">
       <Setter Property="Foreground" Value="#FFEDEDF2"/>
-      <Setter Property="Margin" Value="6,3,6,3"/>
-      <Setter Property="MinWidth" Value="250"/>
-      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Margin" Value="3,2,3,2"/>
+      <Setter Property="MinWidth" Value="210"/>
+      <Setter Property="FontSize" Value="12"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
             <Border x:Name="cbBd" Background="Transparent" BorderBrush="Transparent"
-                    BorderThickness="1" CornerRadius="7" Padding="7,5">
+                    BorderThickness="1" CornerRadius="7" Padding="4,3">
               <StackPanel Orientation="Horizontal">
                 <Border x:Name="box" Width="16" Height="16" CornerRadius="4" Margin="0,0,9,0"
                         BorderBrush="#FF55555F" BorderThickness="2" Background="Transparent"
@@ -4575,6 +8143,100 @@ $script:XamlRaw = @'
                 <Setter TargetName="cbBd" Property="Background" Value="#FF20202E"/>
                 <Setter TargetName="cbBd" Property="BorderBrush" Value="#FF00E5FF"/>
                 <Setter Property="Foreground" Value="#FF00E5FF"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <!-- v7.6: toggle premium tipo pildora (patron WinUtil ColorfulToggleSwitch,
+         version Winzard: autocontenido con etiqueta, colores temables ya
+         presentes en LightMap/BlueMap, animacion 0.1s y foco accesible). -->
+    <Style x:Key="WinzardToggleSwitch" TargetType="CheckBox">
+      <Setter Property="Foreground" Value="#FFE6E6EC"/>
+      <Setter Property="Margin" Value="4,2,4,2"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Border x:Name="rowBd" Background="Transparent" BorderBrush="Transparent"
+                    BorderThickness="1" CornerRadius="7" Padding="4,3">
+              <DockPanel LastChildFill="True">
+                <Border x:Name="track" DockPanel.Dock="Left" Width="34" Height="17"
+                        CornerRadius="8.5" Background="#FF1B1B25" BorderBrush="#FF55555F"
+                        BorderThickness="1" VerticalAlignment="Center" Margin="0,0,8,0">
+                  <Ellipse x:Name="knob" Fill="#FF8A8A95" Width="11" Height="11"
+                           HorizontalAlignment="Left" VerticalAlignment="Center"
+                           Margin="2,0,0,0" RenderTransformOrigin="0.5,0.5">
+                    <Ellipse.RenderTransform>
+                      <ScaleTransform ScaleX="1" ScaleY="1"/>
+                    </Ellipse.RenderTransform>
+                  </Ellipse>
+                </Border>
+                <ContentPresenter VerticalAlignment="Center"/>
+              </DockPanel>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="track" Property="Background" Value="#FF00E5FF"/>
+                <Setter TargetName="track" Property="BorderBrush" Value="#FF00E5FF"/>
+                <Setter TargetName="knob" Property="Fill" Value="#FFFFFFFF"/>
+                <Setter Property="Foreground" Value="#FF9D7BFF"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+                <Trigger.EnterActions>
+                  <BeginStoryboard>
+                    <Storyboard>
+                      <ThicknessAnimation Storyboard.TargetName="knob"
+                                          Storyboard.TargetProperty="Margin"
+                                          To="19,0,0,0" Duration="0:0:0.1"/>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                  <BeginStoryboard>
+                    <Storyboard>
+                      <ThicknessAnimation Storyboard.TargetName="knob"
+                                          Storyboard.TargetProperty="Margin"
+                                          To="2,0,0,0" Duration="0:0:0.1"/>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </Trigger.ExitActions>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="rowBd" Property="Background" Value="#FF20202E"/>
+                <Setter TargetName="rowBd" Property="BorderBrush" Value="#FF00E5FF"/>
+                <Trigger.EnterActions>
+                  <BeginStoryboard>
+                    <Storyboard>
+                      <DoubleAnimation Storyboard.TargetName="knob"
+                                       Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                       To="1.1" Duration="0:0:0.1"/>
+                      <DoubleAnimation Storyboard.TargetName="knob"
+                                       Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                       To="1.1" Duration="0:0:0.1"/>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                  <BeginStoryboard>
+                    <Storyboard>
+                      <DoubleAnimation Storyboard.TargetName="knob"
+                                       Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
+                                       To="1.0" Duration="0:0:0.1"/>
+                      <DoubleAnimation Storyboard.TargetName="knob"
+                                       Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
+                                       To="1.0" Duration="0:0:0.1"/>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </Trigger.ExitActions>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="rowBd" Property="BorderBrush" Value="#FF76E0FF"/>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False">
                 <Setter Property="Opacity" Value="0.45"/>
@@ -4719,8 +8381,8 @@ $script:XamlRaw = @'
       <DockPanel Margin="8,14,8,10">
         <StackPanel DockPanel.Dock="Top" Margin="10,0,10,12">
           <StackPanel Orientation="Horizontal">
-            <TextBlock Text="WPI " FontSize="27" FontWeight="Bold" Foreground="#FF00E5FF"/>
-            <TextBlock Text="MODERNO" FontSize="27" FontWeight="Bold" Foreground="#FF7C4DFF"/>
+            <TextBlock Text="WIN" FontSize="27" FontWeight="Bold" Foreground="#FF00E5FF"/>
+            <TextBlock Text="ZARD" FontSize="27" FontWeight="Bold" Foreground="#FF7C4DFF"/>
           </StackPanel>
           <TextBlock x:Name="VerText" FontSize="12" Foreground="#FF8A8A95"/>
           <ComboBox x:Name="CboTheme" HorizontalAlignment="Left" Margin="0,8,0,0" Width="170" FontSize="12"
@@ -4733,7 +8395,7 @@ $script:XamlRaw = @'
           <ComboBox x:Name="CboLang" HorizontalAlignment="Left" Margin="0,6,0,0" Width="170" FontSize="12"
                     Background="#FF1F3A2E" BorderBrush="#FF5CFF8F" Foreground="#FFE6E6EC"
                     ToolTip="Idioma de la interfaz / UI language (restart to apply)">
-            <ComboBoxItem Content="Idioma: Espanol"/>
+            <ComboBoxItem Content="Idioma: Espa&#241;ol"/>
             <ComboBoxItem Content="Language: English"/>
           </ComboBox>
           <Border x:Name="SysBox" Background="#FF15151F" BorderBrush="#FF2C2C3A" BorderThickness="1"
@@ -4811,6 +8473,12 @@ $script:XamlRaw = @'
         <ScrollViewer x:Name="RepairScroll" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
           <StackPanel x:Name="RepairList" Margin="0,0,6,0"/>
         </ScrollViewer>
+        <ScrollViewer x:Name="GamingScroll" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+          <StackPanel x:Name="GamingList" Margin="0,0,6,0"/>
+        </ScrollViewer>
+        <ScrollViewer x:Name="RecoveryScroll" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+          <StackPanel x:Name="RecoveryList" Margin="0,0,6,0"/>
+        </ScrollViewer>
         <ScrollViewer x:Name="SummaryScroll" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
           <StackPanel x:Name="SummaryList" Margin="0,0,6,0"/>
         </ScrollViewer>
@@ -4857,6 +8525,7 @@ $script:XamlRaw = @'
         <WrapPanel HorizontalAlignment="Left">
           <Button x:Name="BtnAll"       Content="Marcar visibles" Margin="0,4,8,0"/>
           <Button x:Name="BtnNone"      Content="Desmarcar" Margin="0,4,8,0"/>
+          <Button x:Name="BtnMarkInst"  Content="Marcar instaladas" Background="#FF1F3A2E" BorderBrush="#FF3E6B54" Margin="0,4,8,0"/>
           <Button x:Name="BtnUninstall" Content="Desinstalar"        Background="#FF4F2A2A" BorderBrush="#FF7B4444" Margin="0,4,8,0"/>
           <Button x:Name="BtnDownload"  Content="Descargar .exe/.msi" Background="#FF2A3F4F" BorderBrush="#FF4477AA" Margin="0,4,8,0"/>
           <Button x:Name="BtnValidate"  Content="Validar IDs"        Background="#FF3A2A4F" BorderBrush="#FF6B4D9E" Margin="0,4,8,0"/>
@@ -4914,6 +8583,15 @@ try {
 
 $bc = New-Object Windows.Media.BrushConverter
 $script:Bconv = $bc
+# v7.6: estilo toggle premium (pildora deslizante). Cacheado una vez; el helper
+# convierte cualquier CheckBox en toggle sin tocar su logica (mismo IsChecked,
+# mismos eventos). Uso: New-Object CheckBox; ... ; Set-WpiToggleStyle $cb
+$script:WpiToggleStyle = $null
+try { $script:WpiToggleStyle = $window.FindResource('WinzardToggleSwitch') } catch {}
+function Set-WpiToggleStyle($cb) {
+    if ($script:WpiToggleStyle -and $cb) { try { $cb.Style = $script:WpiToggleStyle } catch {} }
+    return $cb
+}
 # Devuelve un Brush mapeando el color por el tema activo (identidad en Oscuro).
 # Sustituye a $bc.ConvertFromString en todo el codigo (C1: tema claro/oscuro).
 function Get-ThemeBrush([string]$c) {
@@ -4923,6 +8601,10 @@ function Get-ThemeBrush([string]$c) {
         $u = $c.ToUpper()
         if ($m.ContainsKey($u)) { $key = $m[$u] }
     }
+    # Tema Azul: paleta suavizada ~10-15% (misma tonalidad, menos saturacion/brillo).
+    if ($script:ThemeName -eq 'Blue') { $key = Soften-WpiColor $key }
+    # +5% de brillo global (todos los temas), mismo matiz/saturacion.
+    $key = Brighten-WpiColor $key
     return $script:Bconv.ConvertFromString($key)
 }
 # Ciclo de temas: Oscuro -> Claro -> Azul -> Oscuro.
@@ -4930,7 +8612,8 @@ function Get-NextTheme([string]$t) {
     switch ($t) { 'Dark' { return 'Light' } 'Light' { return 'Blue' } default { return 'Dark' } }
 }
 function Get-ThemeLabel([string]$t) {
-    switch ($t) { 'Light' { return 'Claro' } 'Blue' { return 'Azul' } default { return 'Oscuro' } }
+    # F1-B4 (VT2): pasa por Tr — en EN salia "Claro/Azul/Oscuro" en los dialogos de tema.
+    switch ($t) { 'Light' { return (Tr 'Claro') } 'Blue' { return (Tr 'Azul') } default { return (Tr 'Oscuro') } }
 }
 # ---- Paleta central (GUI-PREMIUM). Acentos por intencion; base para tema claro/oscuro futuro ----
 $Theme = @{
@@ -4946,10 +8629,22 @@ $Theme = @{
     Maintain   = '#FF5CFF8F'   # verde  - mantener
     Info       = '#FFB388FF'   # violeta - informacion
     Iso        = '#FFFF9E64'   # naranja - creador de ISO (estrella)
+    Gaming     = '#FFE83B4B'   # rojo intenso - gaming (destaca; distinto del cian de Optimize)
 }
 $panel = $window.FindName('Lists')
 $window.FindName('VerText').Text = (('v{0}{1}' -f $WpiVersion, $script:SepText) + (Tr 'motor winget asincrono'))
-$window.Title = (('WPI Moderno v{0}  -  ' -f $WpiVersion) + (Tr 'Instalador Post-Windows'))
+$window.Title = (('Winzard v{0}  -  ' -f $WpiVersion) + (Tr 'Instalador Post-Windows'))
+# F1-B1 / F7-B2 / F7-B5 (VT2): relanzado UNICO del proceso (tema, idioma, catalogo,
+# guias). Antes cada sitio lanzaba powershell SIN -STA (WPF lo exige explicito en
+# lanzadores no interactivos) y SIN frenar el worker: cambiar tema/idioma con una
+# instalacion a medias relanzaba la app dejando el runspace del worker huerfano.
+function Restart-WpiProcess {
+    try { if ($script:State -and $script:State.Running) { $script:State.Cancel = $true } } catch {}
+    try { Start-Process powershell.exe -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -STA -File "{0}"' -f $PSCommandPath) } catch {}
+    $script:Skip_Closing_Save = $true
+    $window.Close()
+}
+
 $script:CboTheme = $window.FindName('CboTheme')
 if ($script:CboTheme) {
     foreach ($it in $script:CboTheme.Items) { if ($it -and ($it.Content -is [string])) { $it.Content = Tr ([string]$it.Content) } }
@@ -4961,9 +8656,7 @@ if ($script:CboTheme) {
         Save-Settings
         $r = Show-WpiMessage(((Tr 'Tema seleccionado: {0}. Se aplica al reiniciar la app. Reiniciar ahora?') -f (Get-ThemeLabel $new).ToUpper()), 'Apariencia', 'YesNo', 'Question')
         if ($r -eq 'Yes') {
-            try { Start-Process powershell.exe -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath) } catch {}
-            $script:Skip_Closing_Save = $true
-            $window.Close()
+            Restart-WpiProcess
         }
     })
 }
@@ -4978,9 +8671,7 @@ if ($script:CboLang) {
         $m = $(if ($new -eq 'en') { 'Language set to English. It applies after restarting the app. Restart now?' } else { 'Idioma cambiado a Espanol. Se aplica al reiniciar la app. Reiniciar ahora?' })
         $r = Show-WpiMessage($m, 'Idioma / Language', 'YesNo', 'Question')
         if ($r -eq 'Yes') {
-            try { Start-Process powershell.exe -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath) } catch {}
-            $script:Skip_Closing_Save = $true
-            $window.Close()
+            Restart-WpiProcess
         }
     })
 }
@@ -5005,6 +8696,10 @@ $script:DriversList = $window.FindName('DriversList')
 $script:WinUpdateScroll = $window.FindName('WinUpdateScroll')
 $script:WinUpdateList = $window.FindName('WinUpdateList')
 $script:RepairScroll = $window.FindName('RepairScroll')
+$script:GamingScroll = $window.FindName('GamingScroll')
+$script:GamingList = $window.FindName('GamingList')
+$script:RecoveryScroll = $window.FindName('RecoveryScroll')
+$script:RecoveryList = $window.FindName('RecoveryList')
 $script:RepairList = $window.FindName('RepairList')
 $script:SummaryScroll = $window.FindName('SummaryScroll')
 $script:SummaryList = $window.FindName('SummaryList')
@@ -5041,10 +8736,184 @@ function Update-TweakCount {
     if ($script:BtnTweaks) { $script:BtnTweaks.Content = ((Tr 'APLICAR SELECCIONADOS') + (' ({0})' -f $n)) }
 }
 
+# ---------------------------------------------------------------------------
+# Deteccion COMPARTIDA y ROBUSTA de apps del catalogo ya instaladas en el PC.
+# La usan "Detectar instaladas" (verde), "Marcar instaladas" (pestana Apps) y el
+# boton del asistente de ISO. Problema real que resuelve: winget A VECES no
+# correlaciona una app con su Id y la lista como "ARP\Machine\..." (p.ej. Firefox,
+# Vivaldi) o cambia el Id (Google.Chrome -> Google.Chrome.EXE); por Id solo se
+# perdian. Ahora se compara por Id Y por NOMBRE contra TRES fuentes:
+#   1) winget export -> JSON PackageIdentifier (fiable; apps con fuente).
+#   2) winget list   -> columna Id + columna Nombre.
+#   3) Registro ARP  (Uninstall -> DisplayName; la fuente mas completa).
+# Coincidencia: Id exacto, Id con sufijo (A.B == A.B.EXE), o nombre normalizado
+# (>= 4 chars, sin parentesis) para evitar falsos positivos genericos.
+# Devuelve { idCatalogoEnMinuscula = $true }. Sincrona (usar con cursor de espera).
+# ---------------------------------------------------------------------------
+$script:InstalledIdsCache = $null
+
+# Normaliza un texto para comparar nombres: quita "(...)", pasa a minusculas y
+# deja solo letras/numeros (asi "Mozilla Firefox (x64 es-ES)" -> "mozillafirefox").
+function ConvertTo-WpiNorm([string]$s) {
+    if (-not $s) { return '' }
+    $s = ($s -replace '\([^)]*\)', ' ')
+    return (($s.ToLower()) -replace '[^a-z0-9]', '')
+}
+
+# Parsea una tabla de winget y devuelve filas [pscustomobject]{ Name; Id }.
+function Get-WingetListRows([string]$raw) {
+    $rows = New-Object System.Collections.Generic.List[object]
+    if (-not $raw) { return $rows }
+    $dash = @('-', '=', [char]0x2500, [char]0x2501, [char]0x2502, [char]0x2014, [char]0x2015, [char]0x2550)
+    $lines = $raw -split "`r?`n"
+    $sep = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $t = $lines[$i].Trim()
+        if ($t.Length -lt 6) { continue }
+        $only = $true
+        foreach ($ch in $t.ToCharArray()) { if ($dash -notcontains $ch) { $only = $false; break } }
+        if ($only) { $sep = $i; break }
+    }
+    if ($sep -lt 1) { return $rows }
+    $h = $sep - 1
+    while ($h -ge 0 -and $lines[$h].Trim() -eq '') { $h-- }
+    if ($h -lt 0) { return $rows }
+    $hdr = $lines[$h]
+    $cols = New-Object System.Collections.ArrayList
+    [void]$cols.Add(0)
+    for ($j = 2; $j -lt $hdr.Length; $j++) {
+        if ($hdr[$j] -ne ' ' -and $hdr[$j-1] -eq ' ' -and $hdr[$j-2] -eq ' ') { [void]$cols.Add($j) }
+    }
+    if ($cols.Count -lt 2) { return $rows }   # necesitamos al menos Name + Id
+    $nA = $cols[0]; $nB = $cols[1]
+    $iA = $cols[1]; $iB = if ($cols.Count -gt 2) { $cols[2] } else { 0 }
+    for ($i = $sep + 1; $i -lt $lines.Count; $i++) {
+        $ln = $lines[$i]
+        if ($ln.Trim() -eq '') { break }
+        if ($nA -ge $ln.Length) { continue }
+        $nend = [Math]::Min($nB, $ln.Length)
+        $nm = $ln.Substring($nA, $nend - $nA).Trim()
+        $id = ''
+        if ($iA -lt $ln.Length) {
+            $iend = if ($iB -gt 0 -and $iB -le $ln.Length) { $iB } else { $ln.Length }
+            $id = $ln.Substring($iA, $iend - $iA).Trim()
+        }
+        $rows.Add([pscustomobject]@{ Name = $nm; Id = $id }) | Out-Null
+    }
+    return $rows
+}
+
+function Get-InstalledCatalogIdSet {
+    $instIds = @{}
+    $instNames = New-Object System.Collections.Generic.List[string]
+
+    # 0) VIA RAPIDA (F12): modulo PowerShell Microsoft.WinGet.Client, si esta.
+    # Devuelve objetos con .Id/.Name (sin parsear texto del CLI): mas rapido y
+    # fiable. Si el modulo no esta instalado, se ignora y siguen las vias 1-3.
+    try {
+        if (-not (Get-Command Get-WinGetPackage -ErrorAction SilentlyContinue)) {
+            Import-Module Microsoft.WinGet.Client -ErrorAction SilentlyContinue
+        }
+        if (Get-Command Get-WinGetPackage -ErrorAction SilentlyContinue) {
+            foreach ($p in @(Get-WinGetPackage -ErrorAction SilentlyContinue)) {
+                if ($p.Id) { $instIds[([string]$p.Id).ToLower()] = $true }
+                $nn = ConvertTo-WpiNorm ([string]$p.Name)
+                if ($nn.Length -ge 3) { $instNames.Add($nn) | Out-Null }
+            }
+        }
+    } catch {}
+
+    # 1) winget export (JSON) -> IDs
+    try {
+        $tmp = [IO.Path]::GetTempFileName()
+        & winget export -o "$tmp" --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
+        $json = Get-Content $tmp -Raw -ErrorAction Stop | ConvertFrom-Json
+        foreach ($src in @($json.Sources)) {
+            foreach ($p in @($src.Packages)) {
+                if ($p.PackageIdentifier) { $instIds[([string]$p.PackageIdentifier).ToLower()] = $true }
+            }
+        }
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    } catch {}
+
+    # 2) winget list -> IDs + Nombres
+    try {
+        $raw = (& winget list --accept-source-agreements --disable-interactivity 2>&1 | Out-String)
+        foreach ($r in (Get-WingetListRows $raw)) {
+            $id = [string]$r.Id
+            if ($id -and $id -notmatch '\s' -and $id -notlike 'ARP\*') { $instIds[$id.ToLower()] = $true }
+            $nn = ConvertTo-WpiNorm ([string]$r.Name)
+            if ($nn.Length -ge 3) { $instNames.Add($nn) | Out-Null }
+        }
+    } catch {}
+
+    # 3) Registro ARP (Uninstall) -> DisplayName (la fuente mas completa)
+    try {
+        $keys = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        )
+        foreach ($k in $keys) {
+            foreach ($it in @(Get-ItemProperty $k -ErrorAction SilentlyContinue)) {
+                $dn = [string]$it.DisplayName
+                if ($dn) { $nn = ConvertTo-WpiNorm $dn; if ($nn.Length -ge 3) { $instNames.Add($nn) | Out-Null } }
+            }
+        }
+    } catch {}
+
+    # Interseccion con el catalogo
+    $set = @{}
+    $idKeys = @($instIds.Keys)
+    foreach ($app in $catalog) {
+        $idl = ([string]$app.Id).ToLower()
+        if ($set[$idl]) { continue }
+        # a) Id exacto
+        if ($instIds[$idl]) { $set[$idl] = $true; continue }
+        # b) Id con sufijo winget (Google.Chrome <-> Google.Chrome.EXE, en ambos sentidos)
+        $pref = $idl + '.'
+        $hit = $false
+        foreach ($ik in $idKeys) { if ($ik.StartsWith($pref) -or $idl.StartsWith($ik + '.')) { $hit = $true; break } }
+        if ($hit) { $set[$idl] = $true; continue }
+        # c) por nombre normalizado (>= 4 chars, para no emparejar cosas genericas)
+        $sig = ConvertTo-WpiNorm ([string]$app.Name)
+        if ($sig.Length -ge 4) {
+            foreach ($inm in $instNames) { if ($inm.Contains($sig)) { $set[$idl] = $true; break } }
+        }
+    }
+    return $set
+}
+
+# Devuelve el set de IDs instalados. Si $useCache y hay cache de esta sesion,
+# lo reutiliza (instantaneo); si no, detecta con cursor de espera y lo cachea.
+function Resolve-InstalledIds([bool]$useCache) {
+    if ($useCache -and $script:InstalledIdsCache) { return $script:InstalledIdsCache }
+    $old = $null
+    try { $old = [System.Windows.Input.Mouse]::OverrideCursor; [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait } catch {}
+    try { $script:StatusText.Text = (Tr 'Detectando apps instaladas (winget)...') } catch {}
+    try { $set = Get-InstalledCatalogIdSet } finally { try { [System.Windows.Input.Mouse]::OverrideCursor = $old } catch {} }
+    $script:InstalledIdsCache = $set
+    return $set
+}
+
+# v7.6: formato compacto estilo WinUtil ("Cosa - Accion") SOLO de presentacion.
+# El Name del catalogo NO cambia (perfiles, diario, detectores y TrMap siguen
+# keyed por el nombre completo); esto reordena la etiqueta YA TRADUCIDA.
+function ConvertTo-WpiCompactLabel([string]$n) {
+    if ([string]::IsNullOrWhiteSpace($n)) { return $n }
+    $m = [regex]::Match($n, '^(Desactivar|Activar|Deshabilitar|Habilitar|Quitar|Bloquear|Impedir|Preferir|Agrupar|Acelerar|Mostrar|Ocultar|Disable|Enable|Remove|Block|Prevent|Prefer|Group|Speed up|Show|Hide|Turn off|Turn on)\s+(.+)$')
+    if (-not $m.Success) { return $n }
+    $obj = $m.Groups[2].Value
+    if ($obj.Length -gt 1) { $obj = $obj.Substring(0,1).ToUpper() + $obj.Substring(1) }
+    return ('{0} - {1}' -f $obj, $m.Groups[1].Value)
+}
+
 # ---- Marcado visual de apps ya instaladas (texto en verde) ----
 function Mark-One($cb) {
     $cb.Foreground = Get-ThemeBrush('#FF5CFF8F')
-    $cb.ToolTip = ((Tr '{0}   ·   YA INSTALADA') -f $cb.Tag)
+    $d = Get-AppDesc ([string]$cb.Tag)
+    $t = ((Tr '{0}   ·   YA INSTALADA') -f $cb.Tag)
+    $cb.ToolTip = if ($d) { $d + [char]10 + $t } else { $t }
 }
 function Mark-Installed([string[]]$ids) {
     if (-not $ids -or $ids.Count -eq 0) {
@@ -5058,6 +8927,65 @@ function Mark-Installed([string[]]$ids) {
         if ($set[([string]$cb.Tag).ToLower()]) { Mark-One $cb; $n++ }
     }
     $script:StatusText.Text = ((Tr 'Deteccion: {0} apps del catalogo ya instaladas (nombre en verde).') -f $n)
+}
+
+# Deteccion robusta -> resalta en verde los nombres de las apps ya instaladas
+# (no marca casillas). La usan el boton "Detectar instaladas" y el autodetect.
+function Invoke-DetectHighlight([bool]$useCache) {
+    $set = Resolve-InstalledIds $useCache
+    $n = 0
+    foreach ($cb in $script:Checks) { if ($set[([string]$cb.Tag).ToLower()]) { Mark-One $cb; $n++ } }
+    if ($n -eq 0) { $script:StatusText.Text = (Tr 'Deteccion: ninguna app del catalogo esta instalada todavia.') }
+    else { $script:StatusText.Text = ((Tr 'Deteccion: {0} apps del catalogo ya instaladas (nombre en verde).') -f $n) }
+    return $n
+}
+
+# Cierra (best-effort) los procesos que se ejecutan DESDE la carpeta de
+# instalacion de las apps indicadas. Motivo: una app abierta bloquea sus
+# archivos y winget puede devolver "OK" sin haber actualizado nada (caso tipico:
+# Claude, Discord, navegadores). Solo mata procesos cuyo .Path cuelga de la
+# InstallLocation de esa app en el registro ARP (no toca procesos ajenos).
+# Devuelve la lista de nombres de apps cerradas.
+function Close-RunningAppsForUpgrade([string[]]$ids) {
+    $closed = New-Object System.Collections.Generic.List[string]
+    if (-not $ids -or $ids.Count -eq 0) { return @() }
+    # Mapa ARP: nombre normalizado -> InstallLocation
+    $arp = New-Object System.Collections.Generic.List[object]
+    foreach ($k in @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*')) {
+        foreach ($it in @(Get-ItemProperty $k -ErrorAction SilentlyContinue)) {
+            $loc = [string]$it.InstallLocation
+            if ($it.DisplayName -and $loc) {
+                $arp.Add([pscustomobject]@{ Name = (ConvertTo-WpiNorm $it.DisplayName); Loc = $loc.TrimEnd('\').ToLower() }) | Out-Null
+            }
+        }
+    }
+    $procs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path })
+    foreach ($id in $ids) {
+        $app = @($catalog | Where-Object { [string]$_.Id -eq [string]$id }) | Select-Object -First 1
+        if (-not $app) { continue }
+        $sig = ConvertTo-WpiNorm ([string]$app.Name)
+        if ($sig.Length -lt 4) { continue }
+        $locs = @($arp | Where-Object { $_.Loc -and $_.Name.Contains($sig) } | ForEach-Object { $_.Loc } | Select-Object -Unique)
+        if ($locs.Count -eq 0) { continue }
+        foreach ($pr in $procs) {
+            $pp = ([string]$pr.Path).ToLower()
+            foreach ($loc in $locs) {
+                if ($pp -and $loc.Length -ge 4 -and $pp.StartsWith($loc + '\')) {
+                    try {
+                        $pr.CloseMainWindow() | Out-Null
+                        Start-Sleep -Milliseconds 400
+                        if (-not $pr.HasExited) { $pr.Kill() }
+                        if (-not $closed.Contains([string]$app.Name)) { $closed.Add([string]$app.Name) | Out-Null }
+                    } catch {}
+                    break
+                }
+            }
+        }
+    }
+    return @($closed)
 }
 
 # ---- Construccion de tarjetas de categorias ----
@@ -5090,11 +9018,13 @@ foreach ($cat in $cats) {
         $hasGuide = $Guides.Contains([string]$app.Id)
         $cb.Content = if ($hasGuide) { $app.Name + '  (i)' } else { $app.Name }
         $cb.Tag = $app.Id
+        $desc = Get-AppDesc ([string]$app.Id)
         if ($script:Lang -eq 'en') {
-            $cb.ToolTip = if ($hasGuide) { ('{0} - winget ID: {1}. Includes a guide; right-click to open it.' -f $app.Name, $app.Id) } else { ('{0} - winget ID: {1}. Check it to include it in the selected action.' -f $app.Name, $app.Id) }
+            $tip = if ($hasGuide) { ('{0} - winget ID: {1}. Includes a guide; right-click to open it.' -f $app.Name, $app.Id) } else { ('{0} - winget ID: {1}. Check it to include it in the selected action.' -f $app.Name, $app.Id) }
         } else {
-            $cb.ToolTip = if ($hasGuide) { ('{0} - ID winget: {1}. Tiene guia; clic derecho para abrirla.' -f $app.Name, $app.Id) } else { ('{0} - ID winget: {1}. Marcala para incluirla en la accion seleccionada.' -f $app.Name, $app.Id) }
+            $tip = if ($hasGuide) { ('{0} - ID winget: {1}. Tiene guia; clic derecho para abrirla.' -f $app.Name, $app.Id) } else { ('{0} - ID winget: {1}. Marcala para incluirla en la accion seleccionada.' -f $app.Name, $app.Id) }
         }
+        $cb.ToolTip = if ($desc) { $desc + [char]10 + $tip } else { $tip }
         $cb.Add_Checked({ Update-Count })
         $cb.Add_Unchecked({ Update-Count })
         if ($hasGuide) {
@@ -5200,21 +9130,191 @@ function Get-RecommendedTweaks {
     return @{ Names = $names; Excluded = $excl }
 }
 
+# ---- Navegacion "volver atras" entre secciones de la barra lateral ----
+# Recuerda la seccion anterior para poder volver con la flechita de arriba.
+$script:NavPrevIdx = -1
+$script:NavCurIdx  = -1
+function Go-NavBack {
+    if ($script:NavPrevIdx -ge 0 -and $script:NavPrevIdx -lt $script:SideList.Items.Count) {
+        $script:SideList.SelectedIndex = $script:NavPrevIdx
+    }
+}
+# Crea un boton de "volver" (flecha, sin texto) VISIBLE y resaltado para una
+# seccion larga: evita hacer scroll para volver. $OnClick define la accion
+# (por defecto: volver a la seccion anterior de la barra lateral). $Tip = tooltip.
+function New-BackArrowButton {
+    param([scriptblock]$OnClick = $null, [string]$Tip = 'Volver a la seccion anterior')
+    $b = New-Object Windows.Controls.Button
+    $b.Content = ([string][char]0x2190)
+    $b.ToolTip = (Tr $Tip)
+    $b.Width = 46; $b.Height = 32; $b.FontSize = 18; $b.FontWeight = 'Bold'
+    $b.HorizontalAlignment = 'Left'; $b.Margin = New-Object Windows.Thickness(0,2,0,8); $b.Padding = New-Object Windows.Thickness(0)
+    # Resaltado: fondo azul y borde brillante para que se vea claro.
+    $b.Background = Get-ThemeBrush('#FF0A84FF'); $b.BorderBrush = Get-ThemeBrush('#FF6FB8FF'); $b.Foreground = Get-ThemeBrush('#FFFFFFFF')
+    if ($OnClick) { $b.Add_Click($OnClick) } else { $b.Add_Click({ Go-NavBack }) }
+    return $b
+}
+
+# Boton "ir arriba del todo" para listas largas: al pulsarlo lleva el ScrollViewer
+# indicado al principio. Pensado para el final de "Todas las apps" y del paso de
+# apps del asistente, para no tener que arrastrar la barra a mano.
+function New-ScrollTopButton($Scroll, [string]$Tip = 'Subir arriba del todo de la lista') {
+    $b = New-Object Windows.Controls.Button
+    $b.Content = ([string][char]0x2191 + '  ' + (Tr 'Ir arriba'))
+    $b.ToolTip = (Tr $Tip)
+    $b.HorizontalAlignment = 'Left'; $b.Margin = New-Object Windows.Thickness(0,12,0,6); $b.Padding = New-Object Windows.Thickness(14,6,14,6); $b.FontWeight = 'Bold'
+    $b.Background = Get-ThemeBrush('#FF243042'); $b.BorderBrush = Get-ThemeBrush('#FF6FB8FF'); $b.Foreground = Get-ThemeBrush('#FFEAF2FF')
+    $b.Tag = $Scroll
+    $b.Add_Click({ try { $this.Tag.ScrollToTop() } catch {} })
+    return $b
+}
+
+# Expander "premium" para explicaciones: cabecera corta clicable (con icono),
+# cuerpo con el texto que se despliega/oculta. Colapsado por defecto. Sirve para
+# esconder parrafos largos de ayuda y dejar la seccion limpia. Reutilizable.
+function New-InfoExpander([string]$Header, [string]$Body, [string]$Accent = '') {
+    $exp = New-Object Windows.Controls.Expander
+    $exp.IsExpanded = $false
+    $exp.Margin = New-Object Windows.Thickness(0,6,0,0)
+    $hd = New-Object Windows.Controls.TextBlock
+    $hd.Text = ([string][char]0x2139 + '  ' + (Tr $Header))
+    $hd.FontWeight = 'Bold'; $hd.FontSize = 12.5; $hd.TextWrapping = 'Wrap'
+    $hd.Foreground = Get-ThemeBrush($(if ($Accent) { $Accent } else { $Theme.Info }))
+    $exp.Header = $hd
+    $bd = New-Object Windows.Controls.Border
+    $bd.Background = Get-ThemeBrush('#FF12121C'); $bd.BorderBrush = Get-ThemeBrush('#FF2C2C3A'); $bd.BorderThickness = New-Object Windows.Thickness(1)
+    $bd.CornerRadius = New-Object Windows.CornerRadius(8); $bd.Padding = New-Object Windows.Thickness(12,9,12,9); $bd.Margin = New-Object Windows.Thickness(0,4,0,4)
+    $tx = New-Object Windows.Controls.TextBlock
+    $tx.Text = (Tr $Body); $tx.TextWrapping = 'Wrap'; $tx.FontSize = 12; $tx.Foreground = Get-ThemeBrush($Theme.Text)
+    $bd.Child = $tx
+    $exp.Content = $bd
+    return $exp
+}
+
+# S7-R (rediseno premium): fila de accion a lo ancho que sustituye a las filas
+# de botones amontonados. Cada accion es una tarjeta con icono, titulo en
+# negrita, descripcion corta y un desplegable "Que es, como funciona y que
+# pasara" UNICO de esa accion; el boton compacto queda a la derecha. Asi las
+# secciones respiran y cualquier usuario entiende cada opcion antes de pulsarla.
+function New-WpiActionRow([string]$Icon, [string]$Title, [string]$Desc, [string]$Detail, [string]$BtnText, [scriptblock]$OnClick, [string]$Accent = '#FF5CFF8F', [switch]$Primary) {
+    $card = New-Object Windows.Controls.Border
+    $card.Background = Get-ThemeBrush($(if ($Primary) { '#FF17222B' } else { '#FF12121C' }))
+    $card.BorderBrush = Get-ThemeBrush($(if ($Primary) { $Accent } else { '#FF2C2C3A' }))
+    $card.BorderThickness = New-Object Windows.Thickness(1)
+    $card.CornerRadius = New-Object Windows.CornerRadius(8)
+    $card.Padding = New-Object Windows.Thickness(12,9,12,9)
+    $card.Margin = New-Object Windows.Thickness(0,5,0,0)
+    $dock = New-Object Windows.Controls.DockPanel; $dock.LastChildFill = $true
+    $btn = New-Object Windows.Controls.Button
+    $btn.Content = $BtnText
+    $btn.MinWidth = 140
+    $btn.Padding = New-Object Windows.Thickness(12,6,12,6)
+    $btn.Margin = New-Object Windows.Thickness(12,0,0,0)
+    $btn.VerticalAlignment = 'Center'
+    $btn.FontWeight = 'Bold'
+    $btn.BorderBrush = Get-ThemeBrush($Accent)
+    if ($Primary) { $btn.Background = Get-ThemeBrush('#FF1F3A2E') }
+    $btn.Add_Click($OnClick)
+    [Windows.Controls.DockPanel]::SetDock($btn, 'Right'); $dock.Children.Add($btn) | Out-Null
+    $ic = New-Object Windows.Controls.TextBlock
+    $ic.Text = $Icon; $ic.FontSize = 19; $ic.Margin = New-Object Windows.Thickness(0,1,10,0); $ic.VerticalAlignment = 'Top'
+    [Windows.Controls.DockPanel]::SetDock($ic, 'Left'); $dock.Children.Add($ic) | Out-Null
+    $mid = New-Object Windows.Controls.StackPanel
+    $t = New-Object Windows.Controls.TextBlock; $t.Text = $Title; $t.FontWeight = 'Bold'; $t.FontSize = 12.5; $t.TextWrapping = 'Wrap'
+    $t.Foreground = Get-ThemeBrush($Theme.Text)
+    $mid.Children.Add($t) | Out-Null
+    $d = New-Object Windows.Controls.TextBlock; $d.Text = $Desc; $d.FontSize = 11.5; $d.TextWrapping = 'Wrap'
+    $d.Foreground = Get-ThemeBrush($Theme.Sub); $d.Margin = New-Object Windows.Thickness(0,2,0,0)
+    $mid.Children.Add($d) | Out-Null
+    if ($Detail) { $mid.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará' $Detail $Accent)) | Out-Null }
+    $dock.Children.Add($mid) | Out-Null
+    $card.Child = $dock
+    return $card
+}
+
+# S7-R (rediseno premium): grupo de botones con leyenda. Convierte una fila
+# interminable de botones en segmentos compactos y rotulados ("Estado",
+# "Perfiles"...), dentro de un WrapPanel que ajusta linea en ventanas estrechas.
+function New-WpiBtnGroup([string]$Caption, $Buttons, [string]$Accent = '#FF2C2C3A') {
+    $g = New-Object Windows.Controls.Border
+    $g.BorderBrush = Get-ThemeBrush($Accent); $g.BorderThickness = New-Object Windows.Thickness(1)
+    $g.CornerRadius = New-Object Windows.CornerRadius(8); $g.Padding = New-Object Windows.Thickness(8,4,8,6)
+    $g.Margin = New-Object Windows.Thickness(0,6,8,0)
+    $g.Background = Get-ThemeBrush('#FF12121C')
+    $sp = New-Object Windows.Controls.StackPanel
+    $cap = New-Object Windows.Controls.TextBlock
+    $cap.Text = $Caption; $cap.FontSize = 10; $cap.FontWeight = 'Bold'
+    $cap.Foreground = Get-ThemeBrush($Theme.Sub); $cap.Margin = New-Object Windows.Thickness(2,0,0,2)
+    $sp.Children.Add($cap) | Out-Null
+    $h = New-Object Windows.Controls.StackPanel; $h.Orientation = 'Horizontal'
+    foreach ($b in $Buttons) { $h.Children.Add($b) | Out-Null }
+    $sp.Children.Add($h) | Out-Null
+    $g.Child = $sp
+    return $g
+}
+
+# S7: cabecera con icono (i) y tooltip on-hover para explicaciones largas.
+# Sustituye los parrafos fijos de descripcion: el texto completo aparece al
+# pasar el cursor sobre el icono y desaparece al retirarlo (ToolTip nativo WPF).
+# El texto se traduce con Tr en el momento de construir (funciona en ES y EN).
+function New-WpiHeaderInfo($HeaderTb, [string]$LongText) {
+    $row = New-Object Windows.Controls.StackPanel
+    $row.Orientation = 'Horizontal'
+    $row.Margin = $HeaderTb.Margin
+    $HeaderTb.Margin = New-Object Windows.Thickness(0)
+    $row.Children.Add($HeaderTb) | Out-Null
+    $ic = New-Object Windows.Controls.TextBlock
+    $ic.Text = [string][char]0x2139
+    $ic.FontSize = [math]::Max(12.0, [double]$HeaderTb.FontSize - 1)
+    $ic.FontWeight = 'Bold'
+    $ic.VerticalAlignment = 'Center'
+    $ic.Margin = New-Object Windows.Thickness(8,0,0,0)
+    $ic.Foreground = Get-ThemeBrush('#FF76E0FF')
+    $ic.Cursor = [System.Windows.Input.Cursors]::Help
+    # La plantilla global de ToolTip espera texto simple; usar un TextBlock como
+    # Content podia dejar el icono sin descripcion util en algunas pantallas.
+    $ic.ToolTip = Repair-WpiText (Tr $LongText)
+    try { [Windows.Automation.AutomationProperties]::SetName($ic, (Tr 'Informacion')) } catch {}
+    try {
+        [Windows.Controls.ToolTipService]::SetInitialShowDelay($ic, 150)
+        [Windows.Controls.ToolTipService]::SetShowDuration($ic, 60000)
+    } catch {}
+    $row.Children.Add($ic) | Out-Null
+    return $row
+}
+
+# Fila "etiqueta: valor" para tarjetas de resumen (etiqueta en color, valor claro).
+function New-SummaryRow([string]$Label, [string]$Value, [string]$ValColor = '') {
+    $row = New-Object Windows.Controls.DockPanel; $row.Margin = New-Object Windows.Thickness(0,3,0,0); $row.LastChildFill = $true
+    # Etiqueta SIEMPRE con ':' (tras Tr, nunca antes), columna ancha con ajuste de
+    # linea y separacion fija del valor: nada puede quedar pegado ni cortado.
+    $l = New-Object Windows.Controls.TextBlock; $l.Text = ((Tr $Label) + ':'); $l.Width = 215; $l.FontWeight = 'Bold'; $l.FontSize = 12.5
+    $l.TextWrapping = 'Wrap'; $l.Margin = New-Object Windows.Thickness(0,0,10,0)
+    $l.Foreground = Get-ThemeBrush($Theme.Sub); $l.VerticalAlignment = 'Top'
+    [Windows.Controls.DockPanel]::SetDock($l, 'Left'); $row.Children.Add($l) | Out-Null
+    $v = New-Object Windows.Controls.TextBlock; $v.Text = $Value; $v.TextWrapping = 'Wrap'; $v.FontSize = 12.5
+    $v.Foreground = Get-ThemeBrush($(if ($ValColor) { $ValColor } else { $Theme.Text }))
+    $row.Children.Add($v) | Out-Null
+    return $row
+}
+
+# Boton "ir arriba" al final de la lista larga de "Todas las apps".
+# Solo debe EXISTIR en la vista "Todas las apps" (352): en las categorias
+# individuales no hay scroll suficiente y el boton sobra. Se guarda la
+# referencia y Apply-Filter lo quita del layout (Collapsed) en el resto.
+$script:AppsScroll = $window.FindName('AppsScroll')
+$script:AppsScrollTopBtn = New-ScrollTopButton $script:AppsScroll
+$panel.Children.Add($script:AppsScrollTopBtn) | Out-Null
+
 # ---- Construccion del panel de Tweaks (v2: categorias, riesgo, revertir) ----
 $tw = $window.FindName('TweaksList')
+$tw.Children.Add((New-BackArrowButton)) | Out-Null
 $twHdr = New-Object Windows.Controls.TextBlock
 $twHdr.Text = 'TWEAKS Y AJUSTES (se aplican solo los marcados; casi todos reversibles)'
 $twHdr.FontSize = 14; $twHdr.FontWeight = 'Bold'
 $twHdr.Foreground = Get-ThemeBrush('#FF7C4DFF')
 $twHdr.Margin = New-Object Windows.Thickness(2,10,0,2)
-$tw.Children.Add($twHdr) | Out-Null
-
-$twInfo = New-Object Windows.Controls.TextBlock
-$twInfo.Text = 'Marca los ajustes y pulsa APLICAR. Los marcados en ambar son "avanzados" (mayor impacto). REVERTIR deshace los que tengan vuelta atras. Antes de aplicar se crea un punto de restauracion si dejas la casilla activada.'
-$twInfo.Foreground = Get-ThemeBrush('#FF8A8A95')
-$twInfo.FontSize = 12; $twInfo.TextWrapping = 'Wrap'
-$twInfo.Margin = New-Object Windows.Thickness(2,0,0,8)
-$tw.Children.Add($twInfo) | Out-Null
+$tw.Children.Add((New-WpiHeaderInfo $twHdr 'Centro de optimizacion del sistema: marca los ajustes que quieras y pulsa APLICAR SELECCIONADOS; nada se toca hasta que tu lo ordenes. Cada tweak ejecuta comandos reales (registro, servicios, powercfg) y VERIFICA el resultado despues de aplicarlo, dejando constancia en el log forense de la sesion. Los marcados en ambar son "avanzados": mayor impacto, pensados para quien sabe lo que activa. REVERTIR SELECCIONADOS deshace los que tienen vuelta atras, y si dejas activada la casilla superior se crea un punto de restauracion del sistema antes de aplicar, para que siempre exista un camino de vuelta.')) | Out-Null
 
 $script:ChkRestore = New-Object Windows.Controls.CheckBox
 $script:ChkRestore.Content = 'Crear un punto de restauracion antes de aplicar (recomendado)'
@@ -5287,6 +9387,71 @@ $btnPNone.Add_Click({ foreach ($cb in $script:TweakChecks) { $cb.IsChecked = $fa
 $twPreRow.Children.Add($btnPNone) | Out-Null
 
 $tw.Children.Add($twPreRow) | Out-Null
+
+# ---- F10: PERFILES POR PERSONA (marcan un set curado de tweaks de un clic) ----
+# Cada perfil marca un conjunto de tweaks pensado para un tipo de usuario. Solo
+# MARCA (no aplica): el usuario revisa y pulsa APLICAR. Nombres que no existan en
+# el catalogo se ignoran sin error, asi el perfil es robusto ante cambios.
+$script:WpiPersonas = [ordered]@{
+    'Gamer' = @(
+        'Plan de energia Maximo Rendimiento','Aceleracion de GPU por hardware (HAGS)',
+        'Activar Modo Juego (Game Mode)','Desactivar Game Bar y grabacion en segundo plano',
+        'Desactivar aceleracion del raton (precision para juegos)','Optimizar red para juegos/streaming',
+        'Desactivar teclas especiales (Sticky/Filter/Toggle)','Ajustar efectos visuales para mejor rendimiento',
+        'Menus instantaneos (sin retardo)','Desactivar notificaciones del sistema'
+    )
+    'Creador' = @(
+        'Activar historial del portapapeles (Win+V)','Activar rutas largas (LongPaths)',
+        'Tecla Impr Pant abre Recortes','Explorador: extensiones y archivos ocultos visibles',
+        'Mostrar segundos en el reloj de la barra','Activar tema oscuro de Windows',
+        'Menus instantaneos (sin retardo)','Activar Sentido de almacenamiento (limpieza automatica)'
+    )
+    'Oficina' = @(
+        'Desactivar telemetria innecesaria','Desactivar Bing, sugerencias y apps promocionadas',
+        'Quitar recomendaciones del menu Inicio','Desactivar experiencias personalizadas (diagnostico)',
+        'Explorador: extensiones y archivos ocultos visibles','Activar historial del portapapeles (Win+V)',
+        'Activar NumLock al iniciar sesion','Quitar avisos de sincronizacion del Explorador'
+    )
+    'Minimalista' = @(
+        'Desactivar telemetria innecesaria','Desactivar Bing, sugerencias y apps promocionadas',
+        'Desactivar historial de actividad (Timeline)','Quitar anuncios de la pantalla de bloqueo e Inicio',
+        'Desactivar sugerencias en Configuracion','Desactivar Copilot por politica',
+        'Quitar el boton de Widgets','Quitar el boton de Chat/Teams de la barra',
+        'Quitar el boton Vista de tareas','Quitar el cuadro de busqueda de la barra',
+        'Desactivar Widgets por politica (a fondo)','Quitar recomendaciones del menu Inicio',
+        'Quitar "Compartir" del menu contextual'
+    )
+}
+function Set-WpiPersona([string]$persona) {
+    $set = @($script:WpiPersonas[$persona])
+    if (-not $set) { return }
+    $lookup = @{}; foreach ($nm in $set) { $lookup[$nm] = $true }
+    $n = 0
+    foreach ($cb in $script:TweakChecks) {
+        $on = $lookup.ContainsKey([string]$cb.Tag.Name)
+        $cb.IsChecked = $on
+        if ($on) { $n++ }
+    }
+    try { Update-Count } catch {}
+    try { $script:TweakSummary.Text = ((Tr 'Perfil {0}: marcados {1} ajustes. Revisa la seleccion y pulsa APLICAR SELECCIONADOS.') -f (Tr $persona), $n) } catch {}
+}
+$twPersLbl = New-Object Windows.Controls.TextBlock
+$twPersLbl.Text = 'Perfiles por persona (marcan un set pensado para ti):'
+$twPersLbl.Foreground = Get-ThemeBrush('#FF8A8A95'); $twPersLbl.FontSize = 12; $twPersLbl.FontWeight = 'Bold'
+$twPersLbl.Margin = New-Object Windows.Thickness(2,8,0,2)
+$tw.Children.Add($twPersLbl) | Out-Null
+$twPersRow = New-Object Windows.Controls.StackPanel
+$twPersRow.Orientation = 'Horizontal'
+$twPersRow.Margin = New-Object Windows.Thickness(2,0,0,4)
+foreach ($pn in @('Gamer','Creador','Oficina','Minimalista')) {
+    $bp = New-Object Windows.Controls.Button
+    $bp.Content = $pn; $bp.FontWeight = 'Bold'; $bp.Tag = $pn
+    $bp.Margin = New-Object Windows.Thickness(0,0,8,0); $bp.Padding = New-Object Windows.Thickness(14,5,14,5)
+    $bp.Background = Get-ThemeBrush('#FF13414F'); $bp.BorderBrush = Get-ThemeBrush('#FF76E0FF'); $bp.Foreground = Get-ThemeBrush('#FFEAF2FF')
+    $bp.Add_Click({ Set-WpiPersona ([string]$this.Tag) })
+    $twPersRow.Children.Add($bp) | Out-Null
+}
+$tw.Children.Add($twPersRow) | Out-Null
 
 $script:TweakStatusLabels = @{}
 $script:TweakDetected = $false
@@ -5374,8 +9539,10 @@ foreach ($tcat in $twCats) {
         $dot.ToolTip = (Tr 'estado: sin comprobar')
         $script:TweakStatusLabels[[string]$t.Name] = $dot
         $cb = New-Object Windows.Controls.CheckBox
-        $cb.Content = $(if ($adv) { (Tr ([string]$t.Name)) + '   ' + (Tr '[avanzado]') } else { (Tr ([string]$t.Name)) })
-        $cb.FontSize = 13
+        # v7.6: etiqueta compacta "Cosa - Accion" (solo presentacion; Tag.Name manda)
+        $lblTw = ConvertTo-WpiCompactLabel (Tr ([string]$t.Name))
+        $cb.Content = $(if ($adv) { $lblTw + '   ' + (Tr '[avanzado]') } else { $lblTw })
+        $cb.FontSize = 12
         $cb.VerticalAlignment = 'Center'
         $cb.Tag = $t
         $cb.Add_Checked({ try { Update-TweakCount } catch {} }); $cb.Add_Unchecked({ try { Update-TweakCount } catch {} })
@@ -5384,6 +9551,7 @@ foreach ($tcat in $twCats) {
         $tip = (Tr ([string]$t.Desc)) + (Tr $rev)
         if ($t.Caveat) { $tip += ("`n" + (Tr 'Evitalo si:') + ' ' + (Tr ([string]$t.Caveat))) }
         $cb.ToolTip = $tip
+        Set-WpiToggleStyle $cb | Out-Null
         $row.Children.Add($dot) | Out-Null
         $row.Children.Add($cb)  | Out-Null
         $col.Children.Add($row) | Out-Null
@@ -5412,28 +9580,31 @@ $script:TweakStatusInline.Text = (Tr 'Detectando que ajustes ya tienes aplicados
 $script:TweakStatusBanner.Child = $script:TweakStatusInline
 $tw.Children.Add($script:TweakStatusBanner) | Out-Null
 
-$twBtnRow = New-Object Windows.Controls.StackPanel
-$twBtnRow.Orientation = 'Horizontal'
-$twBtnRow.Margin = New-Object Windows.Thickness(0,8,0,4)
 $twBtn = New-Object Windows.Controls.Button
 $twBtn.Content = 'APLICAR SELECCIONADOS'
 $twBtn.FontWeight = 'Bold'
 $twBtn.Background  = Get-ThemeBrush('#FF3A2A6E')
 $twBtn.BorderBrush = Get-ThemeBrush('#FF7C4DFF')
-$twBtnRow.Children.Add($twBtn) | Out-Null
 $script:BtnTweaksUndo = New-Object Windows.Controls.Button
 $script:BtnTweaksUndo.Content = 'REVERTIR SELECCIONADOS'
 $script:BtnTweaksUndo.Background  = Get-ThemeBrush('#FF4F2A2A')
 $script:BtnTweaksUndo.BorderBrush = Get-ThemeBrush('#FF7B4444')
-$twBtnRow.Children.Add($script:BtnTweaksUndo) | Out-Null
 $script:BtnTweakDetect = New-Object Windows.Controls.Button
 $script:BtnTweakDetect.Content = 'Re-detectar estado'
 $script:BtnTweakDetect.Background  = Get-ThemeBrush('#FF13414F')
 $script:BtnTweakDetect.BorderBrush = Get-ThemeBrush('#FF76E0FF')
-$twBtnRow.Children.Add($script:BtnTweakDetect) | Out-Null
+$script:BtnTweakVerify = New-Object Windows.Controls.Button
+$script:BtnTweakVerify.Content = 'Verificar todo'
+$script:BtnTweakVerify.Background  = Get-ThemeBrush('#FF13414F')
+$script:BtnTweakVerify.BorderBrush = Get-ThemeBrush('#FF76E0FF')
+$script:BtnTweakVerify.Add_Click({ try { Invoke-WpiVerifyAll } catch { Show-WpiMessage((('No se pudo completar la auditoria: ' ) + $_.Exception.Message), (Tr 'Verificar todo')) | Out-Null } })
+$script:BtnTweakUndoToday = New-Object Windows.Controls.Button
+$script:BtnTweakUndoToday.Content = 'Deshacer lo de hoy'
+$script:BtnTweakUndoToday.Background  = Get-ThemeBrush('#FF4F2A2A')
+$script:BtnTweakUndoToday.BorderBrush = Get-ThemeBrush('#FF7B4444')
+$script:BtnTweakUndoToday.Add_Click({ try { Invoke-WpiUndoToday } catch { Show-WpiMessage((('No se pudo deshacer: ') + $_.Exception.Message), (Tr 'Deshacer lo de hoy')) | Out-Null } })
 $script:BtnTweakMissing = New-Object Windows.Controls.Button
 $script:BtnTweakMissing.Content = 'Marcar lo recomendado que falta'
-$twBtnRow.Children.Add($script:BtnTweakMissing) | Out-Null
 $script:BtnTweakReco = New-Object Windows.Controls.Button
 $script:BtnTweakReco.Content = 'Aplicar recomendado para MI equipo'
 $script:BtnTweakReco.Background  = Get-ThemeBrush('#FF13414F')
@@ -5455,13 +9626,29 @@ $script:BtnTweakReco.Add_Click({
     $exclTxt = $(if (@($reco.Excluded).Count -gt 0) { ("`n`nExcluidos por tu equipo:`n - " + ((@($reco.Excluded)) -join "`n - ")) } else { '' })
     Show-WpiMessage(((Tr "{0}`n`nMarcados {1} tweaks recomendados. NO se ha aplicado nada: revisa la seleccion y pulsa APLICAR SELECCIONADOS.{2}") -f $frase, $n, $exclTxt), 'Recomendado para mi equipo', 'OK', 'Information') | Out-Null
 })
-$twBtnRow.Children.Add($script:BtnTweakReco) | Out-Null
 $script:BtnTweakSave = New-Object Windows.Controls.Button
 $script:BtnTweakSave.Content = 'Guardar perfil'
-$twBtnRow.Children.Add($script:BtnTweakSave) | Out-Null
 $script:BtnTweakLoad = New-Object Windows.Controls.Button
 $script:BtnTweakLoad.Content = 'Cargar perfil'
-$twBtnRow.Children.Add($script:BtnTweakLoad) | Out-Null
+# FASE C: export auditable del catalogo (solo lectura, a logs\)
+$script:BtnTweakExport = New-Object Windows.Controls.Button
+$script:BtnTweakExport.Content = 'Exportar catalogo (auditoria)'
+# (Rediseno premium) Antes: 9 botones en una unica fila horizontal que ni
+# siquiera ajustaba linea. Ahora: 2 acciones principales destacadas + 4 grupos
+# rotulados que envuelven en ventanas estrechas.
+$twBtnRow = New-Object Windows.Controls.StackPanel
+$twBtnRow.Margin = New-Object Windows.Thickness(0,8,0,4)
+$twMain = New-Object Windows.Controls.StackPanel
+$twMain.Orientation = 'Horizontal'
+$twMain.Children.Add($twBtn) | Out-Null
+$twMain.Children.Add($script:BtnTweaksUndo) | Out-Null
+$twBtnRow.Children.Add($twMain) | Out-Null
+$twGroups = New-Object Windows.Controls.WrapPanel
+$twGroups.Children.Add((New-WpiBtnGroup 'Estado real del equipo' @($script:BtnTweakDetect, $script:BtnTweakVerify) '#FF2E4A56')) | Out-Null
+$twGroups.Children.Add((New-WpiBtnGroup 'Selección inteligente' @($script:BtnTweakMissing, $script:BtnTweakReco) '#FF3A3A5E')) | Out-Null
+$twGroups.Children.Add((New-WpiBtnGroup 'Perfiles' @($script:BtnTweakSave, $script:BtnTweakLoad, $script:BtnTweakExport) '#FF2C2C3A')) | Out-Null
+$twGroups.Children.Add((New-WpiBtnGroup 'Red de seguridad' @($script:BtnTweakUndoToday) '#FF56422E')) | Out-Null
+$twBtnRow.Children.Add($twGroups) | Out-Null
 $tw.Children.Add($twBtnRow) | Out-Null
 $script:TweakSummary = New-Object Windows.Controls.TextBlock
 $script:TweakSummary.Text = 'Estado: pulsa "Re-detectar estado" o entra a esta seccion para escanear que ajustes ya estan aplicados.'
@@ -5684,14 +9871,7 @@ $wsHdr.Text = 'BUSCAR E INSTALAR DESDE WINGET'
 $wsHdr.FontSize = 14; $wsHdr.FontWeight = 'Bold'
 $wsHdr.Foreground = Get-ThemeBrush('#FF7C4DFF')
 $wsHdr.Margin = New-Object Windows.Thickness(2,10,0,2)
-$ws.Children.Add($wsHdr) | Out-Null
-
-$wsInfo = New-Object Windows.Controls.TextBlock
-$wsInfo.Text = 'Busca cualquier programa en TODO el repositorio de winget (no solo en el catalogo WPI de 200). Escribe un nombre y pulsa Buscar; marca lo que quieras e instalalo con el mismo motor (paralelismo, reintentos y log).'
-$wsInfo.Foreground = Get-ThemeBrush('#FF8A8A95')
-$wsInfo.FontSize = 12; $wsInfo.TextWrapping = 'Wrap'
-$wsInfo.Margin = New-Object Windows.Thickness(2,0,0,8)
-$ws.Children.Add($wsInfo) | Out-Null
+$ws.Children.Add((New-WpiHeaderInfo $wsHdr 'Buscador universal de software: consulta en vivo TODO el repositorio oficial de winget (miles de programas), no solo el catalogo interno del WPI. Escribe un nombre (ej. "obs", "7zip", "blender"), pulsa Buscar en winget, marca los resultados que te interesen e instalalos con el mismo motor profesional del WPI: paralelismo configurable, reintentos automaticos ante fallos, watchdog anti-cuelgues y registro forense de cada operacion. Con "Descargar instalador" puedes bajarte el .exe/.msi oficial sin instalarlo, para guardarlo o llevarlo a otro equipo.')) | Out-Null
 
 $wsBar = New-Object Windows.Controls.DockPanel
 $wsBar.Margin = New-Object Windows.Thickness(0,0,0,4)
@@ -5787,18 +9967,13 @@ function Build-Search {
 # ---- Panel DEBLOAT (quitar apps preinstaladas) ----
 $script:DebloatChecks = @()
 $db = $script:DebloatList
+$db.Children.Add((New-BackArrowButton)) | Out-Null
 $dbHdr = New-Object Windows.Controls.TextBlock
 $dbHdr.Text = 'QUITAR APPS PREINSTALADAS (DEBLOAT)  ·  ACCION FUERTE'
 $dbHdr.FontSize = 14; $dbHdr.FontWeight = 'Bold'
 $dbHdr.Foreground = Get-ThemeBrush('#FFFF6B6B')
 $dbHdr.Margin = New-Object Windows.Thickness(2,10,0,2)
-$db.Children.Add($dbHdr) | Out-Null
-$dbInfo = New-Object Windows.Controls.TextBlock
-$dbInfo.Text = 'Elimina la basura que trae Windows de fabrica. Marca solo lo que quieras quitar (nada viene preseleccionado). Se borra para tu usuario y se evita que vuelva; todo es reinstalable desde la Microsoft Store. No se incluyen componentes criticos del sistema.'
-$dbInfo.Foreground = Get-ThemeBrush('#FF8A8A95')
-$dbInfo.FontSize = 12; $dbInfo.TextWrapping = 'Wrap'
-$dbInfo.Margin = New-Object Windows.Thickness(2,0,0,8)
-$db.Children.Add($dbInfo) | Out-Null
+$db.Children.Add((New-WpiHeaderInfo $dbHdr 'Limpieza selectiva del software preinstalado de Windows (Xbox, Cortana, Noticias, Solitario...). Nada viene preseleccionado: tu decides exactamente que quitar, casilla a casilla. Cada app marcada se desinstala para tu usuario y ademas se desaprovisiona del sistema para que no reaparezca con las grandes actualizaciones de Windows. Todo lo eliminado se puede reinstalar despues desde la Microsoft Store, y los componentes criticos del sistema quedan excluidos de la lista por seguridad. Cada eliminacion se verifica de verdad y queda registrada en el log forense.')) | Out-Null
 $dbSel = New-Object Windows.Controls.StackPanel; $dbSel.Orientation = 'Horizontal'
 $dbAll = New-Object Windows.Controls.Button; $dbAll.Content = 'Marcar todo'
 $dbNon = New-Object Windows.Controls.Button; $dbNon.Content = 'Ninguno'
@@ -5808,6 +9983,7 @@ $dbSel.Children.Add($dbAll) | Out-Null; $dbSel.Children.Add($dbNon) | Out-Null
 $db.Children.Add($dbSel) | Out-Null
 $script:DebloatStatusLabels = @{}
 $script:DebloatDetected = $false
+$script:DebloatInstalledSet = @{}
 
 # --- Buscador en vivo de bloatware ---
 $script:DbSearchItems = @()
@@ -5871,9 +10047,10 @@ for ($di = 0; $di -lt $dbItems.Count; $di++) {
     $dot.Margin = New-Object Windows.Thickness(0,0,7,0)
     $dot.ToolTip = (Tr 'estado: sin comprobar')
     $cb = New-Object Windows.Controls.CheckBox
-    $cb.Content = $d.Name; $cb.FontSize = 13; $cb.Tag = $d.Pkg; $cb.VerticalAlignment = 'Center'
+    $cb.Content = $d.Name; $cb.FontSize = 12; $cb.Tag = $d.Pkg; $cb.VerticalAlignment = 'Center'
     $cb.ToolTip = (Tr ([string]$d.Desc))
     $cb.Add_Checked({ Update-DebloatCount }); $cb.Add_Unchecked({ Update-DebloatCount })
+    Set-WpiToggleStyle $cb | Out-Null
     $row.Children.Add($dot) | Out-Null
     $row.Children.Add($cb)  | Out-Null
     $dcol.Children.Add($row) | Out-Null
@@ -5910,34 +10087,35 @@ $script:BtnDebloat.Margin = New-Object Windows.Thickness(0,12,0,4)
 $script:BtnDebloat.HorizontalAlignment = 'Left'
 $script:BtnDebloat.IsEnabled = $false
 $db.Children.Add($script:BtnDebloat) | Out-Null
-$dbBtnRow = New-Object Windows.Controls.StackPanel
-$dbBtnRow.Orientation = 'Horizontal'
+# (Rediseno premium) Antes: 5 botones en fila fija sin ajuste de linea.
+# Ahora: grupos rotulados que envuelven en ventanas estrechas.
+$dbBtnRow = New-Object Windows.Controls.WrapPanel
 $dbBtnRow.Margin = New-Object Windows.Thickness(0,8,0,4)
 $script:BtnDebloatDetect = New-Object Windows.Controls.Button
 $script:BtnDebloatDetect.Content = 'Re-detectar estado'
 $script:BtnDebloatDetect.Background  = Get-ThemeBrush('#FF13414F')
 $script:BtnDebloatDetect.BorderBrush = Get-ThemeBrush('#FF76E0FF')
 $script:BtnDebloatDetect.Add_Click({ try { Detect-DebloatStates } catch { $script:StatusText.Text = (Tr 'No se pudo detectar el estado del bloatware.') } })
-$dbBtnRow.Children.Add($script:BtnDebloatDetect) | Out-Null
 $script:BtnDebloatInstalled = New-Object Windows.Controls.Button
 $script:BtnDebloatInstalled.Content = 'Marcar solo las instaladas'
 $script:BtnDebloatInstalled.Add_Click({
     if (-not $script:DebloatDetected) { try { Detect-DebloatStates } catch {} }
     foreach ($cb in $script:DebloatChecks) {
-        $lbl = $script:DebloatStatusLabels[[string]$cb.Tag]
-        $cb.IsChecked = ($lbl -and ([string]$lbl.Text).StartsWith('INSTALADA'))
+        # Arreglo S13: el estado vive en DebloatInstalledSet; el label es un punto de color.
+        $pkg = [string]$cb.Tag
+        $cb.IsChecked = ($script:DebloatInstalledSet.ContainsKey($pkg) -and [bool]$script:DebloatInstalledSet[$pkg])
     }
     Update-DebloatCount
 })
-$dbBtnRow.Children.Add($script:BtnDebloatInstalled) | Out-Null
 $script:BtnDebloatSave = New-Object Windows.Controls.Button
 $script:BtnDebloatSave.Content = 'Guardar perfil'
 $script:BtnDebloatSave.Add_Click({ try { Save-DebloatProfile } catch { $script:StatusText.Text = (Tr 'No se pudo guardar el perfil de debloat.') } })
-$dbBtnRow.Children.Add($script:BtnDebloatSave) | Out-Null
 $script:BtnDebloatLoad = New-Object Windows.Controls.Button
 $script:BtnDebloatLoad.Content = 'Cargar perfil'
 $script:BtnDebloatLoad.Add_Click({ try { Load-DebloatProfile } catch { $script:StatusText.Text = (Tr 'No se pudo cargar el perfil de debloat.') } })
-$dbBtnRow.Children.Add($script:BtnDebloatLoad) | Out-Null
+$dbBtnRow.Children.Add((New-WpiBtnGroup 'Estado real del equipo' @($script:BtnDebloatDetect) '#FF2E4A56')) | Out-Null
+$dbBtnRow.Children.Add((New-WpiBtnGroup 'Selección inteligente' @($script:BtnDebloatInstalled) '#FF3A3A5E')) | Out-Null
+$dbBtnRow.Children.Add((New-WpiBtnGroup 'Perfiles' @($script:BtnDebloatSave, $script:BtnDebloatLoad) '#FF2C2C3A')) | Out-Null
 $script:BtnDebloatOneDrive = New-Object Windows.Controls.Button
 $script:BtnDebloatOneDrive.Content = 'Quitar OneDrive (reversible)'
 $script:BtnDebloatOneDrive.Background = Get-ThemeBrush('#FF4F2A2A'); $script:BtnDebloatOneDrive.BorderBrush = Get-ThemeBrush('#FF7B4444')
@@ -5946,20 +10124,27 @@ $script:BtnDebloatOneDrive.Add_Click({
         ("Se desinstalara Microsoft OneDrive (no es una Appx, usa su propio desinstalador)." + "`n`n" + "Es REVERSIBLE: se reinstala con 'Buscar en winget' -> Microsoft.OneDrive, o desde onedrive.com. Tus archivos en la nube no se borran. Continuar?"),
         'Quitar OneDrive', 'YesNo', 'Warning')
     if ($r -ne 'Yes') { return }
+    # Con VERIFICACION real: tras el desinstalador se comprueba que OneDrive.exe
+    # ya no existe; si sigue, se lanza error (antes se proclamaba exito a ciegas).
     $code = @'
 taskkill /f /im OneDrive.exe 2>$null | Out-Null
 $od = "$env:SystemRoot\System32\OneDriveSetup.exe"
 if (-not (Test-Path $od)) { $od = "$env:SystemRoot\SysWOW64\OneDriveSetup.exe" }
+$odExe = @("$env:LocalAppData\Microsoft\OneDrive\OneDrive.exe", "$env:ProgramFiles\Microsoft OneDrive\OneDrive.exe")
 if (Test-Path $od) {
-    Start-Process $od -ArgumentList '/uninstall' -Wait -ErrorAction SilentlyContinue
-    W ok "OneDrive desinstalado. Reinstalable con winget Microsoft.OneDrive."
+    Start-Process $od -ArgumentList '/uninstall' -Wait -ErrorAction Stop
+    $sigue = @($odExe | Where-Object { Test-Path $_ }).Count -gt 0
+    if ($sigue) { throw (L2 'El desinstalador termino pero OneDrive.exe sigue presente.' 'The uninstaller finished but OneDrive.exe is still present.') }
+    W ok (L2 'OneDrive desinstalado y VERIFICADO. Reinstalable con winget Microsoft.OneDrive.' 'OneDrive uninstalled and VERIFIED. Reinstallable with winget Microsoft.OneDrive.')
 } else {
-    W warn "No se encontro OneDriveSetup.exe (quiza ya no esta instalado)."
+    $sigue = @($odExe | Where-Object { Test-Path $_ }).Count -gt 0
+    if ($sigue) { throw (L2 'No se encontro OneDriveSetup.exe pero OneDrive sigue instalado: quitalo desde Configuracion > Aplicaciones.' 'OneDriveSetup.exe was not found but OneDrive is still installed: remove it from Settings > Apps.') }
+    W warn (L2 'OneDrive no estaba instalado (nada que quitar).' 'OneDrive was not installed (nothing to remove).')
 }
 '@
-    Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = 'Quitar OneDrive'; Code = $code })
+    Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = (Tr 'Quitar OneDrive'); Code = $code })
 })
-$dbBtnRow.Children.Add($script:BtnDebloatOneDrive) | Out-Null
+$dbBtnRow.Children.Add((New-WpiBtnGroup 'OneDrive' @($script:BtnDebloatOneDrive) '#FF56422E')) | Out-Null
 $db.Children.Add($dbBtnRow) | Out-Null
 $script:DebloatSummary = New-Object Windows.Controls.TextBlock
 $script:DebloatSummary.Text = 'Estado: entra a esta seccion o pulsa "Re-detectar estado" para ver que apps siguen instaladas.'
@@ -5969,7 +10154,14 @@ $script:DebloatSummary.TextWrapping = 'Wrap'
 $script:DebloatSummary.Margin = New-Object Windows.Thickness(2,8,0,0)
 $db.Children.Add($script:DebloatSummary) | Out-Null
 function Update-DebloatCount {
-    $n = @($script:DebloatChecks | Where-Object { $_.IsChecked }).Count
+    # Coherencia toggle=estado: el boton cuenta solo lo ACCIONABLE (marcado y
+    # todavia instalado); lo ya quitado esta encendido pero no genera trabajo.
+    $n = 0
+    foreach ($c in $script:DebloatChecks) {
+        if (-not $c.IsChecked) { continue }
+        if ($script:DebloatDetected -and $script:DebloatInstalledSet.ContainsKey([string]$c.Tag) -and -not $script:DebloatInstalledSet[[string]$c.Tag]) { continue }
+        $n++
+    }
     $script:BtnDebloat.Content = ((Tr 'QUITAR SELECCIONADAS ({0})') -f $n)
     $script:BtnDebloat.IsEnabled = ($n -gt 0)
 }
@@ -5981,13 +10173,7 @@ $snHdr.Text = 'CLONAR EQUIPO / SNAPSHOT'
 $snHdr.FontSize = 14; $snHdr.FontWeight = 'Bold'
 $snHdr.Foreground = Get-ThemeBrush('#FF5CFF8F')
 $snHdr.Margin = New-Object Windows.Thickness(2,10,0,6)
-$sn.Children.Add($snHdr) | Out-Null
-$snInfo = New-Object Windows.Controls.TextBlock
-$snInfo.Text = 'Exporta TODO lo que tienes instalado (que winget reconozca) a un archivo, y reimportalo en otro PC para dejarlo igual de un golpe. Ideal si formateas a menudo o montas varias maquinas. Usa el formato oficial de winget import.'
-$snInfo.Foreground = Get-ThemeBrush('#FF8A8A95')
-$snInfo.FontSize = 12; $snInfo.TextWrapping = 'Wrap'
-$snInfo.Margin = New-Object Windows.Thickness(2,0,0,10)
-$sn.Children.Add($snInfo) | Out-Null
+$sn.Children.Add((New-WpiHeaderInfo $snHdr 'Clonado logico de tu equipo en un archivo: exporta la lista COMPLETA de programas instalados que winget reconoce, en el formato oficial de winget import (compatible con cualquier herramienta estandar). Llevate ese archivo a otro PC, o a este mismo tras formatear, pulsa "Importar un archivo e instalar todo" y el motor del WPI instalara cada programa de una tacada, con paralelismo, reintentos automaticos y log forense. Es la forma mas rapida de dejar dos maquinas identicas o de recuperar tu software tras una reinstalacion, sin ir programa por programa.')) | Out-Null
 $script:BtnSnapExport = New-Object Windows.Controls.Button
 $script:BtnSnapExport.Content = 'Exportar TODO mi equipo a un archivo...'
 $script:BtnSnapExport.Background = Get-ThemeBrush('#FF1F3A2E'); $script:BtnSnapExport.BorderBrush = Get-ThemeBrush('#FF3E6B54')
@@ -6111,13 +10297,7 @@ $gpHdr.Text = 'GUIAS DE INSTALACION (en espanol)'
 $gpHdr.FontSize = 14; $gpHdr.FontWeight = 'Bold'
 $gpHdr.Foreground = Get-ThemeBrush('#FFFFD166')
 $gpHdr.Margin = New-Object Windows.Thickness(2,10,0,2)
-$gp.Children.Add($gpHdr) | Out-Null
-$gpInfo = New-Object Windows.Controls.TextBlock
-$gpInfo.Text = 'Pasos para dejar listos los programas que necesitan algo extra (BIOS, firmware, claves...) y para los emuladores que NO estan en winget (Switch, Android). Pulsa cada titulo para desplegarlo. Al instalar o descargar una app con guia, la consola te avisa.'
-$gpInfo.Foreground = Get-ThemeBrush('#FF8A8A95')
-$gpInfo.FontSize = 12; $gpInfo.TextWrapping = 'Wrap'
-$gpInfo.Margin = New-Object Windows.Thickness(2,0,0,8)
-$gp.Children.Add($gpInfo) | Out-Null
+$gp.Children.Add((New-WpiHeaderInfo $gpHdr 'Guias paso a paso, redactadas en espanol, para el software que necesita preparacion adicional despues de instalarse: emuladores que requieren BIOS o claves de consola (PlayStation, Switch...), firmware, configuracion inicial recomendada, y tambien los que NO existen en winget (emulador de Switch, emuladores de Android) con sus fuentes oficiales. Pulsa cada titulo para desplegar su guia completa, con los pasos en orden y avisos de legalidad donde tocan. Ademas, cuando instalas o descargas desde el WPI una app que tiene guia asociada, el registro en vivo te avisa para que la consultes aqui.')) | Out-Null
 $gpTools = New-Object Windows.Controls.StackPanel; $gpTools.Orientation = 'Horizontal'
 $gpTools.Margin = New-Object Windows.Thickness(0,0,0,6)
 $script:BtnGuidesTemplate = New-Object Windows.Controls.Button
@@ -6190,13 +10370,7 @@ $dvHdr.Text = 'DRIVERS Y HARDWARE'
 $dvHdr.FontSize = 14; $dvHdr.FontWeight = 'Bold'
 $dvHdr.Foreground = Get-ThemeBrush('#FF76E0FF')
 $dvHdr.Margin = New-Object Windows.Thickness(2,10,0,2)
-$dv.Children.Add($dvHdr) | Out-Null
-$dvInfo = New-Object Windows.Controls.TextBlock
-$dvInfo.Text = 'Detecta tus piezas y el driver de la grafica que tienes ahora. Para actualizar drivers, lo seguro es la herramienta OFICIAL del fabricante (no usamos programas de "drivers todo en uno", suelen traer publicidad y drivers erroneos). Tambien tienes acceso directo a Windows Update opcional y al soporte de tu placa.'
-$dvInfo.Foreground = Get-ThemeBrush('#FF8A8A95')
-$dvInfo.FontSize = 12; $dvInfo.TextWrapping = 'Wrap'
-$dvInfo.Margin = New-Object Windows.Thickness(2,0,0,8)
-$dv.Children.Add($dvInfo) | Out-Null
+$dv.Children.Add((New-WpiHeaderInfo $dvHdr 'Radiografia completa de tu hardware, detectada en vivo: tarjeta grafica (con version y fecha del driver actual), procesador, memoria RAM, placa base, BIOS/UEFI y discos con su salud. Para actualizar drivers, la via segura es SIEMPRE la herramienta OFICIAL de cada fabricante (NVIDIA App, AMD Adrenalin, Intel DSA), que se te ofrece segun la GPU detectada; se evitan a proposito los programas de "drivers todo en uno", conocidos por meter publicidad y drivers equivocados. Tambien tienes acceso directo a las actualizaciones opcionales de Windows Update (que incluyen drivers firmados) y a la pagina de soporte de tu placa base.')) | Out-Null
 
 $script:BtnHwScan = New-Object Windows.Controls.Button
 $script:BtnHwScan.Content = 'Detectar mi hardware'
@@ -6249,12 +10423,7 @@ $dvHdr3.Text = 'COPIA DE SEGURIDAD DE DRIVERS'
 $dvHdr3.FontSize = 13; $dvHdr3.FontWeight = 'Bold'
 $dvHdr3.Foreground = Get-ThemeBrush($Theme.Maintain)
 $dvHdr3.Margin = New-Object Windows.Thickness(2,16,0,4)
-$dv.Children.Add($dvHdr3) | Out-Null
-$dvInfo3 = New-Object Windows.Controls.TextBlock
-$dvInfo3.Text = 'Exporta TODOS los drivers de terceros antes de formatear y reinyectalos despues (joya post-formateo). La copia es solo lectura del sistema; la restauracion es para un equipo recien reinstalado. Ambas corren por el motor con log.'
-$dvInfo3.Foreground = Get-ThemeBrush($Theme.Sub); $dvInfo3.FontSize = 12; $dvInfo3.TextWrapping = 'Wrap'
-$dvInfo3.Margin = New-Object Windows.Thickness(2,0,0,6)
-$dv.Children.Add($dvInfo3) | Out-Null
+$dv.Children.Add((New-WpiHeaderInfo $dvHdr3 'Tu seguro de vida antes de formatear: "Hacer copia de drivers" exporta TODOS los drivers de terceros de este PC (archivos .inf con sus binarios) a la carpeta que elijas, usando Export-WindowsDriver, y verifica el recuento al terminar antes de proclamar exito. Tras reinstalar Windows, "Restaurar drivers desde carpeta" los reinyecta todos de golpe con pnputil, comprobando el codigo de retorno real: ideal para que red, chipset y grafica funcionen a la primera sin buscar nada por internet. La copia es de solo lectura y no modifica el sistema; ambas operaciones corren por el motor del WPI con log forense.')) | Out-Null
 
 $script:BtnDrvBackup = New-Object Windows.Controls.Button
 $script:BtnDrvBackup.Content = 'Hacer copia de drivers'; $script:BtnDrvBackup.HorizontalAlignment = 'Left'
@@ -6262,16 +10431,29 @@ $script:BtnDrvBackup.Margin = New-Object Windows.Thickness(0,0,0,6)
 $script:BtnDrvBackup.Background = Get-ThemeBrush('#FF1F3A2E'); $script:BtnDrvBackup.BorderBrush = Get-ThemeBrush('#FF3E6B54')
 $script:BtnDrvBackup.Add_Click({
     $fb = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fb.Description = 'Elige la carpeta donde guardar la copia de drivers'
+    $fb.Description = (Tr 'Elige la carpeta donde guardar la copia de drivers')
     try { $fb.UseDescriptionForTitle = $true } catch {}
     if ($fb.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
     $dest = $fb.SelectedPath
     if (-not $dest) { return }
     $destEsc = $dest -replace "'", "''"
-    $code = ("`$d='{0}'; if (-not (Test-Path `$d)) {{ New-Item -ItemType Directory -Path `$d -Force | Out-Null }}; W info ('Exportando drivers de terceros a ' + `$d + ' (puede tardar)...'); try {{ Export-WindowsDriver -Online -Destination `$d -ErrorAction Stop | Out-Null; W ok 'Copia de drivers completada.'; Start-Process explorer.exe `$d }} catch {{ W err ('Fallo al exportar drivers: ' + `$_.Exception.Message) }}" -f $destEsc)
-    Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = 'Copia de drivers'; Code = $code })
+    # Codigo del worker con VERIFICACION real: exporta, cuenta los .inf del
+    # destino y solo entonces proclama exito; si falla, el motor lo cuenta como fallo.
+    $code = @'
+$d = '<DEST>'
+if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+W info ((L2 'Exportando drivers de terceros a {0} (puede tardar)...' 'Exporting third-party drivers to {0} (this can take a while)...') -f $d)
+$exp = @(Export-WindowsDriver -Online -Destination $d -ErrorAction Stop)
+$infs = @(Get-ChildItem -Path $d -Recurse -Filter *.inf -ErrorAction SilentlyContinue)
+if ($infs.Count -eq 0) { throw (L2 'La exportacion termino pero no hay ningun .inf en la carpeta destino.' 'The export finished but there is no .inf file in the destination folder.') }
+W ok ((L2 'Copia de drivers completada y VERIFICADA: {0} paquetes exportados ({1} archivos .inf).' 'Driver backup completed and VERIFIED: {0} packages exported ({1} .inf files).') -f $exp.Count, $infs.Count)
+Start-Process explorer.exe $d
+'@
+    $code = $code.Replace('<DEST>', $destEsc)
+    Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = (Tr 'Copia de drivers'); Code = $code })
 })
 $dv.Children.Add($script:BtnDrvBackup) | Out-Null
+$dv.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará (copia de drivers)' 'QUÉ ES: la copia de seguridad de TODOS los drivers de terceros de este PC (gráfica, red, chipset, sonido...). CÓMO FUNCIONA: usa Export-WindowsDriver para volcar cada paquete (.inf con sus binarios) a la carpeta que elijas, y al terminar cuenta los .inf exportados antes de proclamar éxito. QUÉ PASARÁ: solo se LEE el sistema (no cambia nada); tendrás una carpeta lista para restaurar tras formatear. Puede ocupar desde cientos de MB hasta varios GB según tu equipo.' '#FF5CFF8F')) | Out-Null
 
 $script:BtnDrvRestore = New-Object Windows.Controls.Button
 $script:BtnDrvRestore.Content = 'Restaurar drivers desde carpeta'; $script:BtnDrvRestore.HorizontalAlignment = 'Left'
@@ -6282,16 +10464,31 @@ $script:BtnDrvRestore.Add_Click({
         'Restaurar drivers', 'YesNo', 'Warning')
     if ($r -ne 'Yes') { return }
     $fb = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fb.Description = 'Elige la carpeta con la copia de drivers (.inf)'
+    $fb.Description = (Tr 'Elige la carpeta con la copia de drivers (.inf)')
     try { $fb.UseDescriptionForTitle = $true } catch {}
     if ($fb.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
     $src = $fb.SelectedPath
     if (-not $src) { return }
     $srcEsc = $src -replace "'", "''"
-    $code = ("W info ('Reinstalando drivers desde ' + '{0}' + ' ...'); pnputil /add-driver '{0}\*.inf' /subdirs /install 2>&1 | Out-Null; W ok 'Restauracion de drivers lanzada (revisa el log de pnputil).'" -f $srcEsc)
-    Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = 'Restaurar drivers'; Code = $code })
+    # Codigo del worker con VERIFICACION real: valida que hay .inf, ejecuta
+    # pnputil mostrando su salida y comprueba el codigo de retorno (0 ok,
+    # 3010 = falta reiniciar, 259 = sin elementos nuevos).
+    $code = @'
+$src = '<SRC>'
+$infs = @(Get-ChildItem -Path $src -Recurse -Filter *.inf -ErrorAction SilentlyContinue)
+if ($infs.Count -eq 0) { throw ((L2 'No hay archivos .inf en {0}: elige la carpeta de una copia hecha con "Hacer copia de drivers".' 'There are no .inf files in {0}: choose a folder created with "Back up drivers".') -f $src) }
+W info ((L2 'Reinstalando {0} paquetes de driver desde {1} ...' 'Reinstalling {0} driver packages from {1} ...') -f $infs.Count, $src)
+$out = (& pnputil.exe /add-driver ($src + '\*.inf') /subdirs /install 2>&1 | Out-String)
+foreach ($ln in ($out -split "[`r`n]+")) { $ln = $ln.Trim(); if ($ln) { W dim ('  ' + $ln) } }
+if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010 -and $LASTEXITCODE -ne 259) { throw ((L2 'pnputil devolvio el codigo {0}: revisa el detalle de arriba.' 'pnputil returned code {0}: check the details above.') -f $LASTEXITCODE) }
+if ($LASTEXITCODE -eq 3010) { W warn (L2 'Drivers instalados; falta REINICIAR para completarlo.' 'Drivers installed; a RESTART is required to complete it.') }
+W ok (L2 'Restauracion de drivers completada (detalle arriba).' 'Driver restore completed (details above).')
+'@
+    $code = $code.Replace('<SRC>', $srcEsc)
+    Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = (Tr 'Restaurar drivers'); Code = $code })
 })
 $dv.Children.Add($script:BtnDrvRestore) | Out-Null
+$dv.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará (restaurar drivers)' 'QUÉ ES: la reinstalación en bloque de una copia de drivers hecha con "Hacer copia de drivers". CÓMO FUNCIONA: pnputil recorre la carpeta elegida e instala cada paquete .inf (incluidas subcarpetas), y el WPI comprueba el código de retorno real (0 correcto, 3010 pide reinicio, 259 sin novedades). QUÉ PASARÁ: se instalan drivers en el sistema; está pensado para un Windows RECIÉN reinstalado y puede pedir REINICIAR para completarse. En un equipo ya configurado, úsalo solo si sabes lo que haces.' '#FFFF6B6B')) | Out-Null
 
 # Estado detectado
 $script:GpuVendor = ''
@@ -6434,6 +10631,33 @@ function Get-WpiGpuInfo {
         try { $info.Date = [datetime]$Gpu.DriverDate } catch {}
     }
     return $info
+}
+
+# FASE A: nota contextual por GPU para los avisos de MPO/FSO (reutiliza
+# Get-WpiGpuInfo). Se calcula una vez y se cachea; si algo falla devuelve ''.
+function Get-WpiGamingGpuNote {
+    if ($null -ne $script:GamingGpuNote) { return $script:GamingGpuNote }
+    $nota = ''
+    try {
+        $vm = @{ ByVenDev = @{}; ByName = @{} }
+        $mejor = $null
+        foreach ($g in @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)) {
+            $i = Get-WpiGpuInfo -Gpu $g -VramMap $vm
+            if ($i.Virtual) { continue }
+            if (-not $mejor -or ($i.Active -and -not $mejor.Active) -or ($i.Kind -eq 'dedicada' -and $mejor.Kind -ne 'dedicada')) { $mejor = $i }
+        }
+        if ($mejor) {
+            $linea = switch ([string]$mejor.Vendor) {
+                'NVIDIA' { Tr 'En GPU NVIDIA este ajuste se usa sobre todo para corregir parpadeos con G-Sync o con varios monitores.' }
+                'AMD'    { Tr 'En GPU AMD este ajuste se usa sobre todo para corregir parpadeos o pantallas negras con FreeSync.' }
+                'Intel'  { Tr 'En GPU Intel raramente hace falta: aplicalo solo si tienes sintomas claros.' }
+                default  { Tr 'GPU no identificada: aplicalo solo si tienes sintomas claros.' }
+            }
+            $nota = ((Tr 'GPU detectada: {0} ({1}).') -f [string]$mejor.Name, (Tr ([string]$mejor.Kind))) + ' ' + $linea
+        }
+    } catch {}
+    $script:GamingGpuNote = $nota
+    return $nota
 }
 
 function Get-HardwareReport {
@@ -6857,7 +11081,7 @@ function Build-HardwareUI {
     $script:HwReportPanel.Children.Clear()
     $rep = Get-HardwareReport
     $txt = New-Object System.Text.StringBuilder
-    [void]$txt.AppendLine('== Informe de hardware (WPI Moderno) ==')
+    [void]$txt.AppendLine('== Informe de hardware (Winzard) ==')
     foreach ($sec in $rep.Keys) {
         $card = New-Object Windows.Controls.Border
         $card.Background = Get-ThemeBrush('#FF15151F'); $card.BorderBrush = Get-ThemeBrush('#FF2C2C3A')
@@ -6931,6 +11155,8 @@ $script:SideMap += '@UPGRADES'
 Add-SideHeader (T 'blk_optimizar') $Theme.Optimize
 [void]$script:SideList.Items.Add((T 'nav_tweaks'))
 $script:SideMap += '@TWEAKS'
+[void]$script:SideList.Items.Add((T 'nav_gaming'))
+$script:SideMap += '@GAMING'
 [void]$script:SideList.Items.Add((T 'nav_winupdate'))
 $script:SideMap += '@WINUPDATE'
 
@@ -6945,6 +11171,15 @@ $script:SideMap += '@REPAIR'
 $script:SideMap += '@FEATURES'
 [void]$script:SideList.Items.Add((T 'nav_drivers'))
 $script:SideMap += '@DRIVERS'
+
+# (Rediseno premium, Bloque 3) El Entorno de Recuperacion tiene SU PROPIO bloque
+# destacado, separado de Reparacion, para que nadie confunda "reparar el sistema"
+# con "volver atras con tus copias de seguridad".
+# Color propio (violeta de marca) para distinguirlo de MANTENER (verde);
+# el hex ya existe en LightMap/BlueMap, asi que es seguro en los 3 temas.
+Add-SideHeader (T 'blk_recovery') '#FF7C4DFF'
+[void]$script:SideList.Items.Add((T 'nav_recovery'))
+$script:SideMap += '@RECOVERY'
 
 Add-SideHeader (T 'blk_iso') $Theme.Iso
 [void]$script:SideList.Items.Add((T 'nav_createiso'))
@@ -6978,7 +11213,7 @@ function Get-WpiRegValue {
 # es $null y la comparacion da $false (= "no aplicado"), que es lo correcto.
 $TweakDetectors = @{
     'Plan de energia Maximo Rendimiento' = @'
-@((powercfg /getactivescheme 2>$null) -match '8c5e7fda|e9a42b02|ltimate').Count -gt 0
+[bool]([string](powercfg /getactivescheme 2>$null) -match '8c5e7fda|e9a42b02|ltimate')
 '@
     'Desactivar hibernacion (libera hiberfil.sys)' = @'
 (Get-WpiRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabled') -eq 0
@@ -7020,7 +11255,7 @@ Test-Path 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\I
 (Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowSecondsInSystemClock') -eq 1
 '@
     'Quitar el boton de Widgets' = @'
-(Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa') -eq 0
+((Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarDa') -eq 0) -or ((Get-WpiRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests') -eq 0)
 '@
     'Quitar el boton de Chat/Teams de la barra' = @'
 (Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn') -eq 0
@@ -7053,7 +11288,9 @@ Test-Path 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\I
 (Get-WpiRegValue 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled') -eq 1
 '@
     'Desactivar Game Bar y grabacion en segundo plano' = @'
-(Get-WpiRegValue 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled') -eq 0
+((Get-WpiRegValue 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled') -eq 0) -and
+((Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled') -eq 0) -and
+((Get-WpiRegValue 'HKCU:\Software\Microsoft\GameBar' 'UseNexusForGameBarEnabled') -eq 0)
 '@
     'Desactivar aceleracion del raton (precision para juegos)' = @'
 [string](Get-WpiRegValue 'HKCU:\Control Panel\Mouse' 'MouseSpeed') -eq '0'
@@ -7094,6 +11331,143 @@ Test-Path 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\I
     'Desactivar la indexacion de busqueda (Windows Search)' = @'
 @(Get-Service WSearch -ErrorAction SilentlyContinue | Where-Object { $_.StartType -eq 'Disabled' }).Count -gt 0
 '@
+    'Desactivar servicios prescindibles (perfil seguro)' = @'
+@(Get-Service MapsBroker,SysMain -ErrorAction SilentlyContinue | Where-Object { $_.StartType -eq 'Disabled' }).Count -ge 2
+'@
+    'Denegar acceso global a la camara' = @'
+[string](Get-WpiRegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam' 'Value') -eq 'Deny'
+'@
+    'Denegar acceso global al microfono' = @'
+[string](Get-WpiRegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone' 'Value') -eq 'Deny'
+'@
+    'Desactivar experiencias personalizadas (diagnostico)' = @'
+(Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy' 'TailoredExperiencesWithDiagnosticDataEnabled') -eq 0
+'@
+    'Quitar recomendaciones del menu Inicio' = @'
+(Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_IrisRecommendations') -eq 0
+'@
+    'Desactivar Widgets por politica (a fondo)' = @'
+(Get-WpiRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests') -eq 0
+'@
+    'Quitar "Compartir" del menu contextual' = @'
+-not (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\*\shellex\ContextMenuHandlers\ModernSharing')
+'@
+    'Activar historial del portapapeles (Win+V)' = @'
+(Get-WpiRegValue 'HKCU:\Software\Microsoft\Clipboard' 'EnableClipboardHistory') -eq 1
+'@
+    'Activar rutas largas (LongPaths)' = @'
+(Get-WpiRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'LongPathsEnabled') -eq 1
+'@
+    'Tecla Impr Pant abre Recortes' = @'
+(Get-WpiRegValue 'HKCU:\Control Panel\Keyboard' 'PrintScreenKeyForSnippingEnabled') -eq 1
+'@
+    'Activar NumLock al iniciar sesion' = @'
+[string](Get-WpiRegValue 'HKCU:\Control Panel\Keyboard' 'InitialKeyboardIndicators') -eq '2'
+'@
+    'Quitar avisos de sincronizacion del Explorador' = @'
+(Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ShowSyncProviderNotifications') -eq 0
+'@
+    'Activar Sentido de almacenamiento (limpieza automatica)' = @'
+(Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy' '01') -eq 1
+'@
+    'Desactivar MPO (superposicion multiplano)' = @'
+(Get-WpiRegValue 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'OverlayTestMode') -eq 5
+'@
+    'Desactivar optimizaciones de pantalla completa (FSO)' = @'
+(Get-WpiRegValue 'HKCU:\System\GameConfigStore' 'GameDVR_FSEBehaviorMode') -eq 2
+'@
+    'Perfil multimedia prioritario para juegos (MMCSS)' = @'
+[string](Get-WpiRegValue 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games' 'Scheduling Category') -eq 'High'
+'@
+    'Optimizaciones para juegos en ventana (flip model)' = @'
+[string](Get-WpiRegValue 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' 'DirectXUserGlobalSettings') -match 'SwapEffectUpgradeEnable=1'
+'@
+    'Retardo de confirmaciones TCP off (algoritmo de Nagle)' = @'
+@(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces' -ErrorAction SilentlyContinue | Where-Object { (Get-ItemProperty -Path $_.PSPath -Name TcpAckFrequency -ErrorAction SilentlyContinue).TcpAckFrequency -eq 1 }).Count -gt 0
+'@
+    'Preferir IPv4 y apagar tuneles IPv6 (Teredo)' = @'
+(Get-WpiRegValue 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents') -eq 33
+'@
+    'Impedir programas del fabricante al arrancar (WPBT)' = @'
+(Get-WpiRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' 'DisableWpbtExecution') -eq 1
+'@
+    'Edge sin extras (debloat por politicas)' = @'
+(Get-WpiRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'PersonalizationReportingEnabled') -eq 0
+'@
+    'Reloj del sistema en UTC (para dual-boot)' = @'
+(Get-WpiRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation' 'RealTimeIsUniversal') -eq 1
+'@
+    'Agrupar procesos de servicio segun tu RAM (svchost)' = @'
+[int64](Get-WpiRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control' 'SvcHostSplitThresholdInKB') -gt 380000
+'@
+    'Desactivar Reanudar entre dispositivos (Cross-Device)' = @'
+(Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\CrossDeviceResume\Configuration' 'IsResumeAllowed') -eq 0
+'@
+    'Desactivar telemetria de PowerShell 7' = @'
+[string]([Environment]::GetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT','Machine')) -eq '1'
+'@
+    'Barras de desplazamiento siempre visibles' = @'
+(Get-WpiRegValue 'HKCU:\Control Panel\Accessibility' 'DynamicScrollbars') -eq 0
+'@
+    # --- SESION 10 / v7.6: detectores de los tweaks auditados de WinUtil ---
+    'Desactivar Optimizacion de entrega (updates P2P)' = @'
+(Get-WpiRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode') -eq 0
+'@
+    'Mostrar pantalla azul detallada (BSoD clasico)' = @'
+(Get-WpiRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl' 'DisplayParameters') -eq 1
+'@
+    'Quitar desenfoque de la pantalla de inicio de sesion' = @'
+(Get-WpiRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'DisableAcrylicBackgroundOnLogon') -eq 1
+'@
+    'Ocultar la pagina Principal de Configuracion' = @'
+([string](Get-WpiRegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'SettingsPageVisibility')) -like '*home*'
+'@
+    'Quitar Inicio y Galeria del Explorador' = @'
+(Get-WpiRegValue 'HKCU:\Software\Classes\CLSID\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}' 'System.IsPinnedToNameSpaceTree') -eq 0
+'@
+    'Quitar avisos al abrir archivos RDP sin firmar' = @'
+(Get-WpiRegValue 'HKCU:\SOFTWARE\Microsoft\Terminal Server Client' 'RdpLaunchConsentAccepted') -eq 1
+'@
+    'Desactivar almacenamiento reservado (Reserved Storage)' = @'
+try { [string](Get-WindowsReservedStorageState -ErrorAction Stop).ReservedStorageState -eq 'Disabled' } catch { $false }
+'@
+    'Bloquear instalacion automatica de software de fabricantes (Razer y similares)' = @'
+(Get-WpiRegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' 'SearchOrderConfig') -eq 0
+'@
+    'Desactivar deteccion automatica de tipo de carpeta' = @'
+([string](Get-WpiRegValue 'HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell' 'FolderType')) -eq 'NotSpecified'
+'@
+    # --- SESION 10-bis: detectores de los tweaks auditados de Win11Debloat ---
+    'Impedir el cifrado automatico de BitLocker' = @'
+(Get-WpiRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker' 'PreventDeviceEncryption') -eq 1
+'@
+    'Desactivar Encontrar mi dispositivo (Find My Device)' = @'
+(Get-WpiRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\FindMyDevice' 'AllowFindMyDevice') -eq 0
+'@
+    'Desactivar Windows Spotlight en el escritorio' = @'
+(Get-WpiRegValue 'HKCU:\Software\Policies\Microsoft\Windows\CloudContent' 'DisableSpotlightCollectionOnDesktop') -eq 1
+'@
+    'Desactivar la IA de Paint (Cocreator y relleno generativo)' = @'
+(Get-WpiRegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Paint' 'DisableImageCreator') -eq 1
+'@
+    'Desactivar la IA del Bloc de notas (Notepad)' = @'
+(Get-WpiRegValue 'HKLM:\SOFTWARE\Policies\WindowsNotepad' 'DisableAIFeatures') -eq 1
+'@
+    'Desactivar Click to Do (analisis de pantalla con IA)' = @'
+(Get-WpiRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableClickToDo') -eq 1
+'@
+    'Impedir arranque automatico del servicio de IA (WSAIFabricSvc)' = @'
+(-not (Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Services\WSAIFabricSvc')) -or ((Get-WpiRegValue 'HKLM:\SYSTEM\CurrentControlSet\Services\WSAIFabricSvc' 'Start') -eq 3)
+'@
+    'Evitar reinicios automaticos tras actualizaciones (con sesion abierta)' = @'
+(Get-WpiRegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'NoAutoRebootWithLoggedOnUsers') -eq 1
+'@
+    'Desactivar resaltados de busqueda (Search Highlights)' = @'
+(Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings' 'IsDynamicSearchBoxEnabled') -eq 0
+'@
+    'Quitar el movil (Phone Link) del menu Inicio' = @'
+(Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Start\Companions\Microsoft.YourPhone_8wekyb3d8bbwe' 'IsEnabled') -eq 0
+'@
 }
 
 # Escanea (solo lectura) que tweaks estan aplicados y actualiza la UI.
@@ -7105,9 +11479,14 @@ function Detect-TweakStates {
         if (-not $lbl) { continue }
         $total++
         $reco = $(if ($t.Risk -eq 'Avanzado') { Tr 'avanzado: aplica solo si lo necesitas' } else { Tr 'recomendado para la mayoria' })
+        # Color del TITULO completo segun estado/riesgo (con leyenda debajo):
+        #   verde = ya aplicado · ambar = avanzado sin aplicar (con cuidado)
+        #   gris  = accion puntual / no comprobable · normal = seguro sin aplicar
+        $isAdv = ([string]$t.Risk -eq 'Avanzado')
         if (-not $TweakDetectors.ContainsKey($name)) {
             $lbl.ToolTip = ('{0}   {1}   {2}' -f (Tr 'accion puntual (sin estado)'), $script:Sep, $reco)
             $lbl.Foreground = Get-ThemeBrush('#FF8A8A95')
+            try { $cb.Foreground = Get-ThemeBrush('#FF8A8A95'); $cb.FontWeight = 'Normal' } catch {}
             continue
         }
         $checkable++
@@ -7116,18 +11495,26 @@ function Detect-TweakStates {
         if (-not $ok) {
             $lbl.ToolTip = ('{0}   {1}   {2}' -f (Tr 'no comprobable'), $script:Sep, $reco)
             $lbl.Foreground = Get-ThemeBrush('#FF6F6F7A')
+            try { $cb.Foreground = Get-ThemeBrush('#FF8A8A95'); $cb.FontWeight = 'Normal' } catch {}
         } elseif ($state) {
             $applied++
             $lbl.ToolTip = ('{0}   {1}   {2}' -f (Tr 'YA APLICADO'), $script:Sep, $reco)
             $lbl.Foreground = Get-ThemeBrush('#FF5CFF8F')
+            try { $cb.Foreground = Get-ThemeBrush('#FF5CFF8F'); $cb.FontWeight = 'Bold' } catch {}
+            # Coherencia toggle=estado: lo detectado como aplicado se ve ENCENDIDO.
+            # (APLICAR omite lo ya aplicado, asi que esto no re-ejecuta nada.)
+            try { $cb.IsChecked = $true } catch {}
         } else {
             $lbl.ToolTip = ('{0}   {1}   {2}' -f (Tr 'no aplicado'), $script:Sep, $reco)
             $lbl.Foreground = Get-ThemeBrush('#FFB0B0BC')
+            # Sin aplicar: ambar si es avanzado (ojo), color normal si es seguro.
+            try { if ($isAdv) { $cb.Foreground = Get-ThemeBrush('#FFFFD166') } else { $cb.Foreground = Get-ThemeBrush($Theme.Text) }; $cb.FontWeight = 'Normal' } catch {}
+            try { $cb.IsChecked = $false } catch {}
         }
     }
     $script:TweakDetected = $true
     if ($script:TweakSummary) {
-        $script:TweakSummary.Text = ((Tr 'Estado detectado en este PC: {0} de {1} ajustes ya aplicados ({2} comprobables, el resto son acciones puntuales). Verde = aplicado.') -f $applied, $total, $checkable)
+        $script:TweakSummary.Text = ((Tr 'Estado detectado en este PC: {0} de {1} ajustes ya aplicados ({2} comprobables). Interruptor encendido y verde = ya aplicado; APLICAR solo ejecuta lo que falta.') -f $applied, $total, $checkable)
     }
     # Banner breve y a color encima de los botones.
     if ($script:TweakStatusInline) {
@@ -7144,14 +11531,217 @@ function Detect-TweakStates {
         $rB.Foreground = Get-ThemeBrush('#FFB0B0BC'); $rB.FontWeight = 'Bold'
         $rB2 = New-Object Windows.Documents.Run -ArgumentList (Tr 'sin aplicar')
         $rB2.Foreground = Get-ThemeBrush('#FFB0B0BC')
-        $rL = New-Object Windows.Documents.Run -ArgumentList ('      ' + (Tr 'verde = ya aplicado en tu PC'))
-        $rL.Foreground = Get-ThemeBrush('#FF8A8A95'); $rL.FontSize = 11
         $script:TweakStatusInline.Inlines.Add($rA); $script:TweakStatusInline.Inlines.Add($rA2)
         $script:TweakStatusInline.Inlines.Add($rSep)
         $script:TweakStatusInline.Inlines.Add($rB); $script:TweakStatusInline.Inlines.Add($rB2)
-        $script:TweakStatusInline.Inlines.Add($rL)
+        # Leyenda de colores del TITULO (significado de cada color):
+        $lgPre = New-Object Windows.Documents.Run -ArgumentList ('        ' + (Tr 'Colores:') + ' ')
+        $lgPre.Foreground = Get-ThemeBrush('#FF8A8A95'); $lgPre.FontSize = 11
+        $lg1 = New-Object Windows.Documents.Run -ArgumentList (Tr 'verde=aplicado'); $lg1.Foreground = Get-ThemeBrush('#FF5CFF8F'); $lg1.FontSize = 11
+        $lgS1 = New-Object Windows.Documents.Run -ArgumentList '  ·  '; $lgS1.Foreground = Get-ThemeBrush('#FF8A8A95'); $lgS1.FontSize = 11
+        $lg2 = New-Object Windows.Documents.Run -ArgumentList (Tr 'ambar=avanzado (con cuidado)'); $lg2.Foreground = Get-ThemeBrush('#FFFFD166'); $lg2.FontSize = 11
+        $lgS2 = New-Object Windows.Documents.Run -ArgumentList '  ·  '; $lgS2.Foreground = Get-ThemeBrush('#FF8A8A95'); $lgS2.FontSize = 11
+        $lg3 = New-Object Windows.Documents.Run -ArgumentList (Tr 'gris=accion puntual'); $lg3.Foreground = Get-ThemeBrush('#FF8A8A95'); $lg3.FontSize = 11
+        $script:TweakStatusInline.Inlines.Add($lgPre); $script:TweakStatusInline.Inlines.Add($lg1)
+        $script:TweakStatusInline.Inlines.Add($lgS1); $script:TweakStatusInline.Inlines.Add($lg2)
+        $script:TweakStatusInline.Inlines.Add($lgS2); $script:TweakStatusInline.Inlines.Add($lg3)
     }
     try { $script:StatusText.Text = ((Tr 'Tweaks: {0} de {1} ya aplicados.') -f $applied, $total) } catch {}
+}
+
+# ============================================================
+#  F8 - "VERIFICAR TODO": auditoria de estado real del sistema
+#  Re-lee EN VIVO cada detector de tweak, cada caracteristica/capability
+#  y los servicios del perfil seguro, y compara con el ultimo perfil de
+#  tweaks guardado (si existe) para avisar de DERIVA (algo que estaba
+#  aplicado y ahora ya no, p.ej. revertido por una actualizacion de
+#  Windows). Genera un informe HTML en el Escritorio. Solo lectura.
+# ============================================================
+function Invoke-WpiVerifyAll {
+    $rows = New-Object System.Collections.Generic.List[object]
+    $applied = 0; $notApplied = 0; $notCheck = 0
+
+    # 1) Tweaks con detector
+    foreach ($cb in $script:TweakChecks) {
+        $name = [string]$cb.Tag.Name
+        if (-not $TweakDetectors.ContainsKey($name)) { continue }
+        $state = 'unknown'
+        try { $state = $(if ([bool](Invoke-Expression $TweakDetectors[$name])) { 'applied' } else { 'notapplied' }) } catch { $state = 'unknown' }
+        switch ($state) { 'applied' { $applied++ } 'notapplied' { $notApplied++ } default { $notCheck++ } }
+        $rows.Add([pscustomobject]@{ Group = (Tr 'Tweaks'); Name = (Tr $name); State = $state })
+    }
+
+    # 2) Caracteristicas / capabilities (DISM) leidas en vivo
+    try {
+        $feats = @(Get-WindowsOptionalFeature -Online -ErrorAction SilentlyContinue)
+        $caps  = @(Get-WindowsCapability -Online -ErrorAction SilentlyContinue)
+        foreach ($f in $FeaturesCatalog) {
+            $st = 'unknown'
+            if ([string]$f.Kind -eq 'feature') {
+                $hit = $feats | Where-Object { [string]$_.FeatureName -eq [string]$f.Id } | Select-Object -First 1
+                if ($hit) { $st = $(if ([string]$hit.State -eq 'Enabled') { 'applied' } else { 'notapplied' }) }
+            } else {
+                $hit = $caps | Where-Object { [string]$_.Name -eq [string]$f.Id } | Select-Object -First 1
+                if ($hit) { $st = $(if ([string]$hit.State -eq 'Installed') { 'applied' } else { 'notapplied' }) }
+            }
+            switch ($st) { 'applied' { $applied++ } 'notapplied' { $notApplied++ } default { $notCheck++ } }
+            $rows.Add([pscustomobject]@{ Group = (Tr 'Caracteristicas de Windows'); Name = (Tr ([string]$f.Name)); State = $st })
+        }
+    } catch {}
+
+    # 2b) FASE C: estado del Gaming Optimizer (sesion del Modo Juego)
+    try {
+        $gSess = Get-WpiGameSessionState
+        if ($gSess) {
+            $applied++
+            $rows.Add([pscustomobject]@{ Group = 'Gaming Optimizer'; Name = ((Tr 'Modo Juego por sesion: ACTIVO desde {0} ({1} proceso(s) en pausa)') -f [string]$gSess.Started, @($gSess.Paused).Count); State = 'applied' })
+        } else {
+            $notApplied++
+            $rows.Add([pscustomobject]@{ Group = 'Gaming Optimizer'; Name = (Tr 'Modo Juego por sesion: sin cambios en el sistema'); State = 'notapplied' })
+        }
+    } catch {}
+
+    # 3) DERIVA respecto al ultimo perfil de tweaks guardado (si existe)
+    $drift = New-Object System.Collections.Generic.List[string]
+    try {
+        $lastProfile = Get-ChildItem $PSScriptRoot -Filter 'perfil_tweaks_*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($lastProfile) {
+            $prev = Get-Content $lastProfile.FullName -Raw | ConvertFrom-Json
+            $liveMap = @{}
+            foreach ($cb in $script:TweakChecks) {
+                $nm = [string]$cb.Tag.Name
+                if ($TweakDetectors.ContainsKey($nm)) {
+                    try { $liveMap[$nm] = [bool](Invoke-Expression $TweakDetectors[$nm]) } catch {}
+                }
+            }
+            foreach ($p in @($prev)) {
+                if ([string]$p.state -eq 'applied' -and $liveMap.ContainsKey([string]$p.name) -and (-not $liveMap[[string]$p.name])) {
+                    [void]$drift.Add([string]$p.name)
+                }
+            }
+        }
+    } catch {}
+
+    # 4) Informe HTML en el Escritorio
+    $fecha = Get-Date -Format 'yyyy-MM-dd HH:mm'
+    $rowsHtml = ($rows | ForEach-Object {
+        $cls = switch ($_.State) { 'applied' { 'ok' } 'notapplied' { 'no' } default { 'nc' } }
+        $txt = switch ($_.State) { 'applied' { (Tr 'aplicado') } 'notapplied' { (Tr 'no aplicado') } default { (Tr 'no comprobable') } }
+        '<tr><td>' + $_.Group + '</td><td>' + $_.Name + '</td><td class="' + $cls + '">' + $txt + '</td></tr>'
+    }) -join ''
+    $driftHtml = ''
+    if ($drift.Count -gt 0) {
+        $driftHtml = '<h2 class="warnh">' + (Tr 'DERIVA detectada (estaba aplicado y ahora NO)') + '</h2><table>' +
+            (($drift | ForEach-Object { '<tr><td>' + (Tr $_) + '</td><td class="no">' + (Tr 'revertido desde el ultimo perfil guardado') + '</td></tr>' }) -join '') + '</table>'
+    }
+    $titulo = Tr 'Auditoria de estado del sistema (WPI)'
+    $html = @"
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>$titulo</title>
+<style>
+body{background:#0c1b33;color:#e8eef7;font-family:Segoe UI,Arial,sans-serif;margin:0;padding:32px}
+h1{color:#5ad0f5;font-size:22px}h2{color:#8ab8e6;font-size:15px;margin-top:24px;border-bottom:1px solid #274a72;padding-bottom:6px}
+h2.warnh{color:#ffd98a}table{border-collapse:collapse;width:100%;font-size:13px}td,th{padding:5px 10px;border-bottom:1px solid #1b3c5e;text-align:left}
+.ok{color:#49e59b}.no{color:#ffd98a}.nc{color:#8aa6cc}
+.kpi{display:inline-block;background:#112038;border:1px solid #274a72;border-radius:10px;padding:12px 22px;margin:6px 10px 6px 0;text-align:center}.kpi b{display:block;font-size:26px}
+</style></head><body>
+<h1>$titulo</h1>
+<div>$(Tr 'Equipo'): <b>$env:COMPUTERNAME</b> &nbsp;|&nbsp; $(Tr 'Fecha'): $fecha</div>
+<div style="margin-top:14px">
+<span class="kpi"><b class="ok">$applied</b>$(Tr 'aplicados')</span>
+<span class="kpi"><b class="no">$notApplied</b>$(Tr 'sin aplicar')</span>
+<span class="kpi"><b class="nc">$notCheck</b>$(Tr 'no comprobables')</span>
+<span class="kpi"><b class="no">$($drift.Count)</b>$(Tr 'con deriva')</span>
+</div>
+$driftHtml
+<h2>$(Tr 'Detalle completo')</h2><table><tr><th>$(Tr 'Grupo')</th><th>$(Tr 'Ajuste')</th><th>$(Tr 'Estado')</th></tr>$rowsHtml</table>
+</body></html>
+"@
+    $ruta = ''
+    try {
+        $du = [Environment]::GetFolderPath('Desktop'); if ([string]::IsNullOrWhiteSpace($du)) { $du = Join-Path $env:USERPROFILE 'Desktop' }
+        $ruta = Join-Path $du 'WPI_Auditoria_Estado.html'
+        [IO.File]::WriteAllText($ruta, $html, (New-Object System.Text.UTF8Encoding($true)))
+    } catch {}
+    # F6: copia canonica centralizada dentro del WPI (<WPI>\Informes)
+    try {
+        $infDir = Get-WpiDir 'Informes'
+        [IO.File]::WriteAllText((Join-Path $infDir ('WPI_Auditoria_Estado_{0}.html' -f (Get-Date -Format 'yyyyMMdd_HHmm'))), $html, (New-Object System.Text.UTF8Encoding($true)))
+    } catch {}
+
+    try { Detect-TweakStates } catch {}
+
+    $resumen = ((Tr 'Auditoria terminada: {0} aplicados, {1} sin aplicar, {2} no comprobables.') -f $applied, $notApplied, $notCheck)
+    if ($drift.Count -gt 0) { $resumen += "`n`n" + ((Tr 'ATENCION: {0} ajuste(s) con DERIVA (estaban aplicados y ahora ya no; revisa el informe).') -f $drift.Count) }
+    if ($ruta) { $resumen += "`n`n" + ((Tr 'Informe guardado en: {0}') -f $ruta) }
+    try { $script:StatusText.Text = ((Tr 'Auditoria: {0} aplicados, {1} sin aplicar, {2} con deriva.') -f $applied, $notApplied, $drift.Count) } catch {}
+    Show-WpiMessage($resumen, (Tr 'Verificar todo'), 'OK', $(if ($drift.Count -gt 0) { 'Warning' } else { 'Information' })) | Out-Null
+    if ($ruta) { try { Start-Process $ruta } catch {} }
+}
+
+# ============================================================
+#  F9 - DIARIO DE CAMBIOS + "DESHACER LO DE HOY"
+#  Cada vez que se aplican o revierten tweaks se registra una linea en
+#  logs\wpi_journal.jsonl (fecha, nombre, accion). "Deshacer lo de hoy"
+#  calcula que tweaks quedaron aplicados HOY (aplicados y no revertidos
+#  despues) y ejecuta su codigo de reversion (Undo) por el motor, con log.
+# ============================================================
+function Add-WpiJournal {
+    param([string[]]$Names, [string]$Action)
+    if (-not $Names -or @($Names).Count -eq 0) { return }
+    try {
+        $logDir = $Config.LogDir
+        if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+        $jf = Join-Path $logDir 'wpi_journal.jsonl'
+        $ts = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
+        $lines = foreach ($nm in $Names) {
+            ([pscustomobject]@{ ts = $ts; name = [string]$nm; action = [string]$Action } | ConvertTo-Json -Compress)
+        }
+        Add-Content -Path $jf -Value $lines -Encoding UTF8
+    } catch {}
+}
+
+# Devuelve los nombres de tweak que quedaron APLICADOS hoy (aplicados y no
+# revertidos con posterioridad el mismo dia), leyendo el diario en orden.
+function Get-WpiTodayApplied {
+    $jf = Join-Path $Config.LogDir 'wpi_journal.jsonl'
+    if (-not (Test-Path $jf)) { return @() }
+    $today = (Get-Date -Format 'yyyy-MM-dd')
+    $net = [ordered]@{}
+    foreach ($ln in (Get-Content $jf -Encoding UTF8)) {
+        if ([string]::IsNullOrWhiteSpace($ln)) { continue }
+        $e = $null; try { $e = $ln | ConvertFrom-Json } catch { continue }
+        if (-not $e -or [string]$e.ts -notlike ($today + '*')) { continue }
+        $nm = [string]$e.name
+        if ([string]$e.action -eq 'apply') { $net[$nm] = $true }
+        elseif ([string]$e.action -eq 'undo') { if ($net.Contains($nm)) { $net.Remove($nm) } }
+    }
+    return @($net.Keys)
+}
+
+function Invoke-WpiUndoToday {
+    $applied = @(Get-WpiTodayApplied)
+    if (@($applied).Count -eq 0) {
+        Show-WpiMessage((Tr 'No hay cambios registrados hoy en el diario (o ya se revirtieron).'), (Tr 'Deshacer lo de hoy')) | Out-Null
+        return
+    }
+    $sel = @()
+    $sinUndo = @()
+    foreach ($nm in $applied) {
+        $t = $TweaksCatalog | Where-Object { [string]$_.Name -eq $nm } | Select-Object -First 1
+        if ($t -and $t.Undo) { $sel += [pscustomobject]@{ Name = ((Tr 'Revertir') + ': ' + (Tr $nm)); Code = [string]$t.Undo } }
+        else { $sinUndo += $nm }
+    }
+    if (@($sel).Count -eq 0) {
+        Show-WpiMessage((Tr 'Los cambios de hoy no tienen reversion automatica.'), (Tr 'Deshacer lo de hoy')) | Out-Null
+        return
+    }
+    $msg = ((Tr 'Se revertiran {0} cambio(s) hechos HOY a su valor por defecto de Windows.') -f @($sel).Count)
+    if (@($sinUndo).Count -gt 0) { $msg += "`n`n" + ((Tr 'Sin reversion automatica ({0}): {1}') -f @($sinUndo).Count, (($sinUndo | ForEach-Object { Tr $_ }) -join ', ')) }
+    $msg += "`n`n" + (Tr 'Continuar?')
+    $r = Show-WpiMessage($msg, (Tr 'Deshacer lo de hoy'), 'YesNo', 'Warning')
+    if ($r -ne 'Yes') { return }
+    foreach ($s in $sel) { $orig = ($s.Name -replace ('^' + [regex]::Escape((Tr 'Revertir') + ': ')), ''); Add-WpiJournal -Names @($orig) -Action 'undo' }
+    Start-Worker -Mode 'tweaks' -Tweaks $sel
 }
 
 # Guarda el estado actual de los tweaks a un perfil JSON portable.
@@ -7169,7 +11759,8 @@ function Save-TweakProfile {
     }
     $dlg = New-Object Microsoft.Win32.SaveFileDialog
     $dlg.FileName = ('perfil_tweaks_{0}.json' -f (Get-Date -Format 'yyyyMMdd'))
-    $dlg.InitialDirectory = $PSScriptRoot
+    # F6: carpeta oficial centralizada <WPI>\Restauracion (se crea sola)
+    $dlg.InitialDirectory = $(try { Get-WpiDir 'Restauracion' } catch { $PSScriptRoot })
     $dlg.Filter = 'Perfil de tweaks WPI (*.json)|*.json'
     if ($dlg.ShowDialog()) {
         $doc = [ordered]@{
@@ -7181,7 +11772,7 @@ function Save-TweakProfile {
         }
         try {
             Set-WpiContent -Path $dlg.FileName -Value ($doc | ConvertTo-Json -Depth 5)
-            Show-WpiMessage(((Tr "Perfil de tweaks guardado:`n{0}`n`nGuarda los ajustes ya aplicados en este PC. Cargalo en otro momento o en otro equipo para igualarlo.") -f $dlg.FileName), 'WPI Moderno') | Out-Null
+            Show-WpiMessage(((Tr "Perfil de tweaks guardado:`n{0}`n`nGuarda los ajustes ya aplicados en este PC. Cargalo en otro momento o en otro equipo para igualarlo.") -f $dlg.FileName), 'Winzard') | Out-Null
         } catch { $script:StatusText.Text = (Tr 'No se pudo guardar el perfil.') }
     }
 }
@@ -7190,12 +11781,13 @@ function Save-TweakProfile {
 # para que el usuario revise y pulse APLICAR. No aplica nada por si solo.
 function Load-TweakProfile {
     $dlg = New-Object Microsoft.Win32.OpenFileDialog
-    $dlg.InitialDirectory = $PSScriptRoot
+    # F6: se abre en la carpeta oficial de copias <WPI>\Restauracion
+    $dlg.InitialDirectory = $(try { Get-WpiDir 'Restauracion' } catch { $PSScriptRoot })
     $dlg.Filter = 'Perfil de tweaks WPI (*.json)|*.json|Todos (*.*)|*.*'
     if (-not $dlg.ShowDialog()) { return }
     $data = $null
     try { $data = Get-Content $dlg.FileName -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
-        Show-WpiMessage('No se pudo leer el perfil (formato no valido).', 'WPI Moderno') | Out-Null; return
+        Show-WpiMessage('No se pudo leer el perfil (formato no valido).', 'Winzard') | Out-Null; return
     }
     $want = @{}
     foreach ($e in @($data.tweaks)) { if ($e.name -and [string]$e.state -eq 'applied') { $want[[string]$e.name] = $true } }
@@ -7209,7 +11801,259 @@ function Load-TweakProfile {
     }
     if (-not $script:TweakDetected) { Detect-TweakStates }
     try { Update-Count } catch {}
-    Show-WpiMessage(((Tr "Perfil cargado.`n`nMarcados para aplicar: {0}`nDe esos, ya aplicados en este PC: {1}`n`nRevisa la seleccion y pulsa APLICAR SELECCIONADOS para igualar este equipo al perfil.") -f $n, $already), 'WPI Moderno', 'OK', 'Information') | Out-Null
+    Show-WpiMessage(((Tr "Perfil cargado.`n`nMarcados para aplicar: {0}`nDe esos, ya aplicados en este PC: {1}`n`nRevisa la seleccion y pulsa APLICAR SELECCIONADOS para igualar este equipo al perfil.") -f $n, $already), 'Winzard', 'OK', 'Information') | Out-Null
+}
+
+# ============================================================
+# ENTORNO DE RECUPERACION (mision F7): un unico sitio para VOLVER ATRAS.
+# Carpeta oficial fija <WPI>\Restauracion (se crea sola): ahi viven los
+# perfiles y paquetes de rescate, y ahi abre siempre el boton "Cargar".
+# Todo con verificacion real y honesta, como el resto del WPI.
+# ============================================================
+
+# Devuelve los arranques automaticos "aparcados" por el primer arranque (F1) a
+# su sitio original, leyendo las copias del registro WPI_Autoruns_Backup (HKCU/
+# HKLM, incluida WOW6432Node) y los .lnk movidos a WPI_Desactivados. VERIFICA
+# cada valor restaurado antes de retirar su copia. Devuelve @{Ok;Fail}.
+function Restore-WpiAutoruns {
+    $ok = 0; $fail = 0
+    foreach ($hive in 'HKLM','HKCU') {
+        foreach ($sub in 'SOFTWARE\Microsoft\Windows\CurrentVersion','SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion') {
+            $bk = ('{0}:\{1}\WPI_Autoruns_Backup' -f $hive, $sub)
+            $run = ('{0}:\{1}\Run' -f $hive, $sub)
+            if (-not (Test-Path $bk)) { continue }
+            $names = @()
+            try { $names = @((Get-Item $bk -ErrorAction Stop).GetValueNames()) } catch { continue }
+            foreach ($name in $names) {
+                if ([string]::IsNullOrWhiteSpace($name)) { continue }
+                try {
+                    $val = [string](Get-Item $bk).GetValue($name)
+                    if (-not (Test-Path $run)) { New-Item -Path $run -Force | Out-Null }
+                    New-ItemProperty -Path $run -Name $name -Value $val -PropertyType String -Force -ErrorAction Stop | Out-Null
+                    $chk = [string]((Get-Item $run).GetValue($name))
+                    if ($chk -eq $val) {
+                        Remove-ItemProperty -Path $bk -Name $name -Force -ErrorAction SilentlyContinue
+                        $ok++
+                    } else { $fail++ }
+                } catch { $fail++ }
+            }
+        }
+    }
+    # Accesos directos de la carpeta Inicio movidos a WPI_Desactivados
+    $startupDirs = @()
+    try { $startupDirs += [Environment]::GetFolderPath('Startup') } catch {}
+    try { $startupDirs += (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\StartUp') } catch {}
+    foreach ($sf in ($startupDirs | Select-Object -Unique)) {
+        if ([string]::IsNullOrWhiteSpace($sf)) { continue }
+        $dis = Join-Path $sf 'WPI_Desactivados'
+        if (-not (Test-Path $dis)) { continue }
+        foreach ($ln in @(Get-ChildItem $dis -Filter *.lnk -ErrorAction SilentlyContinue)) {
+            try {
+                Move-Item $ln.FullName (Join-Path $sf $ln.Name) -Force -ErrorAction Stop
+                if (Test-Path (Join-Path $sf $ln.Name)) { $ok++ } else { $fail++ }
+            } catch { $fail++ }
+        }
+        try { if (@(Get-ChildItem $dis -ErrorAction SilentlyContinue).Count -eq 0) { Remove-Item $dis -Force -ErrorAction SilentlyContinue } } catch {}
+    }
+    return @{ Ok = $ok; Fail = $fail }
+}
+
+# Paquete de rescate de UN CLIC: congela las redes de seguridad de este momento
+# en <WPI>\Restauracion\Rescate_<fecha>: punto de restauracion del sistema,
+# perfil de tweaks con el estado REAL, lista completa de apps (winget export),
+# copia del diario de cambios y de los autoruns aparcados, y un LEEME. Devuelve
+# la ruta creada (o lanza con mensaje honesto).
+function New-WpiRescuePack {
+    $root = Get-WpiDir 'Restauracion'
+    $dir = Join-Path $root ('Rescate_{0}' -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $notas = New-Object System.Collections.Generic.List[string]
+    # 1) Punto de restauracion (Windows limita a 1 cada 24 h: se informa honesto)
+    $rp = $false
+    try {
+        Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
+        Checkpoint-Computer -Description ('WPI Rescate {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm')) -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+        $rp = $true
+        [void]$notas.Add((Tr 'Punto de restauracion del sistema: CREADO.'))
+    } catch { [void]$notas.Add(((Tr 'Punto de restauracion: no creado ({0}). Windows solo permite uno cada 24 h.') -f $_.Exception.Message)) }
+    # 2) Perfil de tweaks con estado REAL (mismos detectores que la pantalla)
+    $items = @()
+    foreach ($t in $TweaksCatalog) {
+        $name = [string]$t.Name
+        $st = 'action'
+        if ($TweakDetectors.ContainsKey($name)) {
+            $st = 'unknown'
+            try { $st = $(if ([bool](Invoke-Expression $TweakDetectors[$name])) { 'applied' } else { 'notapplied' }) } catch { $st = 'unknown' }
+        }
+        $items += [ordered]@{ name = $name; cat = [string]$t.Cat; risk = [string]$t.Risk; state = $st }
+    }
+    $doc = [ordered]@{
+        '$schema' = 'wpi-tweaks-profile-1.0'
+        created   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
+        machine   = $env:COMPUTERNAME
+        wpi       = $WpiVersion
+        tweaks    = $items
+    }
+    Set-WpiContent -Path (Join-Path $dir 'perfil_tweaks.json') -Value ($doc | ConvertTo-Json -Depth 5)
+    [void]$notas.Add((Tr 'Perfil de tweaks con el estado real de este PC: guardado (perfil_tweaks.json).'))
+    # 3) Lista completa de apps (winget export)
+    if ($script:WingetOK) {
+        try {
+            & winget export -o (Join-Path $dir 'apps_winget.json') --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
+            if (Test-Path (Join-Path $dir 'apps_winget.json')) { [void]$notas.Add((Tr 'Lista de apps instaladas (winget export): guardada (apps_winget.json).')) }
+            else { [void]$notas.Add((Tr 'Lista de apps: winget no genero el archivo (se omite).')) }
+        } catch { [void]$notas.Add((Tr 'Lista de apps: winget no genero el archivo (se omite).')) }
+    } else { [void]$notas.Add((Tr 'Lista de apps: winget no disponible (se omite).')) }
+    # 4) Copias del diario y de los autoruns aparcados (si existen)
+    foreach ($extra in @('wpi_journal.jsonl','autoruns_desactivados.json')) {
+        $src = Join-Path $Config.LogDir $extra
+        if (Test-Path $src) { try { Copy-Item $src (Join-Path $dir $extra) -Force; [void]$notas.Add(((Tr 'Copia incluida: {0}') -f $extra)) } catch {} }
+    }
+    # 5) LEEME bilingue
+    $leeme = (Tr 'PAQUETE DE RESCATE del WPI. Contiene las redes de seguridad de este equipo en el momento de crearlo. Como usarlo: (1) perfil_tweaks.json se carga desde Entorno de Recuperacion > Cargar perfil de tweaks; (2) apps_winget.json se importa con: winget import -i apps_winget.json; (3) el punto de restauracion del sistema se usa desde Restauracion del sistema (rstrui); (4) wpi_journal.jsonl y autoruns_desactivados.json son las copias del diario y de los arranques aparcados.') + "`r`n`r`n" + (($notas) -join "`r`n")
+    Set-WpiContent -Path (Join-Path $dir 'LEEME.txt') -Value $leeme
+    # Verificacion final honesta
+    $files = @(Get-ChildItem $dir -File -ErrorAction SilentlyContinue)
+    if ($files.Count -lt 2) { throw (Tr 'El paquete quedo incompleto (menos de 2 archivos). Revisa permisos de la carpeta Restauracion.') }
+    return [pscustomobject]@{ Dir = $dir; Files = $files.Count; RestorePoint = $rp; Notes = ($notas -join "`n") }
+}
+
+# Construye la pantalla "Entorno de recuperacion" (se reconstruye al entrar,
+# para que el estado de las redes de seguridad este siempre EN VIVO).
+function Build-RecoveryUI {
+    $p = $script:RecoveryList
+    $p.Children.Clear()
+    $hdr = New-Object Windows.Controls.TextBlock
+    $hdr.Text = 'ENTORNO DE RECUPERACIÓN'
+    $hdr.FontSize = 15; $hdr.FontWeight = 'Bold'; $hdr.Foreground = Get-ThemeBrush('#FF5CFF8F')
+    $hdr.Margin = New-Object Windows.Thickness(2,10,0,2)
+    $p.Children.Add((New-WpiHeaderInfo $hdr 'Tu centro unico para VOLVER ATRAS ante cualquier incidencia: reune en un solo sitio todas las redes de seguridad que el WPI va creando (perfiles de tweaks, paquete de rescate, diario de cambios, arranques aparcados, puntos de restauracion del sistema) y las carga con un clic. La carpeta oficial <WPI>\Restauracion se crea sola y "Cargar" la abre directamente: nunca tendras que buscar un archivo de restauracion a mano. Todo lo que se restaura se VERIFICA contra el sistema antes de darse por bueno, como el resto del WPI.')) | Out-Null
+
+    # ---------- Tarjeta 1: CARGAR ----------
+    $card1 = New-Object Windows.Controls.Border
+    $card1.Background = Get-ThemeBrush('#FF15151F'); $card1.BorderBrush = Get-ThemeBrush('#FF5CFF8F'); $card1.BorderThickness = New-Object Windows.Thickness(1)
+    $card1.CornerRadius = New-Object Windows.CornerRadius(10); $card1.Padding = New-Object Windows.Thickness(14,10,14,12); $card1.Margin = New-Object Windows.Thickness(0,8,0,0)
+    $c1 = New-Object Windows.Controls.StackPanel
+    $t1 = New-Object Windows.Controls.TextBlock; $t1.Text = (Tr 'CARGAR UNA COPIA DE RESTAURACION'); $t1.FontWeight = 'Bold'; $t1.FontSize = 13; $t1.Foreground = Get-ThemeBrush('#FF5CFF8F')
+    $c1.Children.Add($t1) | Out-Null
+    $d1 = New-Object Windows.Controls.TextBlock; $d1.TextWrapping = 'Wrap'; $d1.FontSize = 12; $d1.Foreground = Get-ThemeBrush($Theme.Sub); $d1.Margin = New-Object Windows.Thickness(0,3,0,4)
+    $d1.Text = (Tr 'Cada opción explica qué es, cómo funciona y qué pasará antes de que pulses nada. Los drivers tienen su propia sección: Drivers y hardware.')
+    $c1.Children.Add($d1) | Out-Null
+    # (Rediseno premium) Lista vertical de acciones: adios a la fila de botones
+    # amontonados. Cada accion lleva su desplegable UNICO "que es / como / que pasara".
+    $c1.Children.Add((New-WpiActionRow ([char]::ConvertFromUtf32(0x1F4C2)) 'Cargar: abrir la carpeta de copias' `
+        'Tu punto de partida: aquí viven todos tus perfiles y paquetes de rescate.' `
+        'QUÉ ES: la puerta de entrada a todas tus copias del WPI (perfiles de tweaks y paquetes de rescate). CÓMO FUNCIONA: abre en el Explorador la carpeta oficial Restauracion del WPI, que se crea sola y donde el WPI guarda cada copia automáticamente. QUÉ PASARÁ: solo se abre la carpeta; no se toca nada del sistema. Desde ahí puedes ver, copiar o llevarte tus copias a un USB.' `
+        'Abrir carpeta' {
+            $dirR = Get-WpiDir 'Restauracion'
+            try { Start-Process explorer.exe $dirR } catch {}
+            Show-WpiToast ((Tr 'Carpeta de copias abierta: {0}') -f $dirR) '#FF5CFF8F' 6
+        } '#FF5CFF8F' -Primary)) | Out-Null
+    $c1.Children.Add((New-WpiActionRow ([char]::ConvertFromUtf32(0x1F9E9)) 'Cargar perfil de tweaks' `
+        'Marca en Tweaks lo que había aplicado un perfil guardado, para revisarlo antes de tocar nada.' `
+        'QUÉ ES: el cargador de perfiles de tweaks guardados (.json), como el que incluye cada paquete de rescate. CÓMO FUNCIONA: eliges un perfil y el WPI marca en la sección Tweaks exactamente lo que aquel día estaba aplicado en tu equipo. QUÉ PASARÁ: al cargarlo NO se cambia nada todavía: solo se marca la selección para que la revises; los cambios se aplican únicamente si después pulsas aplicar en Tweaks.' `
+        'Elegir perfil...' {
+            try { Load-TweakProfile } catch { $script:StatusText.Text = (Tr 'No se pudo cargar el perfil.') }
+        } '#FF5CFF8F')) | Out-Null
+    $c1.Children.Add((New-WpiActionRow ([string][char]0x21A9) 'Deshacer lo de hoy (diario de cambios)' `
+        'Revierte solo lo aplicado hoy, verificando cada reversión contra el sistema.' `
+        'QUÉ ES: el botón de marcha atrás del día. CÓMO FUNCIONA: lee el diario de cambios del WPI (logs\wpi_journal.jsonl) y revierte SOLO los ajustes aplicados hoy, uno a uno y verificando cada reversión. QUÉ PASARÁ: los tweaks de hoy vuelven a su estado anterior; lo aplicado otros días no se toca. Al final verás un resumen honesto de lo revertido y de cualquier fallo.' `
+        'Deshacer hoy' {
+            try { Invoke-WpiUndoToday } catch { Show-WpiMessage((('No se pudo deshacer: ') + $_.Exception.Message), 'Winzard') | Out-Null }
+        } '#FFFFD166')) | Out-Null
+    $c1.Children.Add((New-WpiActionRow ([char]::ConvertFromUtf32(0x1F680)) 'Restaurar arranques automáticos aparcados' `
+        'Devuelve a su sitio los autoarranques que el primer arranque aparcó para acelerar el inicio.' `
+        'QUÉ ES: la recuperación de los programas de arranque automático que el primer arranque del WPI aparcó para acelerar el inicio de Windows. CÓMO FUNCIONA: lee la copia de seguridad del registro (WPI_Autoruns_Backup en HKLM/HKCU) y la carpeta WPI_Desactivados, y devuelve cada entrada a su sitio verificándola una a una. QUÉ PASARÁ: esos programas volverán a arrancar solos con Windows, como antes del WPI; el inicio puede tardar algo más.' `
+        'Restaurar' {
+            try {
+                $r = Restore-WpiAutoruns
+                if ($r.Ok -eq 0 -and $r.Fail -eq 0) { Show-WpiToast (Tr 'No habia arranques aparcados que restaurar.') '#FFFFD166' 6 }
+                elseif ($r.Fail -eq 0) { Show-WpiToast ((Tr 'Restaurados y verificados {0} arranque(s) automatico(s).') -f $r.Ok) '#FF5CFF8F' 7 }
+                else { Show-WpiMessage(((Tr "Restaurados: {0}. Con fallo: {1}.`nRevisa logs\autoruns_desactivados.json para los detalles.") -f $r.Ok, $r.Fail), (Tr 'Entorno de recuperación'), 'OK', 'Warning') | Out-Null }
+                Build-RecoveryUI; try { Translate-Tree $script:RecoveryScroll; Apply-WpiToolTips $script:RecoveryScroll } catch {}
+            } catch { Show-WpiMessage((('Error: ') + $_.Exception.Message), (Tr 'Entorno de recuperación')) | Out-Null }
+        } '#FFFFD166')) | Out-Null
+    $c1.Children.Add((New-WpiActionRow ([char]::ConvertFromUtf32(0x1F6E1)) 'Restauración del sistema de Windows' `
+        'La más potente: vuelve el sistema completo a un punto anterior (herramienta oficial de Windows).' `
+        'QUÉ ES: la herramienta oficial de Windows para devolver el SISTEMA COMPLETO a un punto anterior; la opción más potente de esta lista. CÓMO FUNCIONA: se abre rstrui.exe, eliges un punto de restauración (el WPI crea uno con cada paquete de rescate) y Windows revierte archivos de sistema, drivers y registro a ese momento. QUÉ PASARÁ: el equipo se reiniciará durante el proceso; tus documentos personales NO se borran, pero los programas instalados después de ese punto pueden desaparecer.' `
+        'Abrir herramienta' {
+            try { Start-Process rstrui.exe } catch { Show-WpiMessage((Tr 'No se pudo abrir la Restauracion del sistema.'), (Tr 'Entorno de recuperación')) | Out-Null }
+        } '#FF76E0FF')) | Out-Null
+    $card1.Child = $c1
+    $p.Children.Add($card1) | Out-Null
+
+    # ---------- Tarjeta 2: PAQUETE DE RESCATE ----------
+    $card2 = New-Object Windows.Controls.Border
+    $card2.Background = Get-ThemeBrush('#FF15151F'); $card2.BorderBrush = Get-ThemeBrush('#FF76E0FF'); $card2.BorderThickness = New-Object Windows.Thickness(1)
+    $card2.CornerRadius = New-Object Windows.CornerRadius(10); $card2.Padding = New-Object Windows.Thickness(14,10,14,12); $card2.Margin = New-Object Windows.Thickness(0,10,0,0)
+    $c2 = New-Object Windows.Controls.StackPanel
+    $t2 = New-Object Windows.Controls.TextBlock; $t2.Text = (Tr 'PAQUETE DE RESCATE (un clic)'); $t2.FontWeight = 'Bold'; $t2.FontSize = 13; $t2.Foreground = Get-ThemeBrush('#FF76E0FF')
+    $c2.Children.Add($t2) | Out-Null
+    $d2 = New-Object Windows.Controls.TextBlock; $d2.TextWrapping = 'Wrap'; $d2.FontSize = 12; $d2.Foreground = Get-ThemeBrush($Theme.Sub); $d2.Margin = New-Object Windows.Thickness(0,3,0,8)
+    $d2.Text = (Tr 'Congela AHORA todas tus redes de seguridad en una carpeta con fecha dentro de Restauracion: punto de restauracion del sistema, perfil de tweaks con el estado real, lista completa de apps (winget export), copia del diario y de los arranques aparcados, y un LEEME con instrucciones. Ideal antes de tocar nada importante.')
+    $c2.Children.Add($d2) | Out-Null
+    $c2.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará' 'QUÉ ES: tu seguro total en un clic: una carpeta Rescate_<fecha> con TODAS tus redes de seguridad congeladas en ese momento. CÓMO FUNCIONA: crea un punto de restauración del sistema, guarda el perfil de tweaks con el estado REAL detectado en tu equipo, exporta la lista completa de apps (winget export), copia el diario de cambios y los arranques aparcados, y añade un LEEME con instrucciones; al terminar VERIFICA el contenido antes de dar el OK. QUÉ PASARÁ: tarda entre 30 y 90 segundos y no cambia nada del sistema: solo crea copias. Si algo no se puede incluir (por ejemplo, winget no disponible), el resumen lo dice con claridad.' '#FF76E0FF')) | Out-Null
+    $bPack = New-Object Windows.Controls.Button
+    $bPack.Content = 'Crear paquete de rescate ahora'; $bPack.FontWeight = 'Bold'; $bPack.HorizontalAlignment = 'Left'
+    $bPack.Padding = New-Object Windows.Thickness(14,7,14,7)
+    $bPack.Background = Get-ThemeBrush('#FF13414F'); $bPack.BorderBrush = Get-ThemeBrush('#FF76E0FF')
+    $bPack.ToolTip = (Tr 'Crea la carpeta Rescate_<fecha> con todo dentro y VERIFICA el contenido antes de dar el OK.')
+    $bPack.Add_Click({
+        $old = $null
+        try { $old = [System.Windows.Input.Mouse]::OverrideCursor; [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait } catch {}
+        $script:StatusText.Text = (Tr 'Creando paquete de rescate (30-90 s: incluye punto de restauracion y export de apps)...')
+        try {
+            $res = New-WpiRescuePack
+            $script:StatusText.Text = ((Tr 'Paquete de rescate creado y verificado: {0} archivos en {1}') -f $res.Files, $res.Dir)
+            Show-WpiPremiumDialog -Title 'Paquete de rescate creado y verificado' -Accent '#FF5CFF8F' -Sections @(
+                @{ Head = 'Donde esta'; Body = $res.Dir; Color = '#FF5CFF8F' },
+                @{ Head = 'Contenido real'; Body = $res.Notes }
+            ) -YesText 'Abrir carpeta' -NoText 'Cerrar' | ForEach-Object { if ($_) { try { Start-Process explorer.exe $res.Dir } catch {} } }
+            Build-RecoveryUI; try { Translate-Tree $script:RecoveryScroll; Apply-WpiToolTips $script:RecoveryScroll } catch {}
+        } catch {
+            Show-WpiMessage((((Tr 'No se pudo crear el paquete de rescate:') + ' ' + $_.Exception.Message)), (Tr 'Entorno de recuperación'), 'OK', 'Warning') | Out-Null
+        } finally { try { [System.Windows.Input.Mouse]::OverrideCursor = $old } catch {} }
+    })
+    $c2.Children.Add($bPack) | Out-Null
+    $card2.Child = $c2
+    $p.Children.Add($card2) | Out-Null
+
+    # ---------- Tarjeta 3: ESTADO EN VIVO ----------
+    $card3 = New-Object Windows.Controls.Border
+    $card3.Background = Get-ThemeBrush('#FF15151F'); $card3.BorderBrush = Get-ThemeBrush('#FF2C2C3A'); $card3.BorderThickness = New-Object Windows.Thickness(1)
+    $card3.CornerRadius = New-Object Windows.CornerRadius(10); $card3.Padding = New-Object Windows.Thickness(14,10,14,12); $card3.Margin = New-Object Windows.Thickness(0,10,0,12)
+    $c3 = New-Object Windows.Controls.StackPanel
+    $t3 = New-Object Windows.Controls.TextBlock; $t3.Text = (Tr 'ESTADO DE TUS REDES DE SEGURIDAD (en vivo)'); $t3.FontWeight = 'Bold'; $t3.FontSize = 13; $t3.Foreground = Get-ThemeBrush('#FFFFD166')
+    $c3.Children.Add($t3) | Out-Null
+    $dirR = Get-WpiDir 'Restauracion'
+    $nPacks = 0; $nProf = 0
+    try { $nPacks = @(Get-ChildItem $dirR -Directory -Filter 'Rescate_*' -ErrorAction SilentlyContinue).Count } catch {}
+    try { $nProf = @(Get-ChildItem $dirR -Filter '*.json' -File -Recurse -ErrorAction SilentlyContinue).Count } catch {}
+    $c3.Children.Add((New-SummaryRow 'Carpeta oficial' $dirR '#FF76E0FF')) | Out-Null
+    $c3.Children.Add((New-SummaryRow 'Paquetes de rescate' ([string]$nPacks) $(if ($nPacks -gt 0) { '#FF5CFF8F' } else { '' }))) | Out-Null
+    $c3.Children.Add((New-SummaryRow 'Perfiles guardados (.json)' ([string]$nProf) $(if ($nProf -gt 0) { '#FF5CFF8F' } else { '' }))) | Out-Null
+    $jHoy = 0
+    try {
+        $jf = Join-Path $Config.LogDir 'wpi_journal.jsonl'
+        if (Test-Path $jf) { $hoy = (Get-Date -Format 'yyyy-MM-dd'); $jHoy = @(Get-Content $jf -ErrorAction SilentlyContinue | Where-Object { $_ -like ('*' + $hoy + '*') }).Count }
+    } catch {}
+    $c3.Children.Add((New-SummaryRow 'Cambios en el diario (hoy)' ([string]$jHoy) '')) | Out-Null
+    $nAparcados = 0
+    foreach ($hive in 'HKLM','HKCU') {
+        foreach ($sub in 'SOFTWARE\Microsoft\Windows\CurrentVersion','SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion') {
+            try { $bk = ('{0}:\{1}\WPI_Autoruns_Backup' -f $hive, $sub); if (Test-Path $bk) { $nAparcados += @((Get-Item $bk).GetValueNames()).Count } } catch {}
+        }
+    }
+    $c3.Children.Add((New-SummaryRow 'Arranques aparcados' ([string]$nAparcados) $(if ($nAparcados -gt 0) { '#FFFFD166' } else { '' }))) | Out-Null
+    $rpTxt = (Tr 'no comprobable sin permisos de administrador')
+    try {
+        $rps = @(Get-ComputerRestorePoint -ErrorAction Stop | Sort-Object CreationTime -Descending)
+        if ($rps.Count -gt 0) { $rpTxt = ('{0}  ({1})' -f $rps[0].Description, ([Management.ManagementDateTimeConverter]::ToDateTime($rps[0].CreationTime).ToString('yyyy-MM-dd HH:mm'))) }
+        else { $rpTxt = (Tr 'ninguno todavia (crea uno con el paquete de rescate)') }
+    } catch {}
+    $c3.Children.Add((New-SummaryRow 'Último punto de restauración' $rpTxt '')) | Out-Null
+    $card3.Child = $c3
+    $p.Children.Add($card3) | Out-Null
 }
 
 # ---- DETECTOR DE ESTADO DE DEBLOAT (Appx) ----
@@ -7222,6 +12066,7 @@ function Detect-DebloatStates {
     $prov = @()
     try { $prov = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue) } catch {}
     $installed = 0; $total = 0
+    $script:DebloatInstalledSet = @{}
     foreach ($cb in $script:DebloatChecks) {
         $pkg = [string]$cb.Tag
         $lbl = $script:DebloatStatusLabels[$pkg]
@@ -7231,19 +12076,28 @@ function Detect-DebloatStates {
         $patterns = Get-DebloatPatterns $pkg
         try { $isUser = (@($all  | Where-Object { $n = $_.Name;        @($patterns | Where-Object { $n -like $_ }).Count -gt 0 }).Count -gt 0) } catch {}
         try { $isProv = (@($prov | Where-Object { $dn = $_.DisplayName; @($patterns | Where-Object { $dn -like $_ }).Count -gt 0 }).Count -gt 0) } catch {}
+        $script:DebloatInstalledSet[$pkg] = ($isUser -or $isProv)
         if ($isUser -or $isProv) {
             $installed++
             $extra = $(if ($isProv -and -not $isUser) { '  (solo en la imagen del sistema)' } elseif ($isProv) { '  (usuario + sistema)' } else { '' })
             $lbl.ToolTip = (Tr ('INSTALADA' + $extra))
             $lbl.Foreground = Get-ThemeBrush('#FFFFD166')
+            # Titulo COMPLETO en ambar + negrita: la app instalada se ve de un vistazo.
+            try { $cb.Foreground = Get-ThemeBrush('#FFFFD166'); $cb.FontWeight = 'Bold'; $cb.ToolTip = (Tr ('INSTALADA' + $extra)) } catch {}
+            # Coherencia toggle=estado: sigue instalada -> interruptor APAGADO.
+            try { $cb.IsChecked = $false } catch {}
         } else {
             $lbl.ToolTip = (Tr 'ya quitada / no presente')
             $lbl.Foreground = Get-ThemeBrush('#FF5CFF8F')
+            # Ya no esta: titulo en verde y peso normal.
+            try { $cb.Foreground = Get-ThemeBrush('#FF5CFF8F'); $cb.FontWeight = 'Normal'; $cb.ToolTip = (Tr 'ya quitada / no presente') } catch {}
+            # Coherencia toggle=estado: ya quitada -> interruptor ENCENDIDO.
+            try { $cb.IsChecked = $true } catch {}
         }
     }
     $script:DebloatDetected = $true
     if ($script:DebloatSummary) {
-        $script:DebloatSummary.Text = ((Tr 'Estado en este PC: {0} de {1} apps de la lista siguen instaladas. Ambar = instalada (se puede quitar); verde = ya no esta.') -f $installed, $total)
+        $script:DebloatSummary.Text = ((Tr 'Estado en este PC: {0} de {1} apps de la lista siguen instaladas. Interruptor encendido y verde = ya quitada; enciende una ambar para quitarla (QUITAR solo actua sobre las instaladas).') -f $installed, $total)
     }
     # Banner breve y a color encima del boton.
     if ($script:DebloatStatusInline) {
@@ -7268,6 +12122,9 @@ function Detect-DebloatStates {
         $script:DebloatStatusInline.Inlines.Add($rL)
     }
     try { $script:StatusText.Text = ((Tr 'Debloat: {0} de {1} apps instaladas.') -f $installed, $total) } catch {}
+    # Arreglo S13: recuento del boton QUITAR al dia tras la deteccion (los Add_Checked
+    # disparados durante el bucle contaban con el set a medias).
+    try { Update-DebloatCount } catch {}
 }
 
 # Guarda a un perfil JSON que apps de la lista estaban quitadas en este PC.
@@ -7276,9 +12133,10 @@ function Save-DebloatProfile {
     $items = @()
     foreach ($cb in $script:DebloatChecks) {
         $pkg = [string]$cb.Tag
-        $lbl = $script:DebloatStatusLabels[$pkg]
+        # Arreglo S10-bis: el estado se lee del set del detector (el label es un
+        # punto de color desde el rediseno; su .Text ya no dice INSTALADA).
         $st = 'unknown'
-        if ($lbl) { $st = $(if (([string]$lbl.Text).StartsWith('INSTALADA')) { 'installed' } else { 'removed' }) }
+        if ($script:DebloatInstalledSet.ContainsKey($pkg)) { $st = $(if ($script:DebloatInstalledSet[$pkg]) { 'installed' } else { 'removed' }) }
         $items += [ordered]@{ name = [string]$cb.Content; pkg = $pkg; state = $st }
     }
     $dlg = New-Object Microsoft.Win32.SaveFileDialog
@@ -7295,7 +12153,7 @@ function Save-DebloatProfile {
         }
         try {
             Set-WpiContent -Path $dlg.FileName -Value ($doc | ConvertTo-Json -Depth 5)
-            Show-WpiMessage(((Tr "Perfil de debloat guardado:`n{0}`n`nRegistra que apps preinstaladas ya quitaste. Cargalo en otro equipo para dejarlo igual de limpio.") -f $dlg.FileName), 'WPI Moderno') | Out-Null
+            Show-WpiMessage(((Tr "Perfil de debloat guardado:`n{0}`n`nRegistra que apps preinstaladas ya quitaste. Cargalo en otro equipo para dejarlo igual de limpio.") -f $dlg.FileName), 'Winzard') | Out-Null
         } catch { $script:StatusText.Text = (Tr 'No se pudo guardar el perfil de debloat.') }
     }
 }
@@ -7310,7 +12168,7 @@ function Load-DebloatProfile {
     if (-not $dlg.ShowDialog()) { return }
     $data = $null
     try { $data = Get-Content $dlg.FileName -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
-        Show-WpiMessage('No se pudo leer el perfil (formato no valido).', 'WPI Moderno') | Out-Null; return
+        Show-WpiMessage('No se pudo leer el perfil (formato no valido).', 'Winzard') | Out-Null; return
     }
     if (-not $script:DebloatDetected) { try { Detect-DebloatStates } catch {} }
     $want = @{}
@@ -7319,15 +12177,15 @@ function Load-DebloatProfile {
     foreach ($cb in $script:DebloatChecks) {
         $pkg = [string]$cb.Tag
         if ($want.ContainsKey($pkg)) {
-            $lbl = $script:DebloatStatusLabels[$pkg]
-            $here = ($lbl -and ([string]$lbl.Text).StartsWith('INSTALADA'))
+            # Arreglo S13: el estado vive en DebloatInstalledSet; el label es un punto de color.
+            $here = ($script:DebloatInstalledSet.ContainsKey($pkg) -and [bool]$script:DebloatInstalledSet[$pkg])
             $cb.IsChecked = [bool]$here
             $n++
             if ($here) { $stillHere++ }
         } else { $cb.IsChecked = $false }
     }
     try { Update-DebloatCount } catch {}
-    Show-WpiMessage(((Tr "Perfil de debloat cargado.`n`nApps quitadas en el perfil: {0}`nDe esas, aun instaladas en este PC (marcadas): {1}`n`nRevisa la seleccion y pulsa QUITAR SELECCIONADAS para igualar este equipo.") -f $n, $stillHere), 'WPI Moderno', 'OK', 'Information') | Out-Null
+    Show-WpiMessage(((Tr "Perfil de debloat cargado.`n`nApps quitadas en el perfil: {0}`nDe esas, aun instaladas en este PC (marcadas): {1}`n`nRevisa la seleccion y pulsa QUITAR SELECCIONADAS para igualar este equipo.") -f $n, $stillHere), 'Winzard', 'OK', 'Information') | Out-Null
 }
 
 # Exporta un PERFIL MAESTRO (apps+tweaks+debloat+update) que captura el estado
@@ -7361,8 +12219,8 @@ function Export-MasterProfile {
     $db = @()
     foreach ($cb in $script:DebloatChecks) {
         $pkg = [string]$cb.Tag
-        $lbl = $script:DebloatStatusLabels[$pkg]
-        if ($lbl -and -not ([string]$lbl.Text).StartsWith('INSTALADA')) { $db += [ordered]@{ pkg = $pkg; remove = $true } }
+        # Arreglo S13: el estado vive en DebloatInstalledSet; el label es un punto de color.
+        if ($script:DebloatInstalledSet.ContainsKey($pkg) -and -not [bool]$script:DebloatInstalledSet[$pkg]) { $db += [ordered]@{ pkg = $pkg; remove = $true } }
     }
 
     $dlg = New-Object Microsoft.Win32.SaveFileDialog
@@ -7382,7 +12240,7 @@ function Export-MasterProfile {
         }
         try {
             Set-WpiContent -Path $dlg.FileName -Value ($doc | ConvertTo-Json -Depth 6)
-            Show-WpiMessage(((Tr "Perfil maestro guardado:`n{0}`n`nApps marcadas: {1}  ·  Tweaks aplicados: {2}  ·  Debloat quitado: {3}`n`nAplicalo en otro equipo con 'Aplicar perfil completo' o con -Profile en la linea de comandos.") -f $dlg.FileName, @($apps).Count, @($tw).Count, @($db).Count), 'WPI Moderno') | Out-Null
+            Show-WpiMessage(((Tr "Perfil maestro guardado:`n{0}`n`nApps marcadas: {1}  ·  Tweaks aplicados: {2}  ·  Debloat quitado: {3}`n`nAplicalo en otro equipo con 'Aplicar perfil completo' o con -Profile en la linea de comandos.") -f $dlg.FileName, @($apps).Count, @($tw).Count, @($db).Count), 'Winzard') | Out-Null
         } catch { $script:StatusText.Text = (Tr 'No se pudo guardar el perfil maestro.') }
     }
 }
@@ -7522,12 +12380,7 @@ function Build-SummaryUI {
     $hdr.Text = 'RESUMEN DEL SISTEMA'
     $hdr.FontSize = 15; $hdr.FontWeight = 'Bold'; $hdr.Foreground = Get-ThemeBrush('#FF00E5FF')
     $hdr.Margin = New-Object Windows.Thickness(2,10,0,2)
-    $p.Children.Add($hdr) | Out-Null
-    $info = New-Object Windows.Controls.TextBlock
-    $info.Text = 'Foto del estado actual de tu PC segun lo que gestiona el WPI. Solo lectura: no cambia nada. Se actualiza cada vez que entras aqui.'
-    $info.Foreground = Get-ThemeBrush('#FF8A8A95'); $info.FontSize = 12; $info.TextWrapping = 'Wrap'
-    $info.Margin = New-Object Windows.Thickness(2,0,0,8)
-    $p.Children.Add($info) | Out-Null
+    $p.Children.Add((New-WpiHeaderInfo $hdr 'Panel de control de SOLO LECTURA: fotografia el estado actual del equipo segun todo lo que gestiona el WPI. Muestra cuantos tweaks estan realmente aplicados (comprobados en vivo contra el sistema, no contra una lista guardada), cuanto bloatware sigue presente, el espacio libre del disco, el uso de RAM, si la proteccion de restauracion esta activa y la version de winget. No cambia absolutamente nada: es tu punto de partida para decidir que optimizar. Se recalcula cada vez que entras en esta seccion, y desde aqui puedes exportar un diagnostico completo del equipo a un archivo.')) | Out-Null
 
     # --- C1: Apariencia (tema claro/oscuro) ---
     $apCard = New-Object Windows.Controls.Border
@@ -7552,9 +12405,7 @@ function Build-SummaryUI {
         Save-Settings
         $r = Show-WpiMessage(((Tr 'Tema cambiado a {0}. Se aplica al reiniciar la app. Reiniciar ahora?') -f (Get-ThemeLabel $new).ToUpper()), 'Apariencia', 'YesNo', 'Question')
         if ($r -eq 'Yes') {
-            try { Start-Process powershell.exe -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath) } catch {}
-            $script:Skip_Closing_Save = $true
-            $window.Close()
+            Restart-WpiProcess
         }
     })
     $apRow.Children.Add($apBtn) | Out-Null
@@ -7658,7 +12509,7 @@ function Build-SummaryUI {
         }
         try {
             Set-WpiContent -Path $dlg.FileName -Value $sb.ToString()
-            Show-WpiMessage(((Tr 'Diagnostico guardado en: {0}') -f $dlg.FileName), 'WPI Moderno') | Out-Null
+            Show-WpiMessage(((Tr 'Diagnostico guardado en: {0}') -f $dlg.FileName), 'Winzard') | Out-Null
         } catch { $script:StatusText.Text = (Tr 'No se pudo guardar el diagnostico.') }
     })
     $p.Children.Add($bExp) | Out-Null
@@ -7668,12 +12519,7 @@ function Build-SummaryUI {
     $mpHdr.Text = 'PERFIL MAESTRO (apps + tweaks + debloat + update)'
     $mpHdr.FontSize = 13; $mpHdr.FontWeight = 'Bold'; $mpHdr.Foreground = Get-ThemeBrush('#FF00E5FF')
     $mpHdr.Margin = New-Object Windows.Thickness(2,18,0,2)
-    $p.Children.Add($mpHdr) | Out-Null
-    $mpInfo = New-Object Windows.Controls.TextBlock
-    $mpInfo.Text = 'Captura todo tu PC en un solo JSON y replicalo en otro equipo. "Aplicar perfil completo" crea un punto de restauracion y relanza el WPI como administrador en modo desatendido.'
-    $mpInfo.Foreground = Get-ThemeBrush('#FF8A8A95'); $mpInfo.FontSize = 12; $mpInfo.TextWrapping = 'Wrap'
-    $mpInfo.Margin = New-Object Windows.Thickness(2,0,0,4)
-    $p.Children.Add($mpInfo) | Out-Null
+    $p.Children.Add((New-WpiHeaderInfo $mpHdr 'Tu PC entero condensado en un solo archivo: el perfil maestro captura en un JSON las apps instaladas, los tweaks aplicados, el debloat realizado y la configuracion de Windows Update. "Exportar perfil maestro" genera el archivo; "Ver plan del perfil" te ensena EXACTAMENTE que haria antes de tocar nada (transparencia total); y "Aplicar perfil completo" crea primero un punto de restauracion y relanza el WPI como administrador en modo desatendido para replicarlo todo de principio a fin. Es la herramienta definitiva para clonar tu configuracion en otro equipo o recuperarla tras un formateo.')) | Out-Null
 
     $bExpMP = New-Object Windows.Controls.Button
     $bExpMP.Content = 'Exportar perfil maestro'; $bExpMP.HorizontalAlignment = 'Left'
@@ -7693,10 +12539,10 @@ function Build-SummaryUI {
         if (-not $dlg.ShowDialog()) { return }
         $data = $null
         try { $data = Get-Content $dlg.FileName -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
-            Show-WpiMessage('No se pudo leer el perfil (JSON no valido).', 'WPI Moderno') | Out-Null; return
+            Show-WpiMessage('No se pudo leer el perfil (JSON no valido).', 'Winzard') | Out-Null; return
         }
         if ([string]$data.'$schema' -ne 'wpi-master-profile-1.0') {
-            Show-WpiMessage('El archivo no es un perfil maestro valido (falta "$schema": "wpi-master-profile-1.0").', 'WPI Moderno') | Out-Null; return
+            Show-WpiMessage('El archivo no es un perfil maestro valido (falta "$schema": "wpi-master-profile-1.0").', 'Winzard') | Out-Null; return
         }
         $plan = Get-MasterProfilePlanText -Data $data
         [void](Show-PlanDialog -PlanText $plan -AllowApply $false)
@@ -7716,10 +12562,10 @@ function Build-SummaryUI {
         # Validar el esquema ANTES de tocar nada (como Load-TweakProfile)
         $data = $null
         try { $data = Get-Content $f -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
-            Show-WpiMessage('No se pudo leer el perfil (JSON no valido). No se aplica nada.', 'WPI Moderno') | Out-Null; return
+            Show-WpiMessage('No se pudo leer el perfil (JSON no valido). No se aplica nada.', 'Winzard') | Out-Null; return
         }
         if ([string]$data.'$schema' -ne 'wpi-master-profile-1.0') {
-            Show-WpiMessage('El archivo no es un perfil maestro valido (falta "$schema": "wpi-master-profile-1.0"). No se aplica nada.', 'WPI Moderno') | Out-Null; return
+            Show-WpiMessage('El archivo no es un perfil maestro valido (falta "$schema": "wpi-master-profile-1.0"). No se aplica nada.', 'Winzard') | Out-Null; return
         }
         # Ver plan -> confirmar -> aplicar. Si el usuario no pulsa "Aplicar", se sale.
         $plan = Get-MasterProfilePlanText -Data $data
@@ -7730,7 +12576,7 @@ function Build-SummaryUI {
             $script:Skip_Closing_Save = $true
             $window.Close()
         } catch {
-            Show-WpiMessage(((Tr 'No se pudo relanzar como administrador: {0}') -f $_.Exception.Message), 'WPI Moderno') | Out-Null
+            Show-WpiMessage(((Tr 'No se pudo relanzar como administrador: {0}') -f $_.Exception.Message), 'Winzard') | Out-Null
         }
     })
     $p.Children.Add($bAppMP) | Out-Null
@@ -7740,12 +12586,7 @@ function Build-SummaryUI {
     $cmpHdr.Text = 'COMPARATIVA ANTES / DESPUES'
     $cmpHdr.FontSize = 13; $cmpHdr.FontWeight = 'Bold'; $cmpHdr.Foreground = Get-ThemeBrush($Theme.Info)
     $cmpHdr.Margin = New-Object Windows.Thickness(2,18,0,2)
-    $p.Children.Add($cmpHdr) | Out-Null
-    $cmpInfo = New-Object Windows.Controls.TextBlock
-    $cmpInfo.Text = 'Mide el impacto real de tus cambios. Toma una "foto" del sistema (servicios, procesos, apps de inicio, RAM, arranque), aplica tweaks/debloat, y compara para ver el delta. La foto se guarda en wpi_baseline.json junto al WPI.'
-    $cmpInfo.Foreground = Get-ThemeBrush($Theme.Sub); $cmpInfo.FontSize = 12; $cmpInfo.TextWrapping = 'Wrap'
-    $cmpInfo.Margin = New-Object Windows.Thickness(2,0,0,4)
-    $p.Children.Add($cmpInfo) | Out-Null
+    $p.Children.Add((New-WpiHeaderInfo $cmpHdr 'Medidor de impacto real, con datos en vez de sensaciones: "Tomar foto del sistema" guarda una linea base del equipo (servicios activos, procesos en ejecucion, apps de inicio, RAM en uso y datos de arranque) en el archivo wpi_baseline.json, junto al WPI. Aplica despues tus tweaks o tu debloat con total libertad y pulsa "Comparar con la foto": veras el delta exacto entre el antes y el despues, que servicios y procesos desaparecieron, cuanta memoria liberaste y que cambio en el inicio de Windows. Es la prueba objetiva de que la optimizacion sirvio (o de que no toco nada).')) | Out-Null
 
     $bSnap = New-Object Windows.Controls.Button
     $bSnap.Content = 'Tomar foto del sistema'; $bSnap.HorizontalAlignment = 'Left'
@@ -7795,12 +12636,7 @@ function Build-WinUpdateUI {
     $hdr.FontSize = 14; $hdr.FontWeight = 'Bold'
     $hdr.Foreground = Get-ThemeBrush('#FF3F9EFF')
     $hdr.Margin = New-Object Windows.Thickness(2,10,0,2)
-    $p.Children.Add($hdr) | Out-Null
-    $info = New-Object Windows.Controls.TextBlock
-    $info.Text = 'Decide como y cuando se actualiza Windows. Cada accion se aplica al pulsar su boton y queda en el log forense. "Valores por defecto" deshace cualquier cambio de esta lista.'
-    $info.Foreground = Get-ThemeBrush('#FF8A8A95'); $info.FontSize = 12; $info.TextWrapping = 'Wrap'
-    $info.Margin = New-Object Windows.Thickness(2,0,0,8)
-    $p.Children.Add($info) | Out-Null
+    $p.Children.Add((New-WpiHeaderInfo $hdr 'Centro de control de Windows Update: tu decides como y cuando se actualiza el sistema, en lugar de que Windows decida por ti. Puedes pausar, diferir o ajustar el comportamiento de las actualizaciones mediante politicas reales del sistema; cada accion se ejecuta en el momento de pulsar su boton, se verifica y queda anotada en el log forense de la sesion. Nada es permanente ni opaco: el boton "Valores por defecto" revierte cualquier cambio hecho desde esta lista y devuelve Windows Update a su comportamiento original de fabrica. Requiere permisos de administrador.')) | Out-Null
     $linkRow = New-Object Windows.Controls.StackPanel; $linkRow.Orientation = 'Horizontal'
     $linkRow.Margin = New-Object Windows.Thickness(0,0,0,6)
     foreach ($l in $WindowsUpdateLinks) {
@@ -7844,10 +12680,10 @@ function Build-WinUpdateUI {
         $b.Add_Click({
             $act = $this.Tag
             if ($act.Warn) {
-                $r = Show-WpiMessage([string]$act.Warn, 'WPI Moderno', 'YesNo', 'Warning')
+                $r = Show-WpiMessage([string]$act.Warn, 'Winzard', 'YesNo', 'Warning')
                 if ($r -ne 'Yes') { return }
             }
-            Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = [string]$act.Name; Code = [string]$act.Code })
+            Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = (Tr ([string]$act.Name)); Code = [string]$act.Code })
         })
         $sp.Children.Add($b) | Out-Null
         $card.Child = $sp
@@ -7901,11 +12737,19 @@ function Detect-FeatureStates {
     try { $feats = @(Get-WindowsOptionalFeature -Online -ErrorAction SilentlyContinue) } catch {}
     try { $caps  = @(Get-WindowsCapability -Online -ErrorAction SilentlyContinue) } catch {}
     $enabled = 0; $total = 0
+    # Si ambas listas vienen vacias, casi seguro que faltan permisos de administrador:
+    # se dice claramente en vez de fingir "no presente" para todo.
+    $scanFailed = (@($feats).Count -eq 0 -and @($caps).Count -eq 0)
     foreach ($f in $FeaturesCatalog) {
         $lbl = $script:FeatureStatusLabels[[string]$f.Id]
         if (-not $lbl) { continue }
         $total++
         $state = 'no comprobable'; $col = '#FF8A8A95'
+        if ($scanFailed) {
+            $lbl.Text = (Tr 'estado: no comprobable (ejecuta WPI como administrador)')
+            $lbl.Foreground = Get-ThemeBrush('#FFFFD166')
+            continue
+        }
         if ([string]$f.Kind -eq 'feature') {
             $hit = $feats | Where-Object { [string]$_.FeatureName -eq [string]$f.Id } | Select-Object -First 1
             if ($hit) {
@@ -7915,10 +12759,14 @@ function Detect-FeatureStates {
             } else { $state = 'no presente en esta edicion'; $col = '#FF8A8A95' }
         } else {
             $hit = $caps | Where-Object { [string]$_.Name -eq [string]$f.Id } | Select-Object -First 1
-            if ($hit) {
-                if ([string]$hit.State -eq 'Installed') { $state = 'HABILITADO (instalada)'; $col = '#FF5CFF8F'; $enabled++ }
-                else { $state = 'no instalada'; $col = '#FFFFD166' }
-            } else { $state = 'no presente'; $col = '#FF8A8A95' }
+            $capOn = ($hit -and [string]$hit.State -eq 'Installed')
+            # Entradas con app de Store asociada (p.ej. Bloc de notas): el estado real
+            # que percibe el usuario incluye la app moderna, se consulta EN VIVO.
+            $apxOn = $false
+            if ($f.Appx) { try { $apxOn = (@(Get-AppxPackage -Name ([string]$f.Appx) -ErrorAction SilentlyContinue).Count -gt 0) } catch {} }
+            if ($capOn -or $apxOn) { $state = 'HABILITADO (instalada)'; $col = '#FF5CFF8F'; $enabled++ }
+            elseif ($hit -or $f.Appx) { $state = 'no instalada'; $col = '#FFFFD166' }
+            else { $state = 'no presente'; $col = '#FF8A8A95' }
         }
         $lbl.Text = (Tr ('estado: ' + $state))
         $lbl.Foreground = Get-ThemeBrush($col)
@@ -7929,17 +12777,99 @@ function Detect-FeatureStates {
 }
 
 # Construye el comando reversible (Code) para habilitar/deshabilitar una feature
-# o capability. $On = $true habilita/instala; $false deshabilita/quita.
+# o capability, con verificacion REAL contra el sistema: se lee el estado vivo
+# ANTES (para no fingir un exito sobre algo ya hecho o ausente) y se re-lee
+# DESPUES de actuar; si el estado final no es el esperado, se lanza error y el
+# motor lo cuenta como fallo. Las entradas con clave Appx (p.ej. Bloc de notas)
+# actuan ademas sobre la app de Store equivalente, que es la que realmente abre
+# Windows 11 desde el buscador y notepad.exe.
 function Get-FeatureCode {
     param($F, [bool]$On)
     $nm = ([string]$F.Name) -replace "'", ''
+    $id = [string]$F.Id
     if ([string]$F.Kind -eq 'feature') {
-        if ($On) { return ("Enable-WindowsOptionalFeature -Online -FeatureName '{0}' -All -NoRestart -ErrorAction Stop | Out-Null; W ok 'Habilitado: {1}'" -f $F.Id, $nm) }
-        else     { return ("Disable-WindowsOptionalFeature -Online -FeatureName '{0}' -NoRestart -ErrorAction Stop | Out-Null; W ok 'Deshabilitado: {1}'" -f $F.Id, $nm) }
+        if ($On) {
+            $c = @'
+$ft = Get-WindowsOptionalFeature -Online -FeatureName '<ID>' -ErrorAction Stop
+if (-not $ft) { throw (L2 'No existe en esta edicion de Windows: <NM>' 'Not available in this Windows edition: <NM>') }
+if ([string]$ft.State -eq 'Enabled') { W warn (L2 'Ya estaba habilitado (sin cambios): <NM>' 'Already enabled (no changes): <NM>') }
+else {
+    Enable-WindowsOptionalFeature -Online -FeatureName '<ID>' -All -NoRestart -ErrorAction Stop | Out-Null
+    $ft = Get-WindowsOptionalFeature -Online -FeatureName '<ID>' -ErrorAction Stop
+    if (@('Enabled','EnablePending') -notcontains [string]$ft.State) { throw ((L2 'Verificacion fallida: el estado real es "{0}", no Enabled.' 'Verification failed: the real state is "{0}", not Enabled.') -f $ft.State) }
+    W ok (L2 'Habilitado y verificado: <NM>' 'Enabled and verified: <NM>')
+    if ([string]$ft.State -eq 'EnablePending') { W warn (L2 'Falta REINICIAR el equipo para completarlo.' 'A RESTART is required to complete it.') }
+}
+'@
+        } else {
+            $c = @'
+$ft = Get-WindowsOptionalFeature -Online -FeatureName '<ID>' -ErrorAction Stop
+if (-not $ft) { W warn (L2 'No existe en esta edicion de Windows (nada que deshabilitar): <NM>' 'Not available in this Windows edition (nothing to disable): <NM>') }
+elseif (@('Disabled','DisabledWithPayloadRemoved','DisablePending') -contains [string]$ft.State) { W warn (L2 'Ya estaba deshabilitado (sin cambios): <NM>' 'Already disabled (no changes): <NM>') }
+else {
+    Disable-WindowsOptionalFeature -Online -FeatureName '<ID>' -NoRestart -ErrorAction Stop | Out-Null
+    $ft = Get-WindowsOptionalFeature -Online -FeatureName '<ID>' -ErrorAction Stop
+    if (@('Disabled','DisabledWithPayloadRemoved','DisablePending') -notcontains [string]$ft.State) { throw ((L2 'Verificacion fallida: el estado real es "{0}", no Disabled.' 'Verification failed: the real state is "{0}", not Disabled.') -f $ft.State) }
+    W ok (L2 'Deshabilitado y verificado: <NM>' 'Disabled and verified: <NM>')
+    if ([string]$ft.State -eq 'DisablePending') { W warn (L2 'Falta REINICIAR el equipo para completarlo.' 'A RESTART is required to complete it.') }
+}
+'@
+        }
     } else {
-        if ($On) { return ("Add-WindowsCapability -Online -Name '{0}' -ErrorAction Stop | Out-Null; W ok 'Instalado: {1}'" -f $F.Id, $nm) }
-        else     { return ("Remove-WindowsCapability -Online -Name '{0}' -ErrorAction Stop | Out-Null; W ok 'Quitado: {1}'" -f $F.Id, $nm) }
+        if ($On) {
+            $c = @'
+$cap = Get-WindowsCapability -Online -Name '<ID>' -ErrorAction Stop | Select-Object -First 1
+if (-not $cap) { W warn (L2 'La capacidad no existe en esta version de Windows: <NM>' 'The capability does not exist on this Windows version: <NM>') }
+elseif ([string]$cap.State -eq 'Installed') { W warn (L2 'Ya estaba instalado (sin cambios): <NM>' 'Already installed (no changes): <NM>') }
+else {
+    Add-WindowsCapability -Online -Name '<ID>' -ErrorAction Stop | Out-Null
+    $cap = Get-WindowsCapability -Online -Name '<ID>' -ErrorAction Stop | Select-Object -First 1
+    if ([string]$cap.State -ne 'Installed') { throw ((L2 'Verificacion fallida: el estado real es "{0}", no Installed. Si sigue en NotPresent, Microsoft ha retirado esta capacidad de tu version de Windows (p.ej. WordPad ya no existe en Windows 11 24H2+).' 'Verification failed: the real state is "{0}", not Installed. If it stays NotPresent, Microsoft has removed this capability from your Windows version (e.g. WordPad no longer exists on Windows 11 24H2+).') -f $cap.State) }
+    W ok (L2 'Instalado y verificado: <NM>' 'Installed and verified: <NM>')
+}
+'@
+        } else {
+            $c = @'
+$cap = Get-WindowsCapability -Online -Name '<ID>' -ErrorAction Stop | Select-Object -First 1
+if (-not $cap -or [string]$cap.State -ne 'Installed') { W warn (L2 'Ya no estaba instalado (nada que quitar): <NM>' 'Was already not installed (nothing to remove): <NM>') }
+else {
+    Remove-WindowsCapability -Online -Name '<ID>' -ErrorAction Stop | Out-Null
+    $cap = Get-WindowsCapability -Online -Name '<ID>' -ErrorAction Stop | Select-Object -First 1
+    if ($cap -and [string]$cap.State -eq 'Installed') { throw (L2 'Verificacion fallida: sigue instalado.' 'Verification failed: it is still installed.') }
+    W ok (L2 'Quitado y verificado: <NM>' 'Removed and verified: <NM>')
+}
+'@
+        }
     }
+    # Accion extra sobre la app de Store equivalente (la que realmente se abre
+    # en Windows 11). Con verificacion en vivo antes y despues, igual que arriba.
+    if ($F.Appx) {
+        if ($On) {
+            $c += @'
+
+$apx = @(Get-AppxPackage -Name '<APPX>' -ErrorAction SilentlyContinue)
+if ($apx.Count -eq 0) {
+    W info (L2 'Reinstalando la app de Store equivalente (<APPX>)...' 'Reinstalling the equivalent Store app (<APPX>)...')
+    winget install -e --id '<WGID>' --source msstore --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+    if (@(Get-AppxPackage -Name '<APPX>' -ErrorAction SilentlyContinue).Count -gt 0) { W ok (L2 'App de Store reinstalada y verificada.' 'Store app reinstalled and verified.') }
+    else { throw (L2 'No se pudo reinstalar la app de Store (hazlo desde Microsoft Store).' 'Could not reinstall the Store app (do it from Microsoft Store).') }
+} else { W dim (L2 'La app de Store ya estaba instalada: <APPX>' 'The Store app was already installed: <APPX>') }
+'@
+        } else {
+            $c += @'
+
+$apx = @(Get-AppxPackage -AllUsers -Name '<APPX>' -ErrorAction SilentlyContinue)
+if ($apx.Count -eq 0) { $apx = @(Get-AppxPackage -Name '<APPX>' -ErrorAction SilentlyContinue) }
+if ($apx.Count -gt 0) {
+    foreach ($pk in $apx) { Remove-AppxPackage -Package $pk.PackageFullName -AllUsers -ErrorAction Stop }
+    if (@(Get-AppxPackage -AllUsers -Name '<APPX>' -ErrorAction SilentlyContinue).Count -gt 0) { throw (L2 'Verificacion fallida: la app de Store sigue instalada.' 'Verification failed: the Store app is still installed.') }
+    W ok (L2 'App de Store quitada y verificada: <APPX>' 'Store app removed and verified: <APPX>')
+} else { W dim (L2 'La app de Store no estaba instalada: <APPX>' 'The Store app was not installed: <APPX>') }
+'@
+        }
+        $c = $c.Replace('<APPX>', [string]$F.Appx).Replace('<WGID>', [string]$F.WingetId)
+    }
+    return $c.Replace('<ID>', $id).Replace('<NM>', $nm)
 }
 
 # ============================================================
@@ -8172,6 +13102,11 @@ function New-IsoAutounattendXml {
     $locale = [string]$Cfg.Locale; if (-not $locale) { $locale = 'es-ES' }
     $acct   = [string]$Cfg.AccountName; if (-not $acct) { $acct = 'Usuario' }
     $idx    = [int]$Cfg.EditionIndex; if ($idx -lt 1) { $idx = 1 }
+    # BUG NUEVO (VT2): con SingleEdition el motor EXPORTA la edicion elegida a un WIM
+    # nuevo, que queda SIEMPRE re-indexado a 1; dejar aqui el indice original (p.ej. 6)
+    # funcionaba de chiripa (el setup de 25H2 instala la unica imagen si el INDEX no
+    # existe), pero es fragil entre versiones. El autounattend debe apuntar al 1 real.
+    if ($Cfg.SingleEdition -eq $true) { $idx = 1 }
     $pass = ''
     if ($Cfg.AccountPassword) { $pass = [string]$Cfg.AccountPassword }
     $passEsc = $pass -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;' -replace "'", '&apos;'
@@ -8220,6 +13155,19 @@ function New-IsoAutounattendXml {
 "@
     }
 
+    # ProductKey: sin este bloque, el setup de Windows 11 24H2/25H2 SE DETIENE en la pagina
+    # "Clave de producto". Con una clave GENERICA (KMS client setup key) + WillShowUI=Never el
+    # setup pasa esa pagina SIN instalar licencia (no activa ni bloquea; se puede activar despues).
+    # La edicion real la fija el indice del install.wim. Si no hay clave en Cfg, se salta la UI sin clave.
+    $prodKeyXml = ''
+    $pk = [string]$Cfg.ProductKey
+    if ($pk) {
+        $pkEsc = $pk -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;'
+        $prodKeyXml = "<ProductKey><Key>$pkEsc</Key><WillShowUI>Never</WillShowUI></ProductKey>"
+    } else {
+        $prodKeyXml = "<ProductKey><WillShowUI>Never</WillShowUI></ProductKey>"
+    }
+
     $firstLogon = ''
     $wpiArgs = ''
     if ($Cfg.InstallApps) { $wpiArgs += ' -Preset "C:\WPI\preset_apps.txt"' }
@@ -8261,10 +13209,19 @@ function New-IsoAutounattendXml {
         <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
 $labConfig
 $diskAndImage
-            <UserData><AcceptEula>true</AcceptEula></UserData>
+            <UserData>$prodKeyXml<AcceptEula>true</AcceptEula></UserData>
         </component>
     </settings>
     <settings pass="oobeSystem">
+        <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+            <!-- Pendiente 5.1 (VT2): sin este componente, el OOBE moderno de 25H2 muestra
+                 region / teclado / "segunda distribucion" aunque windowsPE lleve locale.
+                 Con los cuatro valores fijados, esas paginas se omiten (hands-off total). -->
+            <InputLocale>$locale</InputLocale>
+            <SystemLocale>$locale</SystemLocale>
+            <UILanguage>$locale</UILanguage>
+            <UserLocale>$locale</UserLocale>
+        </component>
         <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
             <OOBE>
                 <HideEULAPage>true</HideEULAPage>
@@ -8352,7 +13309,15 @@ New-Item -ItemType Directory -Path $isoDir -Force | Out-Null
 Log 'Montando la ISO origen y copiando su contenido...'
 $di = Mount-DiskImage -ImagePath $cfg.SourceIso -PassThru
 Start-Sleep -Seconds 2
-$vol = ($di | Get-Volume).DriveLetter
+# F6-B4 (VT2): un montaje puede exponer VARIOS volumenes (ISOs multiparticion);
+# se elige el que contenga sources\install.wim|esd, no el primero que salga.
+$vols = @($di | Get-Volume | Where-Object DriveLetter)
+$vol = $null
+foreach ($v in $vols) {
+    $dl = [string]$v.DriveLetter
+    if ((Test-Path ($dl + ':\sources\install.wim')) -or (Test-Path ($dl + ':\sources\install.esd'))) { $vol = $dl; break }
+}
+if (-not $vol -and @($vols).Count -gt 0) { $vol = [string]$vols[0].DriveLetter }
 if (-not $vol) { Die 'No se pudo montar la ISO origen.' }
 $src = ($vol + ':\')
 robocopy $src $isoDir /e /np /r:1 /w:1 | Out-Null
@@ -8606,6 +13571,50 @@ foreach ($ei in $indices) {
     Dismount-WindowsImage -Path $mount -Save | Out-Null
 }
 
+# --- 8b) Inyectar drivers TAMBIEN en boot.wim (instalador de Windows / WinPE) ---
+# CRITICO: los drivers de install.wim solo sirven una vez Windows ya arranca.
+# El PROPIO instalador (Windows Setup, boot.wim indice 2) corre en su propio
+# WinPE; si ese entorno no tiene los controladores de almacenamiento/red, puede
+# NO ver el disco (no deja instalar) o quedarse sin red en hardware real. Por eso
+# WinUtil (referencia probada) inyecta los drivers en boot.wim ademas de en
+# install.wim. Se hace UNA sola vez (boot.wim es comun a todas las ediciones),
+# tras personalizar las ediciones y antes de reensamblar la ISO.
+if ($cfg.InjectDrivers -and $cfg.DriversDir -and (Test-Path $cfg.DriversDir)) {
+    $bootWim = Join-Path $isoDir 'sources\boot.wim'
+    if (Test-Path $bootWim) {
+        Prog 90 'Inyectando drivers en boot.wim (instalador de Windows)...'
+        Log ('Inyectando drivers en boot.wim desde ' + $cfg.DriversDir + ' ...')
+        try { attrib -r "$bootWim" 2>$null } catch {}
+        try { Set-ItemProperty -Path $bootWim -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue } catch {}
+        $mountB = Join-Path $work 'mountboot'
+        if (-not (Test-Path $mountB)) { New-Item -ItemType Directory -Path $mountB -Force | Out-Null }
+        # boot.wim suele tener 2 indices: 1 = WinPE, 2 = Windows Setup.
+        # El indice 2 (Setup) es el que necesita ver disco/red durante la instalacion.
+        $bootImgs = @(Get-WindowsImage -ImagePath $bootWim -ErrorAction SilentlyContinue)
+        $bootIdx  = @($bootImgs | ForEach-Object { [int]$_.ImageIndex })
+        $targets  = @($bootIdx | Where-Object { $_ -ge 2 })       # Setup (indice 2+)
+        if ($targets.Count -eq 0) { $targets = @($bootIdx) }       # fallback: lo que haya
+        if ($targets.Count -eq 0) { $targets = @(2) }              # ultimo recurso
+        foreach ($bi in $targets) {
+            try {
+                Get-WindowsImage -Mounted -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $mountB } | ForEach-Object { Dismount-WindowsImage -Path $mountB -Discard -ErrorAction SilentlyContinue | Out-Null }
+                Log ('   montando boot.wim indice ' + $bi + ' (tarda)...')
+                Mount-WindowsImage -ImagePath $bootWim -Index $bi -Path $mountB | Out-Null
+                Add-WindowsDriver -Path $mountB -Driver $cfg.DriversDir -Recurse -ForceUnsigned -ErrorAction Stop | Out-Null
+                $injB = @(Get-WindowsDriver -Path $mountB -ErrorAction SilentlyContinue | Where-Object { -not $_.Inbox })
+                Log ('   [OK] boot.wim indice ' + $bi + ': ' + $injB.Count + ' paquetes de terceros inyectados.')
+                Dismount-WindowsImage -Path $mountB -Save | Out-Null
+                Log ('   boot.wim indice ' + $bi + ' guardado.')
+            } catch {
+                Log ('   aviso: fallo la inyeccion en boot.wim indice ' + $bi + ': ' + $_.Exception.Message)
+                try { Dismount-WindowsImage -Path $mountB -Discard -ErrorAction SilentlyContinue | Out-Null } catch {}
+            }
+        }
+    } else {
+        Log 'Aviso: no se encontro sources\boot.wim; se omite su inyeccion (el instalador podria no ver hardware nuevo).'
+    }
+}
+
 # --- 9) Copiar autounattend.xml a la raiz de la ISO ---
 $auf = Join-Path $PSScriptRoot 'autounattend.xml'
 if (Test-Path $auf) { Copy-Item $auf (Join-Path $isoDir 'autounattend.xml') -Force; Log 'autounattend.xml incluido.' }
@@ -8629,7 +13638,9 @@ try {
         'configuracion. Si borras C:\WPI, siempre puedes volver aqui (al USB) y abrir',
         'esta misma carpeta para seguir usando el WPI.'
     ) -join "`r`n"
-    Set-WpiContent -Path (Join-Path $rootWpi 'LEEME.txt') -Value $leeme
+    # BUG #9 FIX: el motor Crear_ISO_WPI.ps1 corre STANDALONE y NO tiene Set-WpiContent (es del WPI).
+    # Se usa Set-Content nativo para que la copia visible del WPI en la raiz no falle.
+    Set-Content -Path (Join-Path $rootWpi 'LEEME.txt') -Value $leeme -Encoding UTF8
     Log 'Carpeta WPI visible anadida a la raiz de la ISO (acceso facil desde el USB).'
 } catch { Log ('Aviso: no se pudo crear la carpeta WPI visible en la raiz: ' + $_.Exception.Message) }
 
@@ -8673,18 +13684,34 @@ function Get-IniciarBatText {
 @echo off
 chcp 65001 >nul
 setlocal enableextensions
-title WPI Moderno - Lanzador
+title Winzard - Lanzador
 set "WPIDIR=%~dp0"
 set "PS1=%WPIDIR%WPI_Moderno.ps1"
-if not exist "%PS1%" ( echo No se encuentra WPI_Moderno.ps1 junto a este .bat. & pause & exit /b 1 )
+if not exist "%PS1%" (
+    echo [X] No se encuentra WPI_Moderno.ps1 junto a este .bat.
+    echo     WPI_Moderno.ps1 was not found next to this .bat file.
+    pause & exit /b 1
+)
+where powershell.exe >nul 2>&1
+if errorlevel 1 (
+    echo [X] PowerShell no esta disponible en este sistema. WPI lo necesita.
+    echo     PowerShell is not available on this system. WPI requires it.
+    pause & exit /b 1
+)
 net session >nul 2>&1
 if errorlevel 1 (
+    echo [i] Pidiendo permisos de administrador... / Requesting administrator rights...
     if "%~1"=="" ( powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs" ) else ( powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs" )
     exit /b
 )
 powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File "%PS1%" %*
 set "EC=%errorlevel%"
-if not "%EC%"=="0" ( echo. & echo WPI termino con codigo %EC%. & pause )
+if not "%EC%"=="0" (
+    echo.
+    echo [!] WPI termino con codigo %EC%. / WPI finished with exit code %EC%.
+    echo     Revisa el mensaje de arriba o la carpeta de logs junto al script.
+    pause
+)
 endlocal
 '@
 }
@@ -8910,7 +13937,9 @@ function New-IsoBuildKit {
         if ($suiteInfo.FolderOk -and $suiteInfo.BatOk) {
             # Limpiar el destino si ya existe, para evitar mezclas entre idiomas
             if (Test-Path $suiteDst) { Remove-Item $suiteDst -Recurse -Force | Out-Null }
-            robocopy $suiteSrc $suiteDst /e /np /r:1 /w:1 | Out-Null
+            # F6-B2 (VT2): la suite entra al kit SIN residuos de desarrollo (Logs de
+            # ejecuciones, build, src, .git): inflaban la ISO y no pintan nada alli.
+            robocopy $suiteSrc $suiteDst /e /np /r:1 /w:1 /xd Logs logs build src .git | Out-Null
         } else {
             Write-Host ('*** AVISO: falta la suite de reparacion o su lanzador principal: ' + $suiteInfo.FolderName + '\' + $suiteInfo.BatName) -ForegroundColor Yellow
         }
@@ -8934,7 +13963,7 @@ function Add-FindRow {
     $b.BorderThickness = New-Object Windows.Thickness(1); $b.CornerRadius = New-Object Windows.CornerRadius(8)
     $b.Margin = New-Object Windows.Thickness(0,4,0,0); $b.Padding = New-Object Windows.Thickness(10,6,10,6)
     $dock = New-Object Windows.Controls.DockPanel; $dock.LastChildFill = $true
-    $btn = New-Object Windows.Controls.Button; $btn.Content = 'Ver ->'; $btn.Padding = New-Object Windows.Thickness(10,3,10,3)
+    $btn = New-Object Windows.Controls.Button; $btn.Content = (Tr 'Ver ->'); $btn.Padding = New-Object Windows.Thickness(10,3,10,3)
     [Windows.Controls.DockPanel]::SetDock($btn, 'Right')
     $btn.Background = Get-ThemeBrush('#FF243042'); $btn.BorderBrush = Get-ThemeBrush($Accent)
     $btn.Tag = [pscustomobject]@{ Panel = $PanelKey; Query = $Query }
@@ -8942,7 +13971,36 @@ function Add-FindRow {
         $t = $this.Tag
         $i = $script:SideMap.IndexOf([string]$t.Panel)
         if ($i -ge 0) { $script:SideList.SelectedIndex = $i }
-        if ($t.Query) { $sb = $window.FindName('SearchBox'); if ($sb) { $sb.Text = [string]$t.Query } }
+        if (-not $t.Query) { return }
+        $qv = [string]$t.Query
+        $panel = [string]$t.Panel
+        # F4-B1 (VT2): antes SIEMPRE se escribia en el buscador superior; para paneles
+        # no-apps eso re-enruta a la busqueda global (Invoke-TopSearch) y REBOTABA al
+        # panel de resultados sin dejarte ver el item. Ahora cada destino usa su
+        # buscador LOCAL y el primer resultado se trae a la vista (BringIntoView).
+        $appsView = ($panel -eq '@ALL') -or (-not $panel.StartsWith('@'))
+        if ($appsView) {
+            $sb = $window.FindName('SearchBox'); if ($sb) { $sb.Text = $qv }
+            [void]$window.Dispatcher.BeginInvoke([Windows.Threading.DispatcherPriority]::Background, [action]{
+                foreach ($entry in $script:Cards) {
+                    if ($entry.Card.Visibility -ne 'Visible') { continue }
+                    foreach ($cb in $entry.Checks) { if ($cb.Visibility -eq 'Visible') { try { $cb.BringIntoView() } catch {}; return } }
+                }
+            })
+        } elseif ($panel -eq '@TWEAKS' -and $script:TwSearchBox) {
+            $script:TwSearchBox.Text = $qv
+            [void]$window.Dispatcher.BeginInvoke([Windows.Threading.DispatcherPriority]::Background, [action]{
+                foreach ($cat in $script:TweakSearchCats) {
+                    foreach ($c in $cat.Cards) { if ($c.El.Visibility -eq 'Visible') { try { $c.El.BringIntoView() } catch {}; return } }
+                }
+            })
+        } elseif ($panel -eq '@DEBLOAT' -and $script:DbSearchBox) {
+            $script:DbSearchBox.Text = $qv
+            [void]$window.Dispatcher.BeginInvoke([Windows.Threading.DispatcherPriority]::Background, [action]{
+                foreach ($it in $script:DbSearchItems) { if ($it.El.Visibility -eq 'Visible') { try { $it.El.BringIntoView() } catch {}; return } }
+            })
+        }
+        # Resto de paneles (Caracteristicas, etc.): navegar basta; no tienen filtro local.
     })
     $dock.Children.Add($btn) | Out-Null
     $tb = New-Object Windows.Controls.TextBlock; $tb.Text = $Label; $tb.Foreground = Get-ThemeBrush($Theme.Text)
@@ -8965,7 +14023,7 @@ function Do-FindAll {
     $total = 0
     $isEn = ($script:Lang -eq 'en')
     # Apps
-    $apps = @($catalog | Where-Object { ([string]$_.Name).ToLower().Contains($ql) -or ([string]$_.Id).ToLower().Contains($ql) })
+    $apps = @($catalog | Where-Object { ([string]$_.Name).ToLower().Contains($ql) -or ([string]$_.Id).ToLower().Contains($ql) -or ((Get-AppDesc ([string]$_.Id)).ToLower().Contains($ql)) })
     if ($apps.Count -gt 0) {
         $hdr = New-Object Windows.Controls.TextBlock; $hdr.Text = ($(if ($isEn) { 'PROGRAMS  ({0})' } else { 'PROGRAMAS  ({0})' }) -f $apps.Count); $hdr.FontWeight='Bold'; $hdr.Foreground = Get-ThemeBrush($Theme.Install); $hdr.Margin = New-Object Windows.Thickness(0,10,0,2); $rp.Children.Add($hdr) | Out-Null
         foreach ($a in ($apps | Select-Object -First 40)) { Add-FindRow $rp (('{0}   [{1}]  -  {2}' -f $a.Name, $a.Cat, $a.Id)) '@ALL' ([string]$a.Name) $Theme.Install; $total++ }
@@ -9028,12 +14086,54 @@ function Build-QuickStartUI {
     $p = $script:QuickStartList
     $p.Children.Clear()
     $head = New-IsoCard $p 'BIENVENIDO - MODO FACIL (en 2 clics)' $Theme.Maintain 'Sigue los pasos en orden. Cada boton te lleva a su seccion; alli eliges y confirmas. La barra de la izquierda es el "modo experto" con todo el control: usa lo que necesites.'
+    # Area de manuales (VT2-4, pedido del usuario): ya NO se abre la carpeta — cada
+    # manual tiene su boton pequeno premium y se LEE dentro de Winzard en una ventana
+    # premium (Show-WpiManualViewer), sin salir de la app. El "Manual completo" va
+    # destacado; el acceso a la carpeta queda dentro del propio visor.
+    $manIntro = New-Object Windows.Controls.TextBlock
+    $manIntro.Text = (Tr 'Manuales de Winzard: pulsa uno y leelo aqui mismo, sin salir de la app.')
+    $manIntro.FontSize = 12; $manIntro.FontWeight = 'SemiBold'; $manIntro.Foreground = Get-ThemeBrush($Theme.Maintain)
+    $manIntro.Margin = New-Object Windows.Thickness(0,10,0,4)
+    $head.Children.Add($manIntro) | Out-Null
+    $manWrap = New-Object Windows.Controls.WrapPanel; $manWrap.Margin = New-Object Windows.Thickness(0,0,0,2)
+    $langM = $(if ($script:Lang -eq 'en') { 'en' } else { 'es' })
+    $rootW = Split-Path $Config.SettingsFile -Parent
+    $dirM = Join-Path $rootW (Join-Path 'Manuales' $langM)
+    if (-not (Test-Path $dirM)) { $dirM = Join-Path $rootW 'Manuales' }
+    $mds = @()
+    try { $mds = @(Get-ChildItem -LiteralPath $dirM -Filter '*.md' -ErrorAction SilentlyContinue | Sort-Object Name) } catch {}
+    foreach ($mdF in $mds) {
+        $num = ''; $nom = $mdF.BaseName
+        if ($nom -match '^(\d+)_(.+)$') { $num = $Matches[1]; $nom = $Matches[2] }
+        $nom = $nom -replace '_', ' '
+        $esCompleto = ($num -eq '00')
+        $bM = New-Object Windows.Controls.Button
+        $bM.Content = $(if ($esCompleto) { (Tr 'Manual completo') } else { $num + [char]0x00B7 + ' ' + $nom })
+        $bM.FontSize = 11; $bM.Padding = New-Object Windows.Thickness(9,3,9,3); $bM.Margin = New-Object Windows.Thickness(0,3,6,3)
+        $bM.Cursor = [Windows.Input.Cursors]::Hand
+        if ($esCompleto) {
+            $bM.FontWeight = 'Bold'
+            $bM.Background = Get-ThemeBrush($Theme.Maintain); $bM.BorderBrush = Get-ThemeBrush($Theme.Maintain); $bM.Foreground = Get-ThemeBrush('#FF08111C')
+        } else {
+            $bM.Background = Get-ThemeBrush('#FF243042'); $bM.BorderBrush = Get-ThemeBrush('#FF3C5876'); $bM.Foreground = Get-ThemeBrush('#FFE6E6EE')
+        }
+        $bM.ToolTip = (Tr 'Se abre en una ventana de lectura premium, dentro de Winzard.')
+        $bM.Tag = $mdF.FullName
+        $bM.Add_Click({ Show-WpiManualViewer -Path ([string]$this.Tag) -Accent $Theme.Maintain })
+        $manWrap.Children.Add($bM) | Out-Null
+    }
+    if (@($mds).Count -eq 0) {
+        $sinM = New-Object Windows.Controls.TextBlock; $sinM.Text = (Tr 'No se encontro la carpeta de manuales junto al WPI.'); $sinM.FontSize = 11.5; $sinM.Foreground = Get-ThemeBrush('#FFB8C6D8')
+        $manWrap.Children.Add($sinM) | Out-Null
+    }
+    $head.Children.Add($manWrap) | Out-Null
     Add-QuickCard $p '1' 'Instala tus programas' 'Elige entre 360+ apps (navegadores, multimedia, desarrollo, juegos...) y pulsa INSTALAR. Marca varias a la vez.' '@ALL' 'Ir a Programas ->' $Theme.Install
     Add-QuickCard $p '2' 'Optimiza Windows (Tweaks)' 'Ajustes de privacidad y rendimiento, reversibles. Dentro tienes "Aplicar recomendado para MI equipo" que marca lo seguro segun tu PC.' '@TWEAKS' 'Ir a Tweaks ->' $Theme.Optimize
-    Add-QuickCard $p '3' 'Quita el bloatware' 'Elimina apps preinstaladas que no usas (Xbox, noticias, etc.). Son reinstalables desde la Store.' '@DEBLOAT' 'Ir a Limpiar ->' $Theme.Clean
-    Add-QuickCard $p '4' 'Repara Windows' 'Suite de reparacion (SFC, DISM, red, Windows Update...) y herramientas, todo en uno.' '@REPAIR' 'Ir a Reparacion ->' $Theme.Maintain
-    Add-QuickCard $p '5' 'Crea tu ISO a medida' 'Asistente paso a paso para una ISO con tus apps, tweaks, debloat y drivers ya integrados.' '@CREATEISO' 'Ir a Crear ISO ->' $Theme.Iso
-    Add-QuickCard $p '6' 'Mira el estado de tu equipo' 'Resumen del sistema, foto antes/despues y diagnostico exportable.' '@SUMMARY' 'Ir a Resumen ->' $Theme.Info
+    Add-QuickCard $p '3' 'Prepara tu PC para jugar (Gaming)' 'Chequeo previo honesto, Modo Juego por sesion 100% reversible, radar de overlays y medicion real. Sin promesas de FPS.' '@GAMING' 'Ir a Gaming ->' $Theme.Gaming
+    Add-QuickCard $p '4' 'Quita el bloatware' 'Elimina apps preinstaladas que no usas (Xbox, noticias, etc.). Son reinstalables desde la Store.' '@DEBLOAT' 'Ir a Limpiar ->' $Theme.Clean
+    Add-QuickCard $p '5' 'Repara Windows' 'Suite de reparacion (SFC, DISM, red, Windows Update...) y herramientas, todo en uno.' '@REPAIR' 'Ir a Reparacion ->' $Theme.Maintain
+    Add-QuickCard $p '6' 'Crea tu ISO a medida' 'Asistente paso a paso para una ISO con tus apps, tweaks, debloat y drivers ya integrados.' '@CREATEISO' 'Ir a Crear ISO ->' $Theme.Iso
+    Add-QuickCard $p '7' 'Mira el estado de tu equipo' 'Resumen del sistema, foto antes/despues y diagnostico exportable.' '@SUMMARY' 'Ir a Resumen ->' $Theme.Info
 }
 
 # Panel @LOGVIEWER: visor de los logs forenses del WPI.
@@ -9110,14 +14210,17 @@ function New-IsoCard {
     return $sp
 }
 function Add-IsoTextRow {
-    param($Parent, [string]$Label, [string]$Default, [string]$BrowseMode = '', [string]$Filter = '')
+    param($Parent, [string]$Label, [string]$Default, [string]$BrowseMode = '', [string]$Filter = '', [string]$Tip = '')
     $row = New-Object Windows.Controls.DockPanel; $row.Margin = New-Object Windows.Thickness(0,6,0,0); $row.LastChildFill = $true
     $lb = New-Object Windows.Controls.TextBlock; $lb.Text = $Label; $lb.Width = 150; $lb.Foreground = Get-ThemeBrush($Theme.Text); $lb.VerticalAlignment = 'Center'
+    if ($Tip) { $lb.ToolTip = (Tr $Tip) }
     [Windows.Controls.DockPanel]::SetDock($lb, 'Left'); $row.Children.Add($lb) | Out-Null
     $tb = New-Object Windows.Controls.TextBox; $tb.Text = $Default; $tb.Margin = New-Object Windows.Thickness(6,0,0,0); $tb.Padding = New-Object Windows.Thickness(5,3,5,3)
     $tb.Background = Get-ThemeBrush('#FF0F0F17'); $tb.Foreground = Get-ThemeBrush($Theme.Text); $tb.BorderBrush = Get-ThemeBrush($Theme.CardBorder)
+    if ($Tip) { $tb.ToolTip = (Tr $Tip) }
     if ($BrowseMode) {
         $btn = New-Object Windows.Controls.Button; $btn.Content = 'Elegir...'; $btn.Margin = New-Object Windows.Thickness(6,0,0,0); $btn.Padding = New-Object Windows.Thickness(10,3,10,3)
+        if ($Tip) { $btn.ToolTip = (Tr $Tip) }
         [Windows.Controls.DockPanel]::SetDock($btn, 'Right')
         $btn.Tag = [pscustomobject]@{ Box = $tb; Mode = $BrowseMode; Filter = $Filter }
         $btn.Add_Click({
@@ -9138,10 +14241,11 @@ function Add-IsoTextRow {
     return $tb
 }
 function Add-IsoCheck {
-    param($Parent, [string]$Text, [bool]$Checked = $false, [string]$Tint = '')
+    param($Parent, [string]$Text, [bool]$Checked = $false, [string]$Tint = '', [string]$Tip = '')
     $cb = New-Object Windows.Controls.CheckBox; $cb.Content = $Text; $cb.IsChecked = $Checked
     $cb.Margin = New-Object Windows.Thickness(0,6,0,0)
     if ($Tint) { $cb.Foreground = Get-ThemeBrush($Tint) } else { $cb.Foreground = Get-ThemeBrush($Theme.Text) }
+    if ($Tip) { $cb.ToolTip = (Tr $Tip) }
     $Parent.Children.Add($cb) | Out-Null
     return $cb
 }
@@ -9162,7 +14266,13 @@ function Get-IsoEditions {
         $di = Mount-DiskImage -ImagePath $IsoPath -PassThru -ErrorAction Stop
         Start-Sleep -Milliseconds 900
         $mounted = $true
-        $vol = ($di | Get-Volume).DriveLetter
+        # F6-B4 (VT2): elegir el volumen con sources\ (una ISO puede montar varios).
+        $vol = $null
+        foreach ($v in @($di | Get-Volume | Where-Object DriveLetter)) {
+            $dl = [string]$v.DriveLetter
+            if ((Test-Path ($dl + ':\sources\install.wim')) -or (Test-Path ($dl + ':\sources\install.esd'))) { $vol = $dl; break }
+            if (-not $vol) { $vol = $dl }
+        }
         if ($vol) {
             $img = $null
             $wim = ($vol + ':\sources\install.wim'); $esd = ($vol + ':\sources\install.esd')
@@ -9232,6 +14342,20 @@ function Init-IsoWizard {
         AccountName = 'Usuario'
         AccountPassword = ''
     }
+    # F6-B6 (VT2): construir una ISO necesita ~20+ GB de trabajo. Si el disco del
+    # WorkDir por defecto va justo, se propone el disco fijo con mas espacio libre
+    # (el usuario lo VE en "Origen y salida" y puede cambiarlo).
+    try {
+        $wdRoot = [IO.Path]::GetPathRoot($script:Wiz.WorkDir)
+        $wdFree = (Get-PSDrive ($wdRoot.Substring(0, 1)) -ErrorAction Stop).Free
+        if ($wdFree -lt 20GB) {
+            $best = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction Stop | Sort-Object FreeSpace -Descending | Select-Object -First 1
+            if ($best -and $best.FreeSpace -gt $wdFree -and ([string]$best.DeviceID + '\') -ne $wdRoot) {
+                $script:Wiz.OutDir = Join-Path ([string]$best.DeviceID + '\') 'WPI_ISO'
+                $script:Wiz.WorkDir = Join-Path $script:Wiz.OutDir '_work'
+            }
+        }
+    } catch {}
 }
 
 # Punto de entrada del panel: inicializa (si hace falta) y dibuja el paso actual.
@@ -9242,19 +14366,30 @@ function Build-CreateIsoUI {
 
 # Crea un WrapPanel horizontal de checkboxes; devuelve la lista de checkboxes.
 function Add-IsoCheckGrid {
-    param($Parent, $Items, [string]$LabelKey, [string]$TagKey, $SelectedSet, [string]$TipKey = '')
+    param($Parent, $Items, [string]$LabelKey, [string]$TagKey, $SelectedSet, [string]$TipKey = '', [string]$RiskKey = '')
     $wrap = New-Object Windows.Controls.WrapPanel
     $wrap.Margin = New-Object Windows.Thickness(0,6,0,0)
     $checks = @()
     foreach ($it in $Items) {
         $cb = New-Object Windows.Controls.CheckBox
-        $cb.Content = [string]$it.$LabelKey
+        # Contenido con TextBlock que ENVUELVE. IMPORTANTE: la plantilla del
+        # CheckBox mete el contenido en un StackPanel horizontal (ancho infinito),
+        # por eso el texto no envolvia y se cortaba. La solucion fiable es fijar un
+        # MaxWidth en el propio TextBlock: asi envuelve a 2 lineas los nombres
+        # largos y los cortos se quedan en una linea. Nada de recortes.
+        $tb = New-Object Windows.Controls.TextBlock
+        $tb.Text = [string]$it.$LabelKey
+        $tb.TextWrapping = 'Wrap'; $tb.FontSize = 13; $tb.MaxWidth = 320; $tb.VerticalAlignment = 'Center'
+        # Coloreado premium: los tweaks "Avanzado" en ambar (como en la pestana Tweaks).
+        if ($RiskKey -and ([string]$it.$RiskKey -eq 'Avanzado')) { $tb.Foreground = Get-ThemeBrush('#FFFFD166') } else { $tb.Foreground = Get-ThemeBrush($Theme.Text) }
+        $cb.Content = $tb
         $cb.Tag = [string]$it.$TagKey
-        $cb.Width = 268
-        $cb.Margin = New-Object Windows.Thickness(0,4,10,0)
-        $cb.Foreground = Get-ThemeBrush($Theme.Text)
-        if ($TipKey -and $it.$TipKey) { $cb.ToolTip = [string]$it.$TipKey }
+        $cb.Width = 370; $cb.MinHeight = 26
+        $cb.Margin = New-Object Windows.Thickness(0,4,14,0)
+        $cb.VerticalContentAlignment = 'Center'
+        if ($TipKey -and $it.$TipKey) { $cb.ToolTip = (Tr ([string]$it.$TipKey)) }
         $cb.IsChecked = ($SelectedSet -contains [string]$it.$TagKey)
+        Set-WpiToggleStyle $cb | Out-Null
         $wrap.Children.Add($cb) | Out-Null
         $checks += $cb
     }
@@ -9275,9 +14410,11 @@ function Build-WizReq {
     $c.Children.Add($script:IsoPrereqText) | Out-Null
     $r = New-Object Windows.Controls.StackPanel; $r.Orientation = 'Horizontal'; $r.Margin = New-Object Windows.Thickness(0,10,0,0)
     $bChk = New-Object Windows.Controls.Button; $bChk.Content = 'Comprobar'; $bChk.Padding = New-Object Windows.Thickness(10,4,10,4); $bChk.Margin = New-Object Windows.Thickness(0,0,8,0)
+    $bChk.ToolTip = (Tr 'Vuelve a revisar si tienes ADK, DISM, permisos de admin y espacio libre suficientes.')
     $bChk.Add_Click({ Update-IsoPrereqText })
     $r.Children.Add($bChk) | Out-Null
     $bAdk = New-Object Windows.Controls.Button; $bAdk.Content = 'Instalar Windows ADK'; $bAdk.Padding = New-Object Windows.Thickness(10,4,10,4); $bAdk.Margin = New-Object Windows.Thickness(0,0,8,0)
+    $bAdk.ToolTip = (Tr 'Descarga e instala Windows ADK (aporta oscdimg, necesario para ensamblar la ISO).')
     $bAdk.Background = Get-ThemeBrush('#FF1F3A2E'); $bAdk.BorderBrush = Get-ThemeBrush('#FF3E6B54')
     $bAdk.Add_Click({
         $en = ($script:Lang -eq 'en')
@@ -9371,17 +14508,19 @@ function Build-WizSource {
     $b10.Add_Click({ try { Start-Process 'https://www.microsoft.com/software-download/windows10' } catch {} })
     $dlrow.Children.Add($b10) | Out-Null
     $c.Children.Add($dlrow) | Out-Null
-    $script:WizCtl.Src  = Add-IsoTextRow $c 'ISO origen' $script:Wiz.SrcIso 'file' 'Imagenes ISO (*.iso)|*.iso'
-    $script:WizCtl.Out  = Add-IsoTextRow $c 'Carpeta de salida' $script:Wiz.OutDir 'folder'
-    $script:WizCtl.Name = Add-IsoTextRow $c 'Nombre ISO final' $script:Wiz.IsoName
-    $script:WizCtl.Work = Add-IsoTextRow $c 'Carpeta de trabajo' $script:Wiz.WorkDir 'folder'
+    $script:WizCtl.Src  = Add-IsoTextRow $c 'ISO origen' $script:Wiz.SrcIso 'file' 'Imagenes ISO (*.iso)|*.iso' 'Busca y carga el .iso original de Windows que vas a personalizar (no se modifica el original).'
+    $script:WizCtl.Out  = Add-IsoTextRow $c 'Carpeta de salida' $script:Wiz.OutDir 'folder' '' 'Donde se guardara la ISO final ya creada. Necesita varios GB libres.'
+    $script:WizCtl.Name = Add-IsoTextRow $c 'Nombre ISO final' $script:Wiz.IsoName '' '' 'Como se llamara el archivo .iso resultante (ej: WPI_Custom.iso).'
+    $script:WizCtl.Work = Add-IsoTextRow $c 'Carpeta de trabajo' $script:Wiz.WorkDir 'folder' '' 'Carpeta temporal donde se monta y arma la imagen. Usa un disco con espacio; se puede borrar despues.'
     # --- Selector de edicion (detecta las ediciones reales de la ISO) ---
     $edLbl = New-Object Windows.Controls.TextBlock; $edLbl.Text = (Tr 'En que edicion aplicar la configuracion'); $edLbl.Foreground = Get-ThemeBrush($Theme.Text); $edLbl.FontSize = 12; $edLbl.Margin = New-Object Windows.Thickness(0,8,0,2)
     $c.Children.Add($edLbl) | Out-Null
     $edRow = New-Object Windows.Controls.DockPanel; $edRow.LastChildFill = $true
     $bDet = New-Object Windows.Controls.Button; $bDet.Content = (Tr 'Detectar ediciones'); [Windows.Controls.DockPanel]::SetDock($bDet, 'Right'); $bDet.Margin = New-Object Windows.Thickness(8,0,0,0); $bDet.Padding = New-Object Windows.Thickness(10,4,10,4)
     $bDet.Background = Get-ThemeBrush('#FF243042'); $bDet.BorderBrush = Get-ThemeBrush('#FF3C5876')
+    $bDet.ToolTip = (Tr 'Abre tu ISO y lista las ediciones de Windows que contiene (Home, Pro...).')
     $edCombo = New-Object Windows.Controls.ComboBox
+    $edCombo.ToolTip = (Tr 'Elige personalizar solo una edicion de Windows (mas rapido) o todas las que trae la ISO (mas lento).')
     $bDet.Add_Click({
         $src = $script:WizCtl.Src.Text.Trim()
         if (-not $src -or -not (Test-Path $src)) { Show-WpiMessage((Tr 'Primero elige arriba la ISO origen de Windows.'), 'Crear ISO') | Out-Null; return }
@@ -9407,15 +14546,26 @@ function Build-WizTweaks {
     $d = New-Object Windows.Controls.TextBlock; $d.TextWrapping = 'Wrap'; $d.Foreground = Get-ThemeBrush($Theme.Sub); $d.FontSize = 12
     $d.Text = (Tr 'Elige los tweaks. Se aplican en el PRIMER ARRANQUE con el motor real de WPI (fieles a los de la pestana Tweaks). Empiezan marcados los seguros recomendados.')
     $c.Children.Add($d) | Out-Null
+    # Leyenda de color (premium): los avanzados van en ambar; pasa el cursor por
+    # cada uno para ver que hace exactamente (descripcion completa).
+    $lg = New-Object Windows.Controls.TextBlock; $lg.TextWrapping = 'Wrap'; $lg.FontSize = 11.5; $lg.Margin = New-Object Windows.Thickness(0,4,0,0)
+    $lg.Inlines.Add((New-Object Windows.Documents.Run -ArgumentList ([string][char]0x25CF + ' '))) | Out-Null
+    $rAmb = New-Object Windows.Documents.Run -ArgumentList (Tr 'ambar = tweak avanzado (mayor impacto, aplicalo con criterio)'); $rAmb.Foreground = Get-ThemeBrush('#FFFFD166')
+    $lg.Inlines.Add($rAmb) | Out-Null
+    $rRest = New-Object Windows.Documents.Run -ArgumentList ('    ' + (Tr 'Pasa el cursor por cada tweak para ver que hace.')); $rRest.Foreground = Get-ThemeBrush($Theme.Sub)
+    $lg.Inlines.Add($rRest) | Out-Null
+    $c.Children.Add($lg) | Out-Null
     $row = New-Object Windows.Controls.StackPanel; $row.Orientation = 'Horizontal'; $row.Margin = New-Object Windows.Thickness(0,6,0,0)
     $bR = New-Object Windows.Controls.Button; $bR.Content = 'Marcar recomendados'; $bR.Padding = New-Object Windows.Thickness(8,3,8,3); $bR.Margin = New-Object Windows.Thickness(0,0,8,0)
+    $bR.ToolTip = (Tr 'Marca solo los tweaks seguros recomendados (deja fuera los de riesgo).')
     $bR.Add_Click({ foreach ($cb in $script:WizCtl.TweakChecks) { $nm = [string]$cb.Tag; $isSafe = $false; foreach ($t in $TweaksCatalog) { if ([string]$t.Name -eq $nm -and [string]$t.Risk -eq 'Seguro' -and ($nm -notlike 'Crear punto*') -and ($nm -notlike 'Limpieza profunda*')) { $isSafe = $true } }; $cb.IsChecked = $isSafe } })
     $row.Children.Add($bR) | Out-Null
     $bN = New-Object Windows.Controls.Button; $bN.Content = 'Quitar todos'; $bN.Padding = New-Object Windows.Thickness(8,3,8,3)
+    $bN.ToolTip = (Tr 'Desmarca todos los tweaks de esta lista.')
     $bN.Add_Click({ foreach ($cb in $script:WizCtl.TweakChecks) { $cb.IsChecked = $false } })
     $row.Children.Add($bN) | Out-Null
     $c.Children.Add($row) | Out-Null
-    $script:WizCtl.TweakChecks = Add-IsoCheckGrid $c $TweaksCatalog 'Name' 'Name' $script:Wiz.TweakNames 'Risk'
+    $script:WizCtl.TweakChecks = Add-IsoCheckGrid $c $TweaksCatalog 'Name' 'Name' $script:Wiz.TweakNames 'Desc' 'Risk'
 }
 function Build-WizDebloat {
     param($c)
@@ -9424,9 +14574,11 @@ function Build-WizDebloat {
     $c.Children.Add($d) | Out-Null
     $row = New-Object Windows.Controls.StackPanel; $row.Orientation = 'Horizontal'; $row.Margin = New-Object Windows.Thickness(0,6,0,0)
     $bA = New-Object Windows.Controls.Button; $bA.Content = 'Marcar todos'; $bA.Padding = New-Object Windows.Thickness(8,3,8,3); $bA.Margin = New-Object Windows.Thickness(0,0,8,0)
+    $bA.ToolTip = (Tr 'Marca todo el bloatware para quitarlo de fabrica.')
     $bA.Add_Click({ foreach ($cb in $script:WizCtl.DebloatChecks) { $cb.IsChecked = $true } })
     $row.Children.Add($bA) | Out-Null
     $bN = New-Object Windows.Controls.Button; $bN.Content = 'Quitar todos'; $bN.Padding = New-Object Windows.Thickness(8,3,8,3)
+    $bN.ToolTip = (Tr 'Desmarca todo: no se quitara ningun bloatware.')
     $bN.Add_Click({ foreach ($cb in $script:WizCtl.DebloatChecks) { $cb.IsChecked = $false } })
     $row.Children.Add($bN) | Out-Null
     $c.Children.Add($row) | Out-Null
@@ -9440,13 +14592,16 @@ function Build-WizApps {
     $row = New-Object Windows.Controls.StackPanel; $row.Orientation = 'Horizontal'; $row.Margin = New-Object Windows.Thickness(0,6,0,0)
     $sb = New-Object Windows.Controls.TextBox; $sb.Width = 240; $sb.Padding = New-Object Windows.Thickness(5,3,5,3); $sb.Margin = New-Object Windows.Thickness(0,0,8,0)
     $sb.Background = Get-ThemeBrush('#FF0F0F17'); $sb.Foreground = Get-ThemeBrush($Theme.Text); $sb.BorderBrush = Get-ThemeBrush($Theme.CardBorder)
-    $sb.ToolTip = (Tr 'Buscar app por nombre o ID')
+    $sb.ToolTip = (Tr 'Buscar app por nombre, ID o descripcion')
     $sb.Add_TextChanged({
         $q = $script:WizCtl.AppSearch.Text.Trim()
         foreach ($g in $script:WizCtl.AppGroups) {
             $anyVis = $false
             foreach ($cb in $g.Checks) {
-                $vis = ($q -eq '' -or ([string]$cb.Content -like ('*' + $q + '*')) -or ([string]$cb.Tag -like ('*' + $q + '*')))
+                $txt = ''
+                if ($cb.Content -is [Windows.Controls.TextBlock]) { $txt = [string]$cb.Content.Text } else { $txt = [string]$cb.Content }
+                $tip = [string]$cb.ToolTip
+                $vis = ($q -eq '' -or ($txt -like ('*' + $q + '*')) -or ([string]$cb.Tag -like ('*' + $q + '*')) -or ($tip -like ('*' + $q + '*')))
                 $cb.Visibility = $(if ($vis) { 'Visible' } else { 'Collapsed' })
                 if ($vis) { $anyVis = $true }
             }
@@ -9456,6 +14611,7 @@ function Build-WizApps {
     $row.Children.Add($sb) | Out-Null
     $script:WizCtl.AppSearch = $sb
     $bUse = New-Object Windows.Controls.Button; $bUse.Content = 'Usar mi seleccion de Apps'; $bUse.Padding = New-Object Windows.Thickness(8,3,8,3); $bUse.Margin = New-Object Windows.Thickness(0,0,8,0)
+    $bUse.ToolTip = (Tr 'Copia aqui las apps que ya tengas marcadas en la pestana Apps.')
     $bUse.Add_Click({
         # Copia la seleccion actual de la pestana Apps a las casillas del asistente.
         $cur = @{}
@@ -9466,17 +14622,53 @@ function Build-WizApps {
             $cb.IsChecked = $on
             if ($on) { $marked++ }
         }
-        # Feedback claro: cuantas se han marcado (o aviso si no hay ninguna).
+        # Feedback claro: cuantas se han marcado (o aviso util si no hay ninguna).
         if ($cur.Count -eq 0) {
-            Show-WpiMessage((Tr 'No tienes ninguna app marcada en la pestana Apps. Marca alli las que quieras incluir en la ISO y vuelve a pulsar este boton.'), (Tr 'Usar mi seleccion de Apps')) | Out-Null
+            # Sin dead-end: no hace falta salir del asistente. Se le indican las
+            # dos opciones que tiene aqui mismo, en este paso.
+            Show-WpiMessage((Tr 'No tienes apps marcadas en la pestana Apps, pero no necesitas salir de aqui: marca abajo las apps que quieras (estan divididas por seccion) o pulsa "Marcar instaladas" para traer de golpe las que ya tienes instaladas en este PC.'), (Tr 'Usar mi seleccion de Apps')) | Out-Null
         } else {
             $script:StatusText.Text = ((Tr 'Marcadas {0} apps de tu seleccion de la pestana Apps.') -f $marked)
         }
     })
     $row.Children.Add($bUse) | Out-Null
+    # "Marcar instaladas": trae de golpe, SIN salir del asistente, las apps que
+    # el usuario ya tiene instaladas en el PC. Evita el dead-end cuando no hay
+    # ninguna seleccion previa en la pestana Apps.
+    $bInst = New-Object Windows.Controls.Button; $bInst.Content = 'Marcar instaladas en mi PC'; $bInst.Padding = New-Object Windows.Thickness(8,3,8,3); $bInst.Margin = New-Object Windows.Thickness(0,0,8,0)
+    $bInst.Background = Get-ThemeBrush('#FF1F3A2E'); $bInst.BorderBrush = Get-ThemeBrush('#FF3E6B54')
+    $bInst.ToolTip = (Tr 'Marca todos los programas del catalogo que ya tienes instalados en tu PC o maquina, sin salir del asistente.')
+    $bInst.Add_Click({
+        $set = Resolve-InstalledIds $true   # usa cache de sesion si ya se detecto
+        $n = 0
+        foreach ($cb in $script:WizCtl.AppChecks) {
+            if ($set[([string]$cb.Tag).ToLower()]) { $cb.IsChecked = $true; $n++ }
+        }
+        if ($n -eq 0) {
+            Show-WpiMessage((Tr 'No se ha detectado ninguna app del catalogo instalada en este PC (via winget). Marca abajo las que quieras a mano.'), (Tr 'Marcar instaladas')) | Out-Null
+        } else {
+            $script:StatusText.Text = ((Tr 'Marcadas {0} apps que ya tienes instaladas.') -f $n)
+        }
+    })
+    $row.Children.Add($bInst) | Out-Null
     $bClr = New-Object Windows.Controls.Button; $bClr.Content = 'Quitar todas'; $bClr.Padding = New-Object Windows.Thickness(8,3,8,3)
+    $bClr.ToolTip = (Tr 'Desmarca todas las apps de esta lista.')
     $bClr.Add_Click({ foreach ($cb in $script:WizCtl.AppChecks) { $cb.IsChecked = $false } })
     $row.Children.Add($bClr) | Out-Null
+    # F2: validar contra winget los IDs marcados ANTES de crear la ISO (evita meter
+    # IDs caducados en el preset, como paso con uTorrent/eMule en una ISO anterior).
+    $bVal = New-Object Windows.Controls.Button; $bVal.Content = 'Validar IDs (winget)'; $bVal.Padding = New-Object Windows.Thickness(8,3,8,3)
+    $bVal.Margin = New-Object Windows.Thickness(8,0,0,0)
+    $bVal.Background = Get-ThemeBrush('#FF13414F'); $bVal.BorderBrush = Get-ThemeBrush('#FF76E0FF')
+    $bVal.ToolTip = (Tr 'Comprueba en el repositorio de winget que cada ID marcado existe. Los que fallen apareceran en el registro para que los quites antes de crear la ISO.')
+    $bVal.Add_Click({
+        $ids = @($script:WizCtl.AppChecks | Where-Object { $_.IsChecked } | ForEach-Object { [string]$_.Tag })
+        if (@($ids).Count -eq 0) { Show-WpiMessage((Tr 'Marca primero las apps que quieres validar.'), (Tr 'Validar IDs')) | Out-Null; return }
+        if (-not $script:WingetOK) { Show-WpiMessage((Tr 'winget no esta disponible: no se pueden validar los IDs ahora.'), (Tr 'Validar IDs')) | Out-Null; return }
+        $script:StatusText.Text = ((Tr 'Validando {0} IDs contra winget...') -f @($ids).Count)
+        Start-Worker -Mode 'validate' -Ids $ids
+    })
+    $row.Children.Add($bVal) | Out-Null
     $c.Children.Add($row) | Out-Null
     # Apps divididas por seccion (categoria), con cabecera por cada una
     $cats = $catalog | ForEach-Object { $_.Cat } | Select-Object -Unique
@@ -9487,33 +14679,62 @@ function Build-WizApps {
         $h.FontWeight = 'Bold'; $h.FontSize = 13; $h.Foreground = Get-ThemeBrush($Theme.Install)
         $h.Margin = New-Object Windows.Thickness(2,12,0,0)
         $c.Children.Add($h) | Out-Null
-        $items = @($catalog | Where-Object { $_.Cat -eq $cat } | ForEach-Object { [pscustomobject]@{ Disp = $_.Name; Id = $_.Id } })
-        $checks = Add-IsoCheckGrid $c $items 'Disp' 'Id' $script:Wiz.AppIds ''
+        $items = @($catalog | Where-Object { $_.Cat -eq $cat } | ForEach-Object { [pscustomobject]@{ Disp = $_.Name; Id = $_.Id; Tip = (Get-AppDesc ([string]$_.Id)) } })
+        $checks = Add-IsoCheckGrid $c $items 'Disp' 'Id' $script:Wiz.AppIds 'Tip'
         $allChecks += $checks
         $groups += [pscustomobject]@{ Header = $h; Checks = $checks }
     }
     $script:WizCtl.AppChecks = $allChecks
     $script:WizCtl.AppGroups = $groups
+    # Boton "ir arriba" al final de la larga lista de apps del asistente.
+    $c.Children.Add((New-ScrollTopButton $script:CreateIsoScroll)) | Out-Null
 }
 function Build-WizDrivers {
     param($c)
     $d = New-Object Windows.Controls.TextBlock; $d.TextWrapping = 'Wrap'; $d.Foreground = Get-ThemeBrush($Theme.Sub); $d.FontSize = 12
     $d.Text = (Tr 'Inyecta drivers (.inf) en la imagen para que el equipo arranque con red/chipset. Elige una carpeta con .inf, o si NO tienes ninguna, crea ahora mismo una copia de los drivers que tienes instalados con el boton de abajo.')
     $c.Children.Add($d) | Out-Null
-    $script:WizCtl.Drv = Add-IsoCheck $c 'Inyectar drivers desde una carpeta' $script:Wiz.InjectDrivers $Theme.Maintain
+    $script:WizCtl.Drv = Add-IsoCheck $c 'Inyectar drivers desde una carpeta' $script:Wiz.InjectDrivers $Theme.Maintain 'Mete los drivers .inf de la carpeta de abajo DENTRO de la ISO (install.wim y boot.wim): Windows arranca con red y chipset listos, sin instalarlos a mano.'
     $drvNote = New-Object Windows.Controls.TextBlock; $drvNote.TextWrapping = 'Wrap'; $drvNote.FontSize = 11.5; $drvNote.Margin = New-Object Windows.Thickness(0,4,0,0)
     $drvNote.Foreground = Get-ThemeBrush('#FFFFD166')
     $drvNote.Text = (Tr 'RECORDATORIO: si lo dejas MARCADO, los drivers van DENTRO de la ISO y Windows arrancara con red/chipset listos. Si lo DESMARCAS, tendras que instalar los drivers A MANO despues de instalar Windows.')
     $c.Children.Add($drvNote) | Out-Null
-    $script:WizCtl.DrvDir = Add-IsoTextRow $c 'Carpeta de drivers (.inf)' $script:Wiz.DriversDir 'folder'
+    # F5: por defecto se ofrece la carpeta OFICIAL <WPI>\Drivers (se crea sola);
+    # el usuario puede cambiarla, pero asi todo queda ordenado en el raiz del WPI.
+    if (-not [string]$script:Wiz.DriversDir) { try { $script:Wiz.DriversDir = (Get-WpiDir 'Drivers') } catch {} }
+    $script:WizCtl.DrvDir = Add-IsoTextRow $c 'Carpeta de drivers (.inf)' $script:Wiz.DriversDir 'folder' '' 'Carpeta con los drivers (.inf) a inyectar. La oficial es la carpeta "Drivers" del propio WPI (ya creada). Si no tienes drivers, usa el boton de abajo para copiar los de tu PC actual.'
+    # F9: mensaje CRISTALINO para quien no tiene drivers preparados: la carpeta
+    # oficial <WPI>\Drivers (se crea sola en el raiz) es el sitio donde dejarlos,
+    # y un boton la selecciona en este paso y la abre en el Explorador.
+    $noDrvNote = New-Object Windows.Controls.TextBlock; $noDrvNote.TextWrapping = 'Wrap'; $noDrvNote.FontSize = 11.5; $noDrvNote.Margin = New-Object Windows.Thickness(0,8,0,0)
+    $noDrvNote.Foreground = Get-ThemeBrush('#FF5CFF8F')
+    $noDrvNote.Text = (Tr 'NO TIENES DRIVERS PREPARADOS? Guardalos en la carpeta oficial "Drivers" del directorio raiz del WPI (se crea sola). El boton de abajo la selecciona como carpeta de este paso y te la abre para que copies dentro tus drivers (.inf con sus carpetas).')
+    $c.Children.Add($noDrvNote) | Out-Null
+    $bOfi = New-Object Windows.Controls.Button
+    $bOfi.Content = (Tr 'Usar la carpeta oficial "Drivers" (y abrirla)')
+    $bOfi.ToolTip = (Tr 'Selecciona la carpeta oficial "Drivers" del WPI como carpeta de este paso y la abre en el Explorador para que copies ahi tus drivers.')
+    $bOfi.HorizontalAlignment = 'Left'; $bOfi.Margin = New-Object Windows.Thickness(0,6,0,0); $bOfi.Padding = New-Object Windows.Thickness(12,6,12,6)
+    $bOfi.Background = Get-ThemeBrush('#FF14321F'); $bOfi.BorderBrush = Get-ThemeBrush('#FF5CFF8F')
+    $bOfi.Add_Click({
+        $ofi = ''
+        try { $ofi = (Get-WpiDir 'Drivers') } catch {}
+        if (-not $ofi) { return }
+        try { $script:WizCtl.DrvDir.Text = $ofi } catch {}
+        try { $script:Wiz.DriversDir = $ofi } catch {}
+        try { $script:WizCtl.Drv.IsChecked = $true } catch {}
+        try { Start-Process explorer.exe $ofi } catch {}
+        Show-WpiToast (((Tr 'Carpeta oficial seleccionada y abierta: {0}  -  Copia ahi tus drivers (.inf).') -f $ofi)) '#FF5CFF8F' 9
+    })
+    $c.Children.Add($bOfi) | Out-Null
     $bExp = New-Object Windows.Controls.Button
     $bExp.Content = 'No tengo: crear copia (.inf) de mis drivers actuales'
+    $bExp.ToolTip = (Tr 'Exporta los drivers de este PC a una carpeta (.inf) y la pone lista para inyectar, sin buscarlos tu.')
     $bExp.HorizontalAlignment = 'Left'; $bExp.Margin = New-Object Windows.Thickness(0,8,0,0); $bExp.Padding = New-Object Windows.Thickness(12,6,12,6)
     $bExp.Background = Get-ThemeBrush('#FF1F3A2E'); $bExp.BorderBrush = Get-ThemeBrush('#FF3E6B54')
     $bExp.Add_Click({
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
         $fb = New-Object System.Windows.Forms.FolderBrowserDialog
-        $fb.Description = 'Elige donde guardar la copia de tus drivers (.inf)'
+        $fb.Description = (Tr 'Elige donde guardar la copia de tus drivers (.inf)')
         try { $fb.SelectedPath = $PSScriptRoot } catch {}
         if ($fb.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
         $dest = Join-Path $fb.SelectedPath 'Drivers'
@@ -9564,50 +14785,58 @@ function Build-WizUnattend {
     $d = New-Object Windows.Controls.TextBlock; $d.TextWrapping = 'Wrap'; $d.Foreground = Get-ThemeBrush($Theme.Sub); $d.FontSize = 12
     $d.Text = (Tr 'Automatiza la instalacion. "Bypass W11" instala en equipos sin TPM/Secure Boot. "Modo VM" PARTICIONA Y BORRA el disco 0: usalo SOLO en maquina virtual o disco desechable.')
     $c.Children.Add($d) | Out-Null
-    $script:WizCtl.Local  = Add-IsoCheck $c 'Crear cuenta local y saltar pantallas de cuenta online (OOBE)' $script:Wiz.LocalAccount
-    $script:WizCtl.Bypass = Add-IsoCheck $c 'Bypass de requisitos de Windows 11 (TPM / Secure Boot / RAM / CPU)' $script:Wiz.BypassW11 $Theme.Optimize
-    $script:WizCtl.Vm     = Add-IsoCheck $c 'Modo VM: particionar el disco automaticamente (BORRA EL DISCO 0)' $script:Wiz.VmMode $Theme.Danger
+    $script:WizCtl.Local  = Add-IsoCheck $c 'Crear cuenta local y saltar pantallas de cuenta online (OOBE)' $script:Wiz.LocalAccount '' 'Crea una cuenta local en el primer arranque y salta las pantallas de cuenta Microsoft/online.'
+    $script:WizCtl.Bypass = Add-IsoCheck $c 'Bypass de requisitos de Windows 11 (TPM / Secure Boot / RAM / CPU)' $script:Wiz.BypassW11 $Theme.Optimize 'Permite instalar Windows 11 en equipos sin TPM 2.0 / Secure Boot o con CPU/RAM no soportada.'
+    $script:WizCtl.Vm     = Add-IsoCheck $c 'Modo VM: particionar el disco automaticamente (BORRA EL DISCO 0)' $script:Wiz.VmMode $Theme.Danger 'PELIGRO: formatea y particiona el disco 0 sin preguntar. Solo para maquina virtual o disco desechable.'
     $vmNote = New-Object Windows.Controls.TextBlock; $vmNote.TextWrapping = 'Wrap'; $vmNote.FontSize = 11.5; $vmNote.Margin = New-Object Windows.Thickness(0,4,0,8)
     $vmNote.Foreground = Get-ThemeBrush('#FFFF8A8A')
     $vmNote.Text = (Tr 'RECORDATORIO: marca "Modo VM" SOLO en maquina virtual o disco desechable (formatea el disco 0 sin preguntar). En un PC fisico con tus datos, dejalo DESACTIVADO y elige el disco a mano durante la instalacion. Te lo recordare al pasar de paso.')
     $c.Children.Add($vmNote) | Out-Null
-    $script:WizCtl.Locale = Add-IsoTextRow $c 'Idioma / locale' $script:Wiz.Locale
-    $script:WizCtl.Acct   = Add-IsoTextRow $c 'Nombre de cuenta' $script:Wiz.AccountName
-    $script:WizCtl.Pass   = Add-IsoTextRow $c 'Contrasena de la cuenta (opcional, recomendada en Win11)' $script:Wiz.AccountPassword
+    $script:WizCtl.Locale = Add-IsoTextRow $c 'Idioma / locale' $script:Wiz.Locale '' '' 'Idioma y region de la instalacion (ej: es-ES para espanol de Espana).'
+    $script:WizCtl.Acct   = Add-IsoTextRow $c 'Nombre de cuenta' $script:Wiz.AccountName '' '' 'Nombre del usuario que se creara automaticamente en el primer arranque.'
+    $script:WizCtl.Pass   = Add-IsoTextRow $c 'Contrasena de la cuenta (opcional, recomendada en Win11)' $script:Wiz.AccountPassword '' '' 'Contrasena de esa cuenta. Puedes dejarla vacia, pero en Windows 11 es recomendable ponerla.'
 }
 function Build-WizSummary {
     param($c)
     $w = $script:Wiz
-    $lines = @()
-    $lines += ('ORIGEN      : ' + $(if ($w.SrcIso) { $w.SrcIso } else { '(SIN ELEGIR - vuelve al paso 2)' }))
-    $lines += ('SALIDA      : ' + (Join-Path $w.OutDir $w.IsoName))
-    $lines += ('TRABAJO     : ' + $w.WorkDir)
-    $edTxt = if ($w.AllEditions) { 'TODAS las ediciones detectadas (cada una personalizada)' } else { ('solo la edicion indice ' + $w.Idx) }
-    $lines += ('EDICION     : ' + $edTxt)
-    $lines += ('DRIVERS     : ' + $(if ($w.InjectDrivers) { 'inyectar desde ' + $w.DriversDir } else { 'no' }))
-    $lines += ('DEBLOAT     : ' + @($w.DebloatPkgs).Count + ' apps a quitar de fabrica (offline)')
-    $lines += ('TWEAKS      : ' + @($w.TweakNames).Count + ' tweaks (se aplican en el primer arranque)')
-    $lines += ('APPS        : ' + @($w.AppIds).Count + ' apps (se instalan en el primer arranque)')
-    $lines += ('DESATENDIDO : cuenta local/OOBE=' + $w.LocalAccount + ' · bypassW11=' + $w.BypassW11 + ' · modoVM=' + $w.VmMode)
-    $lines += ('IDIOMA/CTA  : ' + $w.Locale + ' · ' + $w.AccountName)
-    $tb = New-Object Windows.Controls.TextBlock; $tb.FontFamily = New-Object Windows.Media.FontFamily('Consolas'); $tb.FontSize = 12.5
-    $tb.Foreground = Get-ThemeBrush($Theme.Text); $tb.Text = ($lines -join "`r`n"); $tb.Margin = New-Object Windows.Thickness(0,4,0,0)
-    $c.Children.Add($tb) | Out-Null
-    $guide = New-Object Windows.Controls.TextBlock; $guide.TextWrapping = 'Wrap'; $guide.Foreground = Get-ThemeBrush($Theme.Text); $guide.FontSize = 12; $guide.Margin = New-Object Windows.Thickness(0,10,0,0)
-    $guide.Text = (Tr 'GUIA RAPIDA: Si vas a PROBAR en maquina virtual (VirtualBox/VMware): activa EFI/UEFI, asigna 4+ GB de RAM, 2+ nucleos y disco de 64+ GB, y habilita TPM o usa el bypass de WPI. Si es una instalacion NORMAL en un PC fisico: cuando la ISO este creada, graba la ISO a un USB con Rufus (esquema GPT, destino UEFI), arranca desde el USB y listo. IMPORTANTE: el "Modo VM" formatea el disco 0 automaticamente; usalo SOLO en maquinas virtuales. En un PC fisico dejalo DESACTIVADO y elige el disco a mano.')
-    $c.Children.Add($guide) | Out-Null
-    $rufWarn = New-Object Windows.Controls.TextBlock; $rufWarn.TextWrapping = 'Wrap'; $rufWarn.FontSize = 12.5; $rufWarn.FontWeight = 'Bold'; $rufWarn.Foreground = Get-ThemeBrush('#FFFFD166'); $rufWarn.Margin = New-Object Windows.Thickness(0,10,0,0)
-    $rufWarn.Text = ([string][char]0x270B + '  ' + (Tr 'AVISO IMPORTANTE (Rufus): cuando grabes la ISO al USB y aparezca la ventana "Experiencia de usuario de Windows", NO marques NINGUNA casilla (ni quitar TPM, ni cuenta local, ni mejoras QoL). Dejalas todas vacias y pulsa Aceptar. Si marcas algo, Rufus crea su propio autounattend y SOBREESCRIBE el de WPI: no se aplicarian tus apps, ni los tweaks, ni el modo oscuro. Todo eso ya lo hace WPI por si solo.'))
-    $c.Children.Add($rufWarn) | Out-Null
+    # --- Tarjeta de RESUMEN (bonita, con lo elegido en cada paso) ---
+    $card = New-Object Windows.Controls.Border
+    $card.Background = Get-ThemeBrush('#FF15151F'); $card.BorderBrush = Get-ThemeBrush($Theme.Iso); $card.BorderThickness = New-Object Windows.Thickness(1)
+    $card.CornerRadius = New-Object Windows.CornerRadius(11); $card.Padding = New-Object Windows.Thickness(15,12,15,13); $card.Margin = New-Object Windows.Thickness(0,4,0,0)
+    $cardCol = New-Object Windows.Controls.StackPanel
+    $cardTitle = New-Object Windows.Controls.TextBlock; $cardTitle.Text = (Tr 'RESUMEN DE TU ISO A MEDIDA'); $cardTitle.FontWeight = 'Bold'; $cardTitle.FontSize = 13.5; $cardTitle.Foreground = Get-ThemeBrush($Theme.Iso); $cardTitle.Margin = New-Object Windows.Thickness(0,0,0,6)
+    $cardCol.Children.Add($cardTitle) | Out-Null
+    $siT = (Tr 'si'); $noT = (Tr 'no')
+    $origenVal = if ($w.SrcIso) { $w.SrcIso } else { (Tr '(SIN ELEGIR - vuelve al paso 2)') }
+    $cardCol.Children.Add((New-SummaryRow 'ISO origen' $origenVal $(if ($w.SrcIso) { '' } else { $Theme.Danger }))) | Out-Null
+    $cardCol.Children.Add((New-SummaryRow 'ISO de salida' (Join-Path $w.OutDir $w.IsoName))) | Out-Null
+    $edTxt = if ($w.AllEditions) { (Tr 'TODAS las ediciones (cada una personalizada)') } else { ((Tr 'solo la edicion indice') + ' ' + $w.Idx) }
+    $cardCol.Children.Add((New-SummaryRow 'Edicion' $edTxt)) | Out-Null
+    $drvTxt = if ($w.InjectDrivers) { ((Tr 'SI - desde') + ' ' + $w.DriversDir) } else { (Tr 'no (los instalaras a mano)') }
+    $cardCol.Children.Add((New-SummaryRow 'Drivers' $drvTxt $(if ($w.InjectDrivers) { $Theme.Maintain } else { '' }))) | Out-Null
+    $cardCol.Children.Add((New-SummaryRow 'Bloatware a quitar' ((@($w.DebloatPkgs).Count).ToString() + ' ' + (Tr 'apps (offline, de fabrica)')))) | Out-Null
+    $cardCol.Children.Add((New-SummaryRow 'Tweaks' ((@($w.TweakNames).Count).ToString() + ' ' + (Tr 'ajustes (en el primer arranque)')))) | Out-Null
+    $cardCol.Children.Add((New-SummaryRow 'Apps a instalar' ((@($w.AppIds).Count).ToString() + ' ' + (Tr 'apps (en el primer arranque)')))) | Out-Null
+    $desa = ((Tr 'cuenta local/OOBE') + '=' + $(if ($w.LocalAccount) { $siT } else { $noT }) + '   ·   bypass W11=' + $(if ($w.BypassW11) { $siT } else { $noT }) + '   ·   ' + (Tr 'modo VM') + '=' + $(if ($w.VmMode) { $siT } else { $noT }))
+    $cardCol.Children.Add((New-SummaryRow 'Desatendido' $desa $(if ($w.VmMode) { $Theme.Danger } else { '' }))) | Out-Null
+    $cardCol.Children.Add((New-SummaryRow 'Idioma / cuenta' ($w.Locale + '   ·   ' + $w.AccountName))) | Out-Null
+    # F6-B5 (VT2): honestidad con la contraseña del desatendido — vacia es valido
+    # (autologon sin contraseña, tipico para VM/plantilla) pero hay que DECIRLO.
+    if ($w.LocalAccount -and -not [string]$w.AccountPassword) {
+        $cardCol.Children.Add((New-SummaryRow (Tr 'Contrasena') (Tr 'VACIA: la cuenta entra sola sin contrasena. Ponle una despues en Configuracion > Cuentas si el equipo no es de pruebas.') '#FFFFD166')) | Out-Null
+    }
+    $card.Child = $cardCol
+    $c.Children.Add($card) | Out-Null
+
+    # --- Explicaciones en DESPLEGABLES (seccion limpia; se abren solo si quieres leer) ---
+    $c.Children.Add((New-InfoExpander 'Guia rapida: probar en VM o instalar en un PC fisico' 'GUIA RAPIDA: Si vas a PROBAR en maquina virtual (VirtualBox/VMware): activa EFI/UEFI, asigna 4+ GB de RAM, 2+ nucleos y disco de 64+ GB, y habilita TPM o usa el bypass de WPI. Si es una instalacion NORMAL en un PC fisico: cuando la ISO este creada, graba la ISO a un USB con Rufus (esquema GPT, destino UEFI), arranca desde el USB y listo. IMPORTANTE: el "Modo VM" formatea el disco 0 automaticamente; usalo SOLO en maquinas virtuales. En un PC fisico dejalo DESACTIVADO y elige el disco a mano.' $Theme.Info)) | Out-Null
+    $c.Children.Add((New-InfoExpander 'Aviso Rufus: pantalla "Experiencia de usuario de Windows"' 'AVISO IMPORTANTE (Rufus): cuando grabes la ISO al USB y aparezca la ventana "Experiencia de usuario de Windows", NO marques NINGUNA casilla (ni quitar TPM, ni cuenta local, ni mejoras QoL). Dejalas todas vacias y pulsa Aceptar. Si marcas algo, Rufus crea su propio autounattend y SOBREESCRIBE el de WPI: no se aplicarian tus apps, ni los tweaks, ni el modo oscuro. Todo eso ya lo hace WPI por si solo.' '#FFFFD166')) | Out-Null
     $rufus = New-Object Windows.Controls.Button; $rufus.Content = (Tr 'Abrir Rufus (rufus.ie) para grabar la ISO al USB'); $rufus.HorizontalAlignment = 'Left'; $rufus.Margin = New-Object Windows.Thickness(0,6,0,0); $rufus.Padding = New-Object Windows.Thickness(10,4,10,4)
     $rufus.Background = Get-ThemeBrush('#FF243042'); $rufus.BorderBrush = Get-ThemeBrush('#FF3C5876')
     $rufus.Add_Click({ try { Start-Process 'https://rufus.ie' } catch {} })
     $c.Children.Add($rufus) | Out-Null
     # ----- Boton IMPORTANTE: comprobar la ISO antes de grabarla -----
-    $verWarn = New-Object Windows.Controls.TextBlock; $verWarn.TextWrapping = 'Wrap'; $verWarn.FontSize = 12.5; $verWarn.FontWeight = 'Bold'
-    $verWarn.Foreground = Get-ThemeBrush($Theme.Iso); $verWarn.Margin = New-Object Windows.Thickness(0,14,0,0)
-    $verWarn.Text = (Tr 'IMPORTANTE: antes de grabar con Rufus, comprueba que la ISO lo lleva todo (C:\WPI, autounattend, ediciones, drivers, winget). Pulsa el boton; abre una consola como administrador, monta la ISO y te da un veredicto claro.')
-    $c.Children.Add($verWarn) | Out-Null
+    $c.Children.Add((New-InfoExpander 'Que comprueba el boton "Comprobar la ISO" (recomendado antes de Rufus)' 'IMPORTANTE: antes de grabar con Rufus, comprueba que la ISO lo lleva todo (C:\WPI, autounattend, ediciones, drivers, winget). Pulsa el boton; abre una consola como administrador, monta la ISO y te da un veredicto claro.' $Theme.Iso)) | Out-Null
     $bVer = New-Object Windows.Controls.Button
     $bVer.Content = (Tr '  IMPORTANTE  -  COMPROBAR la ISO antes de Rufus  ')
     $bVer.HorizontalAlignment = 'Left'; $bVer.Margin = New-Object Windows.Thickness(0,6,0,0); $bVer.Padding = New-Object Windows.Thickness(12,6,12,6); $bVer.FontWeight = 'Bold'
@@ -9619,18 +14848,16 @@ function Build-WizSummary {
         try { Set-WpiContent -Path $verPs -Value (Get-IsoVerifyScriptText) } catch {}
         $cmd = ('& "{0}" -Iso "{1}"' -f $verPs, $iso)
         if (-not (Test-Path $iso)) {
-            Show-WpiMessage((("Aun no existe la ISO:`n{0}`n`nCrea primero la ISO y vuelve a pulsar este boton.`n`nTambien puedes comprobarla a mano en PowerShell (administrador) con:`n`n{1}") -f $iso, $cmd), 'Comprobar ISO') | Out-Null
+            Show-WpiMessage(((Tr "Aun no existe la ISO:`n{0}`n`nCrea primero la ISO y vuelve a pulsar este boton.`n`nTambien puedes comprobarla a mano en PowerShell (administrador) con:`n`n{1}") -f $iso, $cmd), 'Comprobar ISO') | Out-Null
             return
         }
-        $r = Show-WpiMessage((("Se comprobara la ISO como ADMINISTRADOR en una consola aparte: monta la imagen y revisa C:\WPI, autounattend, ediciones, drivers y winget. Tarda 1-3 min.`n`nComando equivalente para hacerlo a mano:`n{0}`n`nComprobar ahora?") -f $cmd), 'Comprobar ISO', 'YesNo', 'Information')
+        $r = Show-WpiMessage(((Tr "Se comprobara la ISO como ADMINISTRADOR en una consola aparte: monta la imagen y revisa C:\WPI, autounattend, ediciones, drivers y winget. Tarda 1-3 min.`n`nComando equivalente para hacerlo a mano:`n{0}`n`nComprobar ahora?") -f $cmd), 'Comprobar ISO', 'YesNo', 'Information')
         if ($r -ne 'Yes') { return }
         try { Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $verPs + '"'),'-Iso',('"' + $iso + '"') }
-        catch { Show-WpiMessage((('No se pudo lanzar la comprobacion: ' + $_.Exception.Message)), 'Comprobar ISO') | Out-Null }
+        catch { Show-WpiMessage(((Tr 'No se pudo lanzar la comprobacion:') + ' ' + $_.Exception.Message), 'Comprobar ISO') | Out-Null }
     })
     $c.Children.Add($bVer) | Out-Null
-    $note = New-Object Windows.Controls.TextBlock; $note.TextWrapping = 'Wrap'; $note.Foreground = Get-ThemeBrush($Theme.Sub); $note.FontSize = 12; $note.Margin = New-Object Windows.Thickness(0,8,0,0)
-    $note.Text = (Tr 'Que es el "kit": una carpeta (WPI_ISO_Kit) con todo lo necesario: tu configuracion, el autounattend.xml, el script que crea la ISO, el preset de apps, una copia de WPI y las guias. NO hace falta generar el kit antes de crear la ISO: el boton "Confirmar y CREAR la ISO" ya lo prepara solo y lanza el proceso como administrador. "Generar kit" es OPCIONAL, solo si quieres revisar o editar esos archivos antes.')
-    $c.Children.Add($note) | Out-Null
+    $c.Children.Add((New-InfoExpander 'Que es el "kit" y cuando generarlo (opcional)' 'Que es el "kit": una carpeta (WPI_ISO_Kit) con todo lo necesario: tu configuracion, el autounattend.xml, el script que crea la ISO, el preset de apps, una copia de WPI y las guias. NO hace falta generar el kit antes de crear la ISO: el boton "Confirmar y CREAR la ISO" ya lo prepara solo y lanza el proceso como administrador. "Generar kit" es OPCIONAL, solo si quieres revisar o editar esos archivos antes.' $Theme.Sub)) | Out-Null
     $r = New-Object Windows.Controls.StackPanel; $r.Orientation = 'Horizontal'; $r.Margin = New-Object Windows.Thickness(0,10,0,0)
     $bKit = New-Object Windows.Controls.Button; $bKit.Content = (Tr 'Generar kit (opcional: solo revisar archivos)'); $bKit.Padding = New-Object Windows.Thickness(12,5,12,5); $bKit.Margin = New-Object Windows.Thickness(0,0,8,0)
     $bKit.Background = Get-ThemeBrush('#FF243042'); $bKit.BorderBrush = Get-ThemeBrush('#FF3C5876')
@@ -9646,11 +14873,35 @@ function Build-WizSummary {
     $bRun = New-Object Windows.Controls.Button; $bRun.Content = 'Confirmar y CREAR la ISO (administrador)'; $bRun.Padding = New-Object Windows.Thickness(12,5,12,5)
     $bRun.Background = Get-ThemeBrush('#FF4A2F12'); $bRun.BorderBrush = Get-ThemeBrush($Theme.Iso); $bRun.Foreground = Get-ThemeBrush($Theme.Text)
     $bRun.Add_Click({
+        $w = $script:Wiz
+        # Resumen final resaltado (lo elegido en cada paso).
+        $resumen = ((Tr 'ISO origen') + ':  ' + $(if ($w.SrcIso) { Split-Path $w.SrcIso -Leaf } else { (Tr '(SIN ELEGIR - vuelve al paso 2)') }) + "`n" +
+                    (Tr 'ISO de salida') + ':  ' + $w.IsoName + "`n" +
+                    (Tr 'Edicion') + ':  ' + $(if ($w.AllEditions) { (Tr 'TODAS las ediciones') } else { ((Tr 'solo la edicion indice') + ' ' + $w.Idx) }) + "`n" +
+                    (Tr 'Drivers') + ':  ' + $(if ($w.InjectDrivers) { (Tr 'si') } else { (Tr 'no') }) + "`n" +
+                    (Tr 'Bloatware a quitar') + ':  ' + @($w.DebloatPkgs).Count + "`n" +
+                    (Tr 'Tweaks') + ':  ' + @($w.TweakNames).Count + "`n" +
+                    (Tr 'Apps a instalar') + ':  ' + @($w.AppIds).Count)
+        # Aviso de ediciones + tiempo estimado (depende de lo integrado).
+        if ($w.AllEditions) {
+            $edLine = (Tr 'Has elegido TODAS las ediciones de Windows: se personaliza cada una por separado, asi que tarda MUCHO mas y la ISO final ocupa bastante mas. Lo optimo es elegir SOLO la edicion que vayas a usar (pulsa "No, volver atras" y cambialo en el paso 2).')
+            $edColor = '#FFFFB020'
+        } else {
+            $edLine = (Tr 'Has elegido UNA sola edicion (lo optimo). La creacion de la ISO personalizada puede tardar entre 15 y 30 minutos, dependiendo de todo lo que hayas seleccionado (tweaks, apps, drivers). No cierres ni interrumpas el proceso hasta que finalice.')
+            $edColor = '#FF5CFF8F'
+        }
+        $sec = @(
+            @{ Head = 'Vas a CREAR tu ISO a medida con esta configuracion'; Body = $resumen; Color = '#FF00E5FF' },
+            @{ Head = 'ADVERTENCIA: ediciones y tiempo estimado'; Body = $edLine; Color = $edColor },
+            @{ Head = 'Que pasara en el PRIMER ARRANQUE de Windows'; Body = 'Al arrancar Windows por primera vez, comenzara automaticamente la instalacion de los programas y la configuracion que has seleccionado. No necesitas hacer nada: el equipo se reiniciara por si solo al terminar. El tiempo total dependera de todo lo que hayas anadido a la ISO.'; Color = '#FF9AE6FF' },
+            @{ Head = 'Recordatorio Rufus (cuando la grabes al USB)'; Body = 'Al grabar la ISO al USB con Rufus aparece la ventana "Experiencia de usuario de Windows": deja TODAS las casillas SIN marcar y pulsa Aceptar. Si marcas algo, Rufus crea su propio autounattend y SOBREESCRIBE tu configuracion: no se aplicarian tus apps, tweaks ni ajustes.'; Color = '#FFFFD166' },
+            @{ Head = 'Como se ejecuta'; Body = 'Se lanzara como ADMINISTRADOR en una consola aparte; monta la imagen y no debes cerrar esa consola hasta que termine. Si quieres revisar o cambiar algo, pulsa "No, volver atras".' }
+        )
+        $ok = Show-WpiPremiumDialog -Title 'Ultimo paso: confirmar y CREAR la ISO' -Accent '#FFFF8C1A' -Sections $sec -YesText 'Si, crear la ISO ahora' -NoText 'No, volver atras'
+        if (-not $ok) { return }
         $kit = New-IsoBuildKit
         if (-not $kit) { return }
         $script:IsoKitPath = $kit
-        $r = Show-WpiMessage('Vas a integrar todo lo elegido y CREAR la ISO. Se lanzara como ADMINISTRADOR en una consola aparte; monta la imagen y puede tardar 15-40 min. No cierres la consola. Confirmas?', 'Crear ISO', 'YesNo', 'Warning')
-        if ($r -ne 'Yes') { return }
         $scriptPath = (Join-Path $kit 'Crear_ISO_WPI.ps1')
         try {
             Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit','-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $scriptPath + '"')
@@ -9753,8 +15004,30 @@ function Test-IsoStep {
                 $infs = 0
                 try { $infs = @(Get-ChildItem -Path $dir -Filter *.inf -Recurse -ErrorAction SilentlyContinue).Count } catch {}
                 if ($infs -eq 0) {
-                    $r = Show-WpiMessage(('En esa carpeta no se han encontrado archivos .inf (drivers):' + "`n" + $dir + "`n`n" + 'Quizas no es la carpeta correcta. Continuar igualmente?'), 'Sin drivers .inf', 'YesNo', 'Warning')
-                    if ($r -ne 'Yes') { return $false }
+                    # F5: guia premium. La carpeta OFICIAL <WPI>\Drivers se crea sola
+                    # para mantener el orden; el usuario puede usar otra si quiere.
+                    $oficial = ''
+                    try { $oficial = (Get-WpiDir 'Drivers') } catch {}
+                    $okDrv = Show-WpiPremiumDialog -Title 'No hay drivers (.inf) en la carpeta elegida' -Accent '#FFFFB020' -Sections @(
+                        @{ Head = 'Que ha pasado'; Body = ((Tr 'En la carpeta elegida no se ha encontrado ningun archivo .inf (los drivers que se inyectan en la ISO):') + "`n" + $dir); Color = '#FFFFB020' },
+                        @{ Head = 'Donde colocar tus drivers (recomendado)'; Body = ((Tr 'Copia tus drivers (.inf con sus carpetas) dentro de la carpeta oficial "Drivers" del WPI, ya creada automaticamente para mantener todo ordenado y centralizado:') + "`n" + $oficial + "`n`n" + (Tr 'Puedes usar cualquier otra carpeta si lo prefieres: la oficial existe para que siempre sepas donde estan.')); Color = '#FF5CFF8F' },
+                        @{ Head = 'No tienes drivers a mano?'; Body = 'En este mismo paso, el boton "No tengo: crear copia (.inf) de mis drivers actuales" exporta los drivers de este PC y deja la carpeta lista para inyectar, sin que busques nada.'; Color = '#FF76E0FF' }
+                    ) -YesText 'Continuar sin drivers' -AltText 'Usar la carpeta oficial (y abrirla)' -NoText 'Volver y colocar drivers'
+                    if ($okDrv -is [string] -and $okDrv -eq 'alt') {
+                        # F9: fija la carpeta oficial como carpeta del paso y la ABRE
+                        # en el Explorador para que el usuario deje ahi sus .inf.
+                        try { $script:WizCtl.DrvDir.Text = $oficial } catch {}
+                        try { $script:Wiz.DriversDir = $oficial } catch {}
+                        try { if ($oficial) { Start-Process explorer.exe $oficial } } catch {}
+                        Show-WpiToast (((Tr 'Carpeta oficial seleccionada y abierta: {0}  -  Copia ahi tus drivers (.inf) y vuelve a pulsar Siguiente.') -f $oficial)) '#FF5CFF8F' 9
+                        return $false
+                    }
+                    if (-not $okDrv) {
+                        try { $script:WizCtl.DrvDir.Text = $oficial } catch {}
+                        try { $script:Wiz.DriversDir = $oficial } catch {}
+                        Show-WpiToast (((Tr 'Carpeta oficial preparada: {0}  -  Copia ahi tus drivers (.inf) y vuelve a pulsar Siguiente.') -f $oficial)) '#FF5CFF8F' 9
+                        return $false
+                    }
                 }
             }
             return $true
@@ -9810,6 +15083,109 @@ function New-IsoStepBar {
 }
 
 # Dibuja el paso actual del asistente: cabecera + contenido + navegacion.
+# ============================================================
+#  F7 - GRABAR LA ISO A UN USB (via Rufus)
+#  WPI NO escribe el disco: localiza la ISO ya creada y la app Rufus (que
+#  esta en el catalogo), y lanza Rufus para que el USUARIO elija el USB y
+#  confirme. Si Rufus no esta, ofrece instalarlo con winget. Asi el borrado
+#  del pendrive lo hace siempre el usuario en Rufus, nunca WPI a ciegas.
+# ============================================================
+function Find-WpiRufusPath {
+    # 1) Comando en PATH
+    try { $c = Get-Command 'rufus*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { return $c.Source } } catch {}
+    # 2) Paquetes de winget (instalacion portable tipica de Rufus)
+    $cands = @()
+    try { $cands += Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages') -Filter 'rufus*.exe' -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } } catch {}
+    # 3) Registro ARP (por si se instalo por instalador)
+    foreach ($k in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*') {
+        try {
+            foreach ($it in @(Get-ItemProperty $k -ErrorAction SilentlyContinue | Where-Object { [string]$_.DisplayName -like 'Rufus*' })) {
+                $loc = [string]$it.InstallLocation; $icon = [string]$it.DisplayIcon
+                if ($loc -and (Test-Path $loc)) { $cands += @(Get-ChildItem $loc -Filter 'rufus*.exe' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) }
+                if ($icon -and $icon -like '*rufus*.exe*') { $cands += ($icon -split ',')[0] }
+            }
+        } catch {}
+    }
+    foreach ($p in $cands) { if ($p -and (Test-Path $p)) { return $p } }
+    return ''
+}
+function Invoke-WpiWriteUsbRufus {
+    # Guarda de reentrada: los dialogos modales (selector de ISO, aviso premium)
+    # bombean mensajes, y un segundo clic en el boton relanzaba la funcion entera:
+    # al terminar quedaban Rufus Y un segundo selector de ISO abiertos. Con la
+    # bandera, la entrada reentrante sale sin hacer nada; el finally la suelta SIEMPRE.
+    if ($script:RufusEnCurso) { return }
+    $script:RufusEnCurso = $true
+    try {
+    # 1) Localiza la ISO sin molestar: la de salida del asistente si existe se usa
+    #    directa; si no, y hay ISO de ORIGEN (paso 2), se ofrece un dialogo con
+    #    tres salidas claras. El selector de archivos SOLO aparece si el usuario
+    #    elige "otra" o si no hay ninguna ruta conocida.
+    $iso = ''
+    $srcIso = ''
+    try {
+        $w = $script:Wiz
+        if ($w) {
+            $isoName = [string]$w.IsoName; if (-not $isoName) { $isoName = 'WPI_Custom.iso' }
+            if ($isoName -notmatch '\.iso$') { $isoName += '.iso' }
+            if ($w.OutDir) { $cand = Join-Path ([string]$w.OutDir) $isoName; if (Test-Path $cand) { $iso = $cand } }
+            if ($w.SrcIso -and (Test-Path ([string]$w.SrcIso))) { $srcIso = [string]$w.SrcIso }
+        }
+    } catch {}
+    $pedirSelector = $false
+    if (-not $iso) {
+        if ($srcIso) {
+            $sec = @(
+                @{ Head = 'Aun no hay ISO de salida creada'; Body = (Tr 'La ISO de salida del asistente todavia no existe, pero tienes una ISO de ORIGEN elegida en el paso 2. Puedes grabar esa ISO de origen tal cual, o elegir otro archivo .iso de tu equipo.'); Color = '#FFFFD166' },
+                @{ Head = 'ISO de origen elegida en el asistente'; Body = $srcIso; Color = '#FF00E5FF' }
+            )
+            $r = Show-WpiPremiumDialog -Title 'Que ISO quieres grabar al USB?' -Accent '#FFFF8C1A' -Sections $sec -YesText 'Usar la ISO de origen' -AltText 'Elegir otra ISO...' -NoText 'Cancelar'
+            if ($r -is [string] -and $r -eq 'alt') { $pedirSelector = $true }
+            elseif ($r -eq $true) { $iso = $srcIso }
+            else { return }
+        } else { $pedirSelector = $true }
+    }
+    if ($pedirSelector) {
+        $dlg = New-Object Microsoft.Win32.OpenFileDialog
+        $dlg.Filter = 'Imagen de Windows (*.iso)|*.iso'
+        $dlg.Title = (Tr 'Elige la ISO que quieres grabar al USB')
+        if ($dlg.ShowDialog() -ne $true) { return }
+        $iso = $dlg.FileName
+    }
+    if (-not (Test-Path $iso)) { Show-WpiMessage((Tr 'No se encontro la ISO a grabar.'), (Tr 'Grabar a USB (Rufus)')) | Out-Null; return }
+
+    # 2) Localiza Rufus; si no esta, ofrece instalarlo con winget.
+    $rufus = Find-WpiRufusPath
+    if (-not $rufus) {
+        $r = Show-WpiMessage((Tr 'Rufus no esta instalado. Es la herramienta que graba la ISO al USB (esta en el catalogo de apps). Instalarlo ahora con winget?'), (Tr 'Grabar a USB (Rufus)'), 'YesNo', 'Question')
+        if ($r -ne 'Yes') { return }
+        if (-not $script:WingetOK) { Show-WpiMessage((Tr 'winget no esta disponible: instala Rufus desde la seccion de apps y vuelve a intentarlo.'), (Tr 'Grabar a USB (Rufus)')) | Out-Null; return }
+        try {
+            $old = [System.Windows.Input.Mouse]::OverrideCursor; [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait
+            & winget install --id Rufus.Rufus -e --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        } catch {} finally { try { [System.Windows.Input.Mouse]::OverrideCursor = $old } catch {} }
+        $rufus = Find-WpiRufusPath
+        if (-not $rufus) { Show-WpiMessage((Tr 'No se pudo localizar Rufus tras instalarlo. Abrelo a mano y selecciona tu ISO.'), (Tr 'Grabar a USB (Rufus)')) | Out-Null; return }
+    }
+
+    # 3) Aviso claro (el USB se borra: lo hace RUFUS, no WPI) y lanzamiento.
+    #    Tras "Abrir Rufus ahora" NO hay ninguna llamada posterior que pueda
+    #    reabrir el selector: la funcion termina aqui.
+    $sec = @(
+        @{ Head = 'Vas a grabar tu ISO a un USB con Rufus'; Body = ((Tr 'ISO') + ':  ' + (Split-Path $iso -Leaf) + "`n`n" + (Tr 'Se abrira Rufus. En Rufus: 1) elige tu USB en "Dispositivo"  2) en "Eleccion de arranque" selecciona esta ISO  3) pulsa EMPEZAR. El USB se borrara por completo: eso lo hace Rufus cuando tu lo confirmes, no WPI.')); Color = '#FF00E5FF' },
+        @{ Head = 'Recordatorio importante'; Body = 'Si Rufus muestra la ventana "Experiencia de usuario de Windows", deja TODAS las casillas SIN marcar y pulsa Aceptar. Si marcas algo, Rufus crea su propio autounattend y SOBREESCRIBE la configuracion de tu ISO (apps, tweaks y ajustes no se aplicarian).'; Color = '#FFFFD166' }
+    )
+    $ok = Show-WpiPremiumDialog -Title 'Grabar la ISO a un USB (Rufus)' -Accent '#FFFF8C1A' -Sections $sec -YesText 'Abrir Rufus ahora' -NoText 'Cancelar'
+    if (-not $ok) { return }
+    try {
+        Start-Process -FilePath $rufus
+        # Copia la ruta de la ISO al portapapeles para que sea facil pegarla/encontrarla.
+        try { Set-Clipboard -Value $iso } catch {}
+        $script:StatusText.Text = (Tr 'Rufus abierto: elige tu USB y esta ISO, luego EMPEZAR.')
+    } catch { Show-WpiMessage(((Tr 'No se pudo abrir Rufus: {0}') -f $_.Exception.Message), (Tr 'Grabar a USB (Rufus)')) | Out-Null }
+    } finally { $script:RufusEnCurso = $false }
+}
+
 function Render-IsoWizard {
     $p = $script:CreateIsoList
     $p.Children.Clear()
@@ -9857,6 +15233,12 @@ function Render-IsoWizard {
     $ctaBar.Child = $ctaTb
     $p.Children.Add($ctaBar) | Out-Null
 
+    # Boton "volver al paso anterior" VISIBLE, a la altura del breadcrumb/CTA (no
+    # arriba del todo), para no tener que bajar al final a por "< Atras". Desde el paso 2.
+    if ($step -gt 0) {
+        $p.Children.Add((New-BackArrowButton { Save-IsoStep; $script:Wiz.Step = [int]$script:Wiz.Step - 1; Render-IsoWizard } 'Volver al paso anterior')) | Out-Null
+    }
+
     $content = New-IsoCard $p '' $accents[$step] ''
     switch ($step) {
         0 { Build-WizReq $content }
@@ -9882,6 +15264,30 @@ function Render-IsoWizard {
         $nav.Children.Add($bNext) | Out-Null
     }
     $p.Children.Add($nav) | Out-Null
+    # F7: en el ultimo paso, ofrecer grabar la ISO a un USB con Rufus (WPI no toca el disco).
+    if ($step -eq ($script:WizTotal - 1)) {
+        $bUsb = New-Object Windows.Controls.Button
+        $bUsb.Content = (Tr 'Grabar a un USB (Rufus)'); $bUsb.FontWeight = 'Bold'
+        $bUsb.Padding = New-Object Windows.Thickness(16,6,16,6); $bUsb.Margin = New-Object Windows.Thickness(0,0,0,6); $bUsb.HorizontalAlignment = 'Left'
+        $bUsb.Background = Get-ThemeBrush('#FF13414F'); $bUsb.BorderBrush = Get-ThemeBrush('#FF76E0FF'); $bUsb.Foreground = Get-ThemeBrush('#FFEAF2FF')
+        $bUsb.ToolTip = (Tr 'Abre Rufus para grabar tu ISO a un pendrive. El USB lo eliges y confirmas tu en Rufus.')
+        $bUsb.Add_Click({ try { Invoke-WpiWriteUsbRufus } catch { Show-WpiMessage(((Tr 'No se pudo grabar a USB:') + ' ' + $_.Exception.Message), (Tr 'Grabar a USB (Rufus)')) | Out-Null } })
+        $p.Children.Add($bUsb) | Out-Null
+        # Desplegable premium: que hace exactamente el boton de Rufus. Deja claro
+        # que es INDEPENDIENTE de "Comprobar ISO": puedes grabar directamente.
+        $p.Children.Add((New-InfoExpander 'Grabar a un USB con Rufus: que hace exactamente (no hace falta comprobar la ISO antes)' 'Camino directo al pendrive: este boton es INDEPENDIENTE de "Comprobar ISO"; si ya confias en tu ISO puedes grabarla directamente sin comprobar nada antes (la comprobacion es solo un extra de tranquilidad). Que hace: 1) localiza tu ISO recien creada (o te deja elegir otra), 2) localiza Rufus en tu equipo y, si no lo tienes, te ofrece instalarlo con winget en un clic, 3) te muestra un aviso claro y abre Rufus con la ruta de la ISO ya copiada al portapapeles para que la pegues. En Rufus solo tienes que elegir tu USB en "Dispositivo", seleccionar la ISO en "Eleccion de arranque" y pulsar EMPEZAR. El borrado del pendrive lo hace SIEMPRE Rufus cuando tu lo confirmes: el WPI no toca ningun disco. Recuerda: si Rufus muestra la ventana "Experiencia de usuario de Windows", deja TODAS las casillas sin marcar para que no pise la configuracion de tu ISO.' '#FFFF8C1A')) | Out-Null
+        # Guia premium: probar la ISO en Oracle VirtualBox sin sustos (con los dos
+        # metodos contra la pantalla negra de Windows 11). Nace de la auditoria
+        # real en VM de esta suite: el cuelgue por Hyper-V sin anidada es real.
+        $p.Children.Add((New-InfoExpander 'Probar la ISO en VirtualBox: configuracion recomendada y solucion a la pantalla negra (Windows 11)' 'Guia rapida SOLO para Oracle VirtualBox. IMPORTANTE: todos estos ajustes se cambian SIEMPRE con la maquina virtual APAGADA. — CONFIGURACION RECOMENDADA PARA LA PRUEBA: maquina "Windows 11 (64-bit)" con 4 CPUs, 8 GB de RAM y 80 GB de disco; red NAT (la que viene por defecto); e instala las Guest Additions tras el primer arranque. Haz un snapshot antes de probar: podras volver al estado limpio en segundos. RECORDATORIO: dentro del Windows de prueba deja el monitor SIEMPRE ENCENDIDO y sin suspension por inactividad (Configuracion > Sistema > Energia, o en consola: powercfg /change monitor-timeout-ac 0 y powercfg /change standby-timeout-ac 0); si no, la pantalla se apaga sola y la VM parece colgada o apagada cuando en realidad esta trabajando. — VIRTUALIZACION ANIDADA (el ajuste que evita el atasco): en Configuracion > Sistema > Procesador activa "Habilitar VT-x/AMD-V anidado". Sin el, si dentro del Windows de prueba habilitas Hyper-V, Sandbox, WSL2 o la Plataforma de maquina virtual, el siguiente arranque se queda COLGADO EN PANTALLA NEGRA (comprobado en la auditoria real de esta suite) y Windows revierte esos cambios. Si tu VirtualBox no deja activarlo, no pruebes esas 4 caracteristicas dentro de la VM. — PANTALLA NEGRA EN WINDOWS 11 (dos soluciones, solo VirtualBox, siempre con la VM apagada): METODO 1: Configuracion > Sistema y desactiva UEFI y Secure Boot. METODO 2: Configuracion > Pantalla y en "Graphics Controller" elige VMSVGA; este metodo desactiva la aceleracion 3D, pero si no vas a usar nada 3D no hay ningun problema. Con cualquiera de los dos, Windows 11 vuelve a mostrarse con normalidad.' '#FF76E0FF')) | Out-Null
+    }
+    # Traducir/aplicar tooltips en CADA render del paso: los botones creados por
+    # codigo (p.ej. "Usar mi seleccion de Apps", "Marcar instaladas") usan texto
+    # literal en espanol y solo se traducen via Translate-Tree. Al navegar
+    # Atras/Siguiente el paso se reconstruye, asi que hay que re-traducir aqui o
+    # en modo EN quedarian en espanol. Translate-Tree ya es no-op en modo ES e
+    # idempotente en EN, por lo que es seguro llamarlo siempre.
+    try { Translate-Tree $p; Apply-WpiToolTips $p } catch {}
 }
 
 # Panel @FEATURES: caracteristicas opcionales + capabilities (DISM), con estado.
@@ -9894,12 +15300,7 @@ function Build-FeaturesUI {
     $hdr.Text = 'CARACTERISTICAS DE WINDOWS  ·  ACCIONES FUERTES (DISM)'
     $hdr.FontSize = 15; $hdr.FontWeight = 'Bold'; $hdr.Foreground = Get-ThemeBrush($Theme.Clean)
     $hdr.Margin = New-Object Windows.Thickness(2,10,0,2)
-    $p.Children.Add($hdr) | Out-Null
-    $info = New-Object Windows.Controls.TextBlock
-    $info.Text = 'Activa o desactiva componentes opcionales de Windows (DISM). Cada accion corre por el motor con log forense y es reversible (Habilitar/Deshabilitar). Las marcadas "pide reinicio" requieren reiniciar para completarse. Algunas solo existen en Windows Pro/Enterprise.'
-    $info.Foreground = Get-ThemeBrush($Theme.Sub); $info.FontSize = 12; $info.TextWrapping = 'Wrap'
-    $info.Margin = New-Object Windows.Thickness(2,0,0,8)
-    $p.Children.Add($info) | Out-Null
+    $p.Children.Add((New-WpiHeaderInfo $hdr 'Gestion profesional de los componentes opcionales de Windows mediante DISM (.NET 3.5, Telnet, Hyper-V, WSL2, Sandbox...). El estado de cada componente se lee EN VIVO del sistema: verde = activo, ambar = no comprobable o pendiente. Habilitar y Deshabilitar ejecutan el comando real, RE-VERIFICAN el resultado despues y lo registran en el log forense: aqui no hay exitos de mentira. Todo es reversible con el boton contrario. Las entradas marcadas "pide reinicio" necesitan reiniciar el equipo para completarse, y algunas caracteristicas solo existen en Windows Pro/Enterprise (si faltan en tu edicion, se indica con honestidad).')) | Out-Null
 
     $script:FeatSummary = New-Object Windows.Controls.TextBlock
     $script:FeatSummary.Text = 'Estado: escaneando caracteristicas...'
@@ -9935,13 +15336,13 @@ function Build-FeaturesUI {
         $bEn.Background = Get-ThemeBrush('#FF1F3A2E'); $bEn.BorderBrush = Get-ThemeBrush('#FF3E6B54')
         $bEn.Add_Click({
             $f = $this.Tag
-            $msg = ('Vas a HABILITAR: {0}.' -f [string]$f.Name)
-            if ($f.Reboot) { $msg += ' Esta caracteristica pide REINICIAR despues para completarse.' }
-            $msg += ' Se puede revertir con "Deshabilitar". Continuar?'
+            $msg = ((L2 'Vas a HABILITAR: {0}.' 'You are about to ENABLE: {0}.') -f (Tr ([string]$f.Name)))
+            if ($f.Reboot) { $msg += (L2 ' Esta caracteristica pide REINICIAR despues para completarse.' ' This feature requires a RESTART afterwards to complete.') }
+            $msg += (L2 ' Se puede revertir con "Deshabilitar". Continuar?' ' It can be reverted with "Disable". Continue?')
             $r = Show-WpiMessage($msg, 'Caracteristicas de Windows', 'YesNo', 'Warning')
             if ($r -ne 'Yes') { return }
             $code = Get-FeatureCode -F $f -On $true
-            Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = ('Habilitar: ' + [string]$f.Name); Code = $code })
+            Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = ((Tr 'Habilitar') + ': ' + (Tr ([string]$f.Name))); Code = $code })
         })
         $btnRow.Children.Add($bEn) | Out-Null
         $bDis = New-Object Windows.Controls.Button
@@ -9949,13 +15350,13 @@ function Build-FeaturesUI {
         $bDis.Background = Get-ThemeBrush('#FF4F2A2A'); $bDis.BorderBrush = Get-ThemeBrush('#FF7B4444')
         $bDis.Add_Click({
             $f = $this.Tag
-            $msg = ('Vas a DESHABILITAR/QUITAR: {0}.' -f [string]$f.Name)
-            if ($f.Reboot) { $msg += ' Pide REINICIAR despues.' }
-            $msg += ' Se puede volver a activar con "Habilitar". Continuar?'
+            $msg = ((L2 'Vas a DESHABILITAR/QUITAR: {0}.' 'You are about to DISABLE/REMOVE: {0}.') -f (Tr ([string]$f.Name)))
+            if ($f.Reboot) { $msg += (L2 ' Pide REINICIAR despues.' ' A RESTART is required afterwards.') }
+            $msg += (L2 ' Se puede volver a activar con "Habilitar". Continuar?' ' It can be re-enabled with "Enable". Continue?')
             $r = Show-WpiMessage($msg, 'Caracteristicas de Windows', 'YesNo', 'Warning')
             if ($r -ne 'Yes') { return }
             $code = Get-FeatureCode -F $f -On $false
-            Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = ('Deshabilitar: ' + [string]$f.Name); Code = $code })
+            Start-Worker -Mode 'tweaks' -Tweaks @(@{ Name = ((Tr 'Deshabilitar') + ': ' + (Tr ([string]$f.Name))); Code = $code })
         })
         $btnRow.Children.Add($bDis) | Out-Null
         $sp.Children.Add($btnRow) | Out-Null
@@ -10073,7 +15474,7 @@ function Open-SystemPanel {
         try { $script:StatusText.Text = if ($isEn) { ('Opened: {0}' -f $Name) } else { ('Abierto: {0}' -f $Name) } } catch {}
     } catch {
         $msg = if ($isEn) { ('Could not open {0}: {1}' -f $Name, $_.Exception.Message) } else { ('No se pudo abrir {0}: {1}' -f $Name, $_.Exception.Message) }
-        Show-WpiMessage $msg 'WPI Moderno' 'OK' 'Warning' | Out-Null
+        Show-WpiMessage $msg 'Winzard' 'OK' 'Warning' | Out-Null
     }
 }
 
@@ -10266,6 +15667,73 @@ function Build-RepairUI {
     $exp.Content = $scroll
     $p.Children.Add($exp) | Out-Null
 
+    # --- Seccion: Herramientas rapidas (5.5 VT2) ---
+    # $RepairTools existia como catalogo COMPLETO pero MUERTO (14 acciones definidas y
+    # jamas cableadas a la GUI; hallazgo D.11 del informe de Reparacion). Decision VT2:
+    # CABLEARLAS (eliminarlas seria quitar opciones = decision que no se toma en
+    # solitario). Corren por el worker async (mismo motor que los tweaks: log forense,
+    # Set-Busy, Cancelar) tras una confirmacion REAL del usuario.
+    $hdrT = New-Object Windows.Controls.TextBlock
+    $hdrT.Text = if ($isEn) { 'QUICK SYSTEM TOOLS' } else { 'HERRAMIENTAS RAPIDAS DEL SISTEMA' }
+    $hdrT.FontSize = 13.5; $hdrT.FontWeight = 'Bold'; $hdrT.Foreground = Get-ThemeBrush($Theme.Optimize)
+    $hdrT.Margin = New-Object Windows.Thickness(2,20,0,4)
+    $p.Children.Add($hdrT) | Out-Null
+    $infoT = New-Object Windows.Controls.TextBlock
+    $infoT.Text = if ($isEn) { 'One-click repairs and tweaks that do not need the 17-phase console: SFC, DISM, network reset, Windows Update cache, Store, search index, winget, monthly maintenance task, DNS presets and quieting Edge. They run one at a time in the async engine (full log, cancellable).' } else { 'Reparaciones y ajustes de un clic que no necesitan la consola de 17 fases: SFC, DISM, restablecer red, cache de Windows Update, Store, indice de busqueda, winget, tarea de mantenimiento mensual, presets de DNS y silenciar Edge. Corren de una en una en el motor asincrono (log completo, cancelable).' }
+    $infoT.Foreground = Get-ThemeBrush($Theme.Sub); $infoT.FontSize = 12; $infoT.TextWrapping = 'Wrap'
+    $infoT.Margin = New-Object Windows.Thickness(2,0,0,8)
+    $p.Children.Add($infoT) | Out-Null
+    $rtEn = @{
+        'Comprobar archivos del sistema (SFC)' = @('Check system files (SFC)', 'Runs sfc /scannow to repair damaged Windows files. It can take a while.')
+        'Reparar imagen de Windows (DISM RestoreHealth)' = @('Repair the Windows image (DISM RestoreHealth)', 'DISM /Online /Cleanup-Image /RestoreHealth. Repairs the component store. It can take a while.')
+        'Restablecer la red (Winsock/TCP-IP/DNS)' = @('Reset the network (Winsock/TCP-IP/DNS)', 'netsh winsock reset + int ip reset + DNS flush + renew IP. Requires a restart.')
+        'Reparar Windows Update (limpiar cache)' = @('Repair Windows Update (clear cache)', 'Stops the services, renames SoftwareDistribution and catroot2 and restarts them. Fixes stuck updates.')
+        'Limpiar la cache de Microsoft Store' = @('Clear the Microsoft Store cache', 'Runs wsreset to fix the Store and stuck downloads.')
+        'Reconstruir el indice de busqueda' = @('Rebuild the search index', 'Forces Windows to reindex (fixes slow or empty search results).')
+        'Reparar/Resetear winget' = @('Repair/Reset winget', 'Resets winget sources and accepts agreements. Fixes catalog and download errors.')
+        'Programar mantenimiento mensual (limpieza + informe)' = @('Schedule monthly maintenance (cleanup + report)', 'Creates a scheduled task that once a month cleans temp files/recycle bin, flushes the DNS cache and leaves a report. The task creation is verified.')
+        'DNS: cambiar a Cloudflare (1.1.1.1)' = @('DNS: switch to Cloudflare (1.1.1.1)', 'Sets the active adapter DNS to Cloudflare (1.1.1.1 / 1.0.0.1). Reversible with "DNS: back to automatic".')
+        'DNS: cambiar a Quad9 (9.9.9.9, con filtro de malware)' = @('DNS: switch to Quad9 (9.9.9.9, malware filtering)', 'Sets the active adapter DNS to Quad9 (9.9.9.9 / 149.112.112.112), which blocks known malicious domains. Reversible.')
+        'DNS: cambiar a Google (8.8.8.8)' = @('DNS: switch to Google (8.8.8.8)', 'Sets the active adapter DNS to Google (8.8.8.8 / 8.8.4.4). Reversible with "DNS: back to automatic".')
+        'DNS: cambiar a OpenDNS (con filtro familiar opcional)' = @('DNS: switch to OpenDNS (optional family filter)', 'Sets the active adapter DNS to OpenDNS (208.67.222.222 / 208.67.220.220), by Cisco. Reversible with "DNS: back to automatic".')
+        'DNS: volver a automatico (DHCP del router)' = @('DNS: back to automatic (router DHCP)', 'Resets the active adapter DNS to automatic (whatever the router assigns via DHCP). Undoes any previous DNS change.')
+        'Silenciar Microsoft Edge (arranque automatico y accesos)' = @('Quiet Microsoft Edge (autostart and shortcuts)', 'Stops Edge from opening on sign-in and removes its Desktop/taskbar shortcuts. It does NOT uninstall Edge (still available): fully reversible.')
+    }
+    foreach ($rt in $RepairTools) {
+        $rtName = [string]$rt.Name; $rtDesc = [string]$rt.Desc
+        if ($isEn -and $rtEn.ContainsKey($rtName)) { $rtDesc = [string]$rtEn[$rtName][1]; $rtName = [string]$rtEn[$rtName][0] }
+        $rb = New-Object Windows.Controls.Border
+        $rb.Background = Get-ThemeBrush($Theme.Card); $rb.BorderBrush = Get-ThemeBrush($Theme.CardBorder)
+        $rb.BorderThickness = New-Object Windows.Thickness(1); $rb.CornerRadius = New-Object Windows.CornerRadius(8)
+        $rb.Margin = New-Object Windows.Thickness(0,4,0,0); $rb.Padding = New-Object Windows.Thickness(12,8,12,8)
+        $rdp = New-Object Windows.Controls.DockPanel; $rdp.LastChildFill = $true
+        $rbt = New-Object Windows.Controls.Button
+        $rbt.Content = if ($isEn) { 'Run' } else { 'Ejecutar' }
+        $rbt.Tag = $rt
+        $rbt.Background = Get-ThemeBrush('#FF1F3A2E'); $rbt.BorderBrush = Get-ThemeBrush('#FF3E6B54')
+        $rbt.Foreground = Get-ThemeBrush($Theme.Text); $rbt.FontSize = 11; $rbt.FontWeight = 'Bold'
+        $rbt.Padding = New-Object Windows.Thickness(10,3,10,3)
+        $rbt.Cursor = [Windows.Input.Cursors]::Hand
+        $rbt.Add_Click({
+            $tool = $this.Tag
+            $msg = if ($tool.Warn) { [string]$tool.Warn } else { ((Tr 'Se ejecutara "{0}" con el motor asincrono (veras el progreso abajo y puedes cancelar). Continuar?') -f (Tr ([string]$tool.Name))) }
+            $rr = Show-WpiMessage($msg, (Tr 'Herramientas rapidas'), 'YesNo', 'Question')
+            if ($rr -eq 'Yes') { Start-Worker -Mode 'tweaks' -Tweaks @($tool) }
+        })
+        [Windows.Controls.DockPanel]::SetDock($rbt, [Windows.Controls.Dock]::Right)
+        $rdp.Children.Add($rbt) | Out-Null
+        $rsp = New-Object Windows.Controls.StackPanel
+        $rn = New-Object Windows.Controls.TextBlock
+        $rn.Text = $rtName; $rn.FontWeight = 'Bold'; $rn.FontSize = 12; $rn.Foreground = Get-ThemeBrush($Theme.Text)
+        $rsp.Children.Add($rn) | Out-Null
+        $rd = New-Object Windows.Controls.TextBlock
+        $rd.Text = $rtDesc; $rd.Foreground = Get-ThemeBrush($Theme.Sub); $rd.FontSize = 11; $rd.TextWrapping = 'Wrap'
+        $rsp.Children.Add($rd) | Out-Null
+        $rdp.Children.Add($rsp) | Out-Null
+        $rb.Child = $rdp
+        $p.Children.Add($rb) | Out-Null
+    }
+
     # --- Seccion: Privacidad Avanzada ---
     $hdr2 = New-Object Windows.Controls.TextBlock
     $hdr2.Text = if ($isEn) { 'ADVANCED PRIVACY' } else { 'PRIVACIDAD AVANZADA' }
@@ -10324,23 +15792,1399 @@ function Build-RepairUI {
                 'Editor de directivas (gpedit)' { $pName = 'Policy Editor (gpedit)' }
                 'Visor de eventos' { $pName = 'Event Viewer' }
                 'Editor del Registro' { $pName = 'Registry Editor' }
+                'Liberador de espacio' { $pName = 'Disk Cleanup' }
+                'Informacion del sistema' { $pName = 'System Information' }
+                'Region y formatos' { $pName = 'Region and formats' }
+                'Pantalla (resolucion clasica)' { $pName = 'Display (classic resolution)' }
+                'Raton (propiedades clasicas)' { $pName = 'Mouse (classic properties)' }
             }
         }
         $panelsList += @{ Name = $pName; Cmd = $panelDef.Cmd }
     }
 
+    # (Rediseno premium) Mosaico uniforme: 12 accesos con el MISMO ancho, icono y
+    # alineacion, en vez de una nube de botones de tamanos dispares amontonados.
     foreach ($panelDef in $panelsList) {
         $pb = New-Object Windows.Controls.Button
-        $pb.Content = $panelDef.Name; $pb.Tag = $panelDef
+        $pb.Content = ([string][char]0x2699 + '  ' + $panelDef.Name); $pb.Tag = $panelDef
+        $pb.Width = 232
+        $pb.HorizontalContentAlignment = 'Left'
         $pb.Margin = New-Object Windows.Thickness(0,6,8,0)
         $pb.Background = Get-ThemeBrush('#FF1A2B3C'); $pb.BorderBrush = Get-ThemeBrush('#FF3A5B7C')
         $pb.Foreground = Get-ThemeBrush($Theme.Text)
-        $pb.Padding = New-Object Windows.Thickness(12,6,12,6)
+        $pb.Padding = New-Object Windows.Thickness(12,7,12,7)
         $pb.Cursor = [Windows.Input.Cursors]::Hand
         $pb.Add_Click({ Open-SystemPanel ([string]$this.Tag.Cmd) ([string]$this.Tag.Name) })
         $wrap.Children.Add($pb) | Out-Null
     }
     $p.Children.Add($wrap) | Out-Null
+}
+
+# ============================================================
+#  FASE B1 - GAMING OPTIMIZER (panel @GAMING)
+#  Preparacion honesta para jugar: chequeo de solo lectura, motor en
+#  tiempo real DELEGADO en Process Lasso y Modo Juego por sesion 100%
+#  reversible (plan de energia + pausa NATIVA de procesos elegidos
+#  explicitamente por el usuario, con diario y autocuracion).
+#  Reglas de oro: cero promesas de FPS, nada preseleccionado, los
+#  procesos se PAUSAN y REANUDAN (nunca se cierran).
+# ============================================================
+
+# Suspension/reanudacion NATIVA de procesos: mismas llamadas de ntdll que
+# usa el Monitor de recursos de Windows; respaldo hilo a hilo con kernel32.
+function Initialize-WpiProcSuspend {
+    if ('WpiNative.ProcCtl' -as [type]) { return $true }
+    try {
+        Add-Type -Namespace WpiNative -Name ProcCtl -MemberDefinition @'
+[DllImport("ntdll.dll")]    public static extern int NtSuspendProcess(IntPtr processHandle);
+[DllImport("ntdll.dll")]    public static extern int NtResumeProcess(IntPtr processHandle);
+[DllImport("kernel32.dll")] public static extern IntPtr OpenThread(int dwDesiredAccess, bool bInheritHandle, uint dwThreadId);
+[DllImport("kernel32.dll")] public static extern uint SuspendThread(IntPtr hThread);
+[DllImport("kernel32.dll")] public static extern int ResumeThread(IntPtr hThread);
+[DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr hObject);
+'@ -ErrorAction Stop
+    } catch {}
+    return [bool]('WpiNative.ProcCtl' -as [type])
+}
+
+function Set-WpiProcSuspendState {
+    param([System.Diagnostics.Process]$Proc, [bool]$Suspend)
+    if (-not (Initialize-WpiProcSuspend)) { return $false }
+    try {
+        $rc = $(if ($Suspend) { [WpiNative.ProcCtl]::NtSuspendProcess($Proc.Handle) } else { [WpiNative.ProcCtl]::NtResumeProcess($Proc.Handle) })
+        if ($rc -eq 0) { return $true }
+    } catch {}
+    # Respaldo: hilo a hilo (THREAD_SUSPEND_RESUME = 0x0002)
+    $okAll = $true
+    try {
+        foreach ($th in $Proc.Threads) {
+            $h = [WpiNative.ProcCtl]::OpenThread(2, $false, [uint32]$th.Id)
+            if ($h -eq [IntPtr]::Zero) { $okAll = $false; continue }
+            try {
+                if ($Suspend) { if ([WpiNative.ProcCtl]::SuspendThread($h) -eq [uint32]::MaxValue) { $okAll = $false } }
+                else { if ([WpiNative.ProcCtl]::ResumeThread($h) -lt 0) { $okAll = $false } }
+            } finally { [void][WpiNative.ProcCtl]::CloseHandle($h) }
+        }
+    } catch { $okAll = $false }
+    return $okAll
+}
+
+# Procesos que JAMAS se pausan: ni se listan como candidatos ni se tocarian
+# aunque estuvieran en la lista guardada (el panel se protege solo).
+$script:GamingNeverPause = @(
+    'System','Idle','Registry','Memory Compression','smss','csrss','wininit','winlogon',
+    'services','lsass','svchost','fontdrvhost','dwm','explorer','sihost','taskhostw',
+    'ctfmon','conhost','audiodg','dllhost','RuntimeBroker','ApplicationFrameHost',
+    'TextInputHost','SearchHost','StartMenuExperienceHost','ShellExperienceHost',
+    'SystemSettings','WmiPrvSE','spoolsv','MsMpEng','NisSrv','SecurityHealthService',
+    'SecurityHealthSystray','LogonUI','LsaIso','VBoxService','VBoxTray',
+    'powershell','powershell_ise','pwsh','WindowsTerminal','OpenConsole'
+)
+
+function Get-WpiGamingSessionFile { return (Join-Path $Config.LogDir 'gaming_session.json') }
+
+function Get-WpiGameSessionState {
+    $f = Get-WpiGamingSessionFile
+    if (-not (Test-Path $f)) { return $null }
+    try { return (Get-Content $f -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
+}
+
+# Registro en el Live Log de la GUI (misma cola que el worker) + barra de estado.
+function Add-WpiGamingLog([string]$Type, [string]$Msg) {
+    try { $script:Queue.Enqueue([pscustomobject]@{ T = $Type; M = ('  ' + $Msg) }) } catch {}
+    try { $script:StatusText.Text = $Msg } catch {}
+}
+
+function Get-WpiActivePowerPlan {
+    try {
+        $out = [string](powercfg /getactivescheme 2>$null)
+        $m = [regex]::Match($out, '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')
+        if (-not $m.Success) { return $null }
+        $name = ''
+        $mn = [regex]::Match($out, '\(([^)]+)\)')
+        if ($mn.Success) { $name = $mn.Groups[1].Value }
+        return @{ Guid = $m.Groups[1].Value.ToLower(); Name = $name }
+    } catch { return $null }
+}
+
+# Plan objetivo del Modo Juego: Maximo rendimiento (Ultimate) si existe en
+# powercfg /list; si no, Alto rendimiento; si tampoco, $null (no se toca).
+function Get-WpiMaxPowerPlan {
+    try {
+        $lines = @(powercfg /list 2>$null)
+        foreach ($pref in @('e9a42b02-d5df-448d-aa66-1f0e88d5f6b1', '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c')) {
+            foreach ($ln in $lines) {
+                if ([string]$ln -match $pref) {
+                    $name = ''
+                    $mn = [regex]::Match([string]$ln, '\(([^)]+)\)')
+                    if ($mn.Success) { $name = $mn.Groups[1].Value }
+                    return @{ Guid = $pref; Name = $name }
+                }
+            }
+        }
+    } catch {}
+    return $null
+}
+
+function Start-WpiGameSession {
+    if (Get-WpiGameSessionState) { Add-WpiGamingLog 'warn' (Tr 'Modo Juego: ya hay una sesion activa.'); return $false }
+    $prev = Get-WpiActivePowerPlan
+    if (-not $prev) { Add-WpiGamingLog 'err' (Tr 'Modo Juego: no se pudo leer el plan de energia actual; no se cambia nada.'); return $false }
+    $target = Get-WpiMaxPowerPlan
+    $planChanged = $false
+    $paused = New-Object System.Collections.Generic.List[object]
+    try {
+        if ($target -and ($target.Guid -ne $prev.Guid)) {
+            powercfg /setactive $target.Guid 2>$null | Out-Null
+            $now = Get-WpiActivePowerPlan
+            if ($now -and $now.Guid -eq $target.Guid) {
+                $planChanged = $true
+                Add-WpiGamingLog 'ok' ((Tr 'Modo Juego: plan de energia cambiado a "{0}" (antes: "{1}").') -f $target.Name, $prev.Name)
+            }
+        } elseif ($target) {
+            Add-WpiGamingLog 'dim' ((Tr 'Modo Juego: el plan de energia ya era "{0}"; no se cambia.') -f $prev.Name)
+        }
+        $gmVal = Get-WpiRegValue 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled'
+        $gmOn = ($null -eq $gmVal) -or ($gmVal -eq 1)
+        # Pausa de la lista EXPLICITA del usuario (nunca procesos del sistema).
+        foreach ($nm in @($script:GamingPauseList)) {
+            if ([string]::IsNullOrWhiteSpace($nm)) { continue }
+            if ($script:GamingNeverPause -contains $nm) { continue }
+            foreach ($pr in @(Get-Process -Name $nm -ErrorAction SilentlyContinue)) {
+                if ($pr.Id -eq $PID) { continue }
+                if (Set-WpiProcSuspendState -Proc $pr -Suspend $true) {
+                    $paused.Add(@{ Id = [int]$pr.Id; Name = [string]$pr.ProcessName })
+                    Add-WpiGamingLog 'ok' ((Tr 'Modo Juego: pausado {0} (PID {1}).') -f $pr.ProcessName, $pr.Id)
+                } else {
+                    Add-WpiGamingLog 'warn' ((Tr 'Modo Juego: no se pudo pausar {0} (PID {1}).') -f $pr.ProcessName, $pr.Id)
+                }
+            }
+        }
+        # S10-ter: silenciar notificaciones durante la sesion (opcional, reversible)
+        $mutedToasts = $false; $toastPrev = $null
+        if ($script:GamingMuteToasts) {
+            try {
+                $toastPrev = Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' 'ToastEnabled'
+                if ($toastPrev -ne 0) {
+                    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\PushNotifications" /v ToastEnabled /t REG_DWORD /d 0 /f | Out-Null
+                    $mutedToasts = $true
+                    Add-WpiGamingLog 'ok' (Tr 'Modo Juego: notificaciones silenciadas durante la sesion.')
+                }
+            } catch {}
+        }
+        # PS 5.1: @() sobre una List[object] de New-Object rompe el binder del motor
+        # ("Los tipos de argumentos no coinciden"); se usa ToArray() y locales planos.
+        $tgtGuid = ''; $tgtName = ''
+        if ($target) { $tgtGuid = [string]$target.Guid; $tgtName = [string]$target.Name }
+        $sess = [pscustomobject]@{
+            Started        = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+            PrevPlanGuid   = [string]$prev.Guid
+            PrevPlanName   = [string]$prev.Name
+            TargetPlanGuid = $tgtGuid
+            TargetPlanName = $tgtName
+            PlanChanged    = [bool]$planChanged
+            GameModeOn     = [bool]$gmOn
+            Paused         = $paused.ToArray()
+            MutedToasts    = [bool]$mutedToasts
+            ToastPrev      = $toastPrev
+        }
+        Set-WpiContent -Path (Get-WpiGamingSessionFile) -Value ($sess | ConvertTo-Json -Depth 5)
+        Add-WpiJournal -Names @('Modo Juego por sesion (Gaming Optimizer)') -Action 'apply'
+        Add-WpiGamingLog 'head' (Tr 'Modo Juego: sesion ACTIVADA. Todo queda registrado y es reversible con "Restaurar todo".')
+        return $true
+    } catch {
+        # Autocuracion inmediata: si algo fallo a medias, se deshace lo hecho.
+        foreach ($pp in $paused) { try { $pr = Get-Process -Id ([int]$pp.Id) -ErrorAction Stop; if ([string]$pr.ProcessName -eq [string]$pp.Name) { [void](Set-WpiProcSuspendState -Proc $pr -Suspend $false) } } catch {} }
+        if ($planChanged) { try { powercfg /setactive $prev.Guid 2>$null | Out-Null } catch {} }
+        if ($mutedToasts) { try { $vPrev = $(if ($null -eq $toastPrev) { 1 } else { [int]$toastPrev }); reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\PushNotifications" /v ToastEnabled /t REG_DWORD /d $vPrev /f | Out-Null } catch {} }
+        try { Remove-Item (Get-WpiGamingSessionFile) -Force -ErrorAction SilentlyContinue } catch {}
+        Add-WpiGamingLog 'err' ((Tr 'Modo Juego: error al activar; se ha revertido lo hecho. Detalle: {0}') -f $_.Exception.Message)
+        return $false
+    }
+}
+
+function Stop-WpiGameSession {
+    $sess = Get-WpiGameSessionState
+    if (-not $sess) { Add-WpiGamingLog 'dim' (Tr 'Modo Juego: no hay sesion activa que restaurar.'); return $false }
+    foreach ($pp in @($sess.Paused)) {
+        $done = $false
+        try {
+            $pr = Get-Process -Id ([int]$pp.Id) -ErrorAction Stop
+            if ([string]$pr.ProcessName -eq [string]$pp.Name) {
+                if (Set-WpiProcSuspendState -Proc $pr -Suspend $false) {
+                    $done = $true
+                    Add-WpiGamingLog 'ok' ((Tr 'Modo Juego: reanudado {0} (PID {1}).') -f $pr.ProcessName, $pr.Id)
+                }
+            }
+        } catch {}
+        if (-not $done) { Add-WpiGamingLog 'dim' ((Tr 'Modo Juego: {0} ya no existia (no hace falta reanudarlo).') -f [string]$pp.Name) }
+    }
+    try {
+        if ([bool]$sess.PlanChanged -and $sess.PrevPlanGuid) {
+            powercfg /setactive ([string]$sess.PrevPlanGuid) 2>$null | Out-Null
+            Add-WpiGamingLog 'ok' ((Tr 'Modo Juego: plan de energia restaurado a "{0}".') -f [string]$sess.PrevPlanName)
+        }
+    } catch {}
+    # S10-ter: restaurar las notificaciones exactamente a como estaban
+    try {
+        if ($null -ne $sess.PSObject.Properties['MutedToasts'] -and [bool]$sess.MutedToasts) {
+            $vPrev = 1
+            if ($null -ne $sess.PSObject.Properties['ToastPrev'] -and $null -ne $sess.ToastPrev) { $vPrev = [int]$sess.ToastPrev }
+            reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\PushNotifications" /v ToastEnabled /t REG_DWORD /d $vPrev /f | Out-Null
+            Add-WpiGamingLog 'ok' (Tr 'Modo Juego: notificaciones restauradas a su estado anterior.')
+        }
+    } catch {}
+    try { Remove-Item (Get-WpiGamingSessionFile) -Force -ErrorAction SilentlyContinue } catch {}
+    Add-WpiJournal -Names @('Modo Juego por sesion (Gaming Optimizer)') -Action 'undo'
+    Add-WpiGamingLog 'head' (Tr 'Modo Juego: sesion DESACTIVADA; todo restaurado.')
+    return $true
+}
+
+# Reanudacion individual desde la tarjeta de transparencia (actualiza el estado).
+function Resume-WpiGamePausedOne([int]$ProcId) {
+    $sess = Get-WpiGameSessionState
+    if (-not $sess) { return }
+    foreach ($pp in @($sess.Paused)) {
+        if ([int]$pp.Id -ne $ProcId) { continue }
+        try {
+            $pr = Get-Process -Id $ProcId -ErrorAction Stop
+            if ([string]$pr.ProcessName -eq [string]$pp.Name) { [void](Set-WpiProcSuspendState -Proc $pr -Suspend $false) }
+            Add-WpiGamingLog 'ok' ((Tr 'Modo Juego: reanudado {0} (PID {1}).') -f [string]$pp.Name, $ProcId)
+        } catch { Add-WpiGamingLog 'dim' ((Tr 'Modo Juego: {0} ya no existia (no hace falta reanudarlo).') -f [string]$pp.Name) }
+    }
+    $sess.Paused = @(@($sess.Paused) | Where-Object { [int]$_.Id -ne $ProcId })
+    try { Set-WpiContent -Path (Get-WpiGamingSessionFile) -Value ($sess | ConvertTo-Json -Depth 5) } catch {}
+}
+
+# ============================================================
+#  FASE B2 - ORQUESTACION: deteccion automatica de juego (OFF por
+#  defecto), perfiles por juego y launchers. Es orquestacion del
+#  Modo Juego por sesion de la FASE B1, no un motor nuevo.
+# ============================================================
+function Set-WpiGameWatch([bool]$On) {
+    $script:GamingWatchEnabled = $On
+    if ($On -and -not $script:GamingWatchTimer) {
+        $script:GamingWatchTimer = New-Object Windows.Threading.DispatcherTimer
+        $script:GamingWatchTimer.Interval = [TimeSpan]::FromSeconds(5)
+        $script:GamingWatchTimer.Add_Tick({ Invoke-WpiGameWatchTick })
+    }
+    if ($On) { $script:GamingWatchTimer.Start(); Add-WpiGamingLog 'ok' (Tr 'Deteccion automatica de juego ACTIVADA (vigilante cada 5 s).') }
+    elseif ($script:GamingWatchTimer) { $script:GamingWatchTimer.Stop(); Add-WpiGamingLog 'dim' (Tr 'Deteccion automatica de juego desactivada.') }
+    Save-Settings
+}
+
+function Invoke-WpiGameWatchTick {
+    try {
+        if (-not $script:GamingWatchEnabled) { return }
+        # ¿Sigue en marcha el juego que disparo la orquestacion?
+        if ($script:GamingAutoGame) {
+            $still = @(Get-Process -Name $script:GamingAutoGame -ErrorAction SilentlyContinue)
+            if (@($still).Count -eq 0) {
+                Add-WpiGamingLog 'ok' ((Tr 'Deteccion automatica: {0} ha terminado; se restaura todo.') -f $script:GamingAutoGame)
+                if ($script:GamingAutoMode -eq 'session') { [void](Stop-WpiGameSession); $script:GamingSessionOwned = $false }
+                $script:GamingAutoGame = $null; $script:GamingAutoMode = ''
+                if ($script:GamingScroll -and $script:GamingScroll.Visibility -eq 'Visible') { Refresh-GamingUI }
+            }
+            return
+        }
+        # ¿Arranca alguno de los juegos asociados?
+        foreach ($gj in @($script:GamingGames)) {
+            $exe = [string]$gj.Exe
+            if ([string]::IsNullOrWhiteSpace($exe)) { continue }
+            $run = @(Get-Process -Name $exe -ErrorAction SilentlyContinue)
+            if (@($run).Count -eq 0) { continue }
+            if ([string]$gj.Profile -eq 'Competitivo') {
+                if (Get-WpiGameSessionState) { return }   # hay sesion manual activa: no se pisa
+                $bak = @($script:GamingPauseList)
+                if (-not [bool]$gj.UsePause) { $script:GamingPauseList = @() }
+                $okS = Start-WpiGameSession
+                $script:GamingPauseList = $bak
+                if (-not $okS) { return }
+                $script:GamingSessionOwned = $true
+                $script:GamingAutoGame = $exe; $script:GamingAutoMode = 'session'
+            } else {
+                $pl = Get-WpiProcessLassoPath
+                if ($pl) { try { Start-Process $pl -WindowStyle Minimized } catch {} }
+                $script:GamingAutoGame = $exe; $script:GamingAutoMode = 'lasso'
+            }
+            Add-WpiGamingLog 'head' ((Tr 'Deteccion automatica: {0} detectado; perfil {1} aplicado.') -f $exe, (Tr ([string]$gj.Profile)))
+            if ($script:GamingScroll -and $script:GamingScroll.Visibility -eq 'Visible') { Refresh-GamingUI }
+            return
+        }
+    } catch {}
+}
+
+# Launchers instalados (registro/rutas conocidas). Solo OFRECE sus procesos
+# de fondo como candidatos a la lista de pausa: nada viene marcado.
+function Get-WpiGamingLaunchers {
+    $ls = @()
+    $pf86 = ''
+    try { $pf86 = [Environment]::GetFolderPath('ProgramFilesX86') } catch {}
+    try { $sp0 = Get-WpiRegValue 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam' 'InstallPath'; if ($sp0) { $ls += @{ Name = 'Steam'; Procs = @('steam','steamwebhelper') } } } catch {}
+    try { if ($env:ProgramData -and (Test-Path (Join-Path $env:ProgramData 'Epic\UnrealEngineLauncher'))) { $ls += @{ Name = 'Epic Games Launcher'; Procs = @('EpicGamesLauncher','EpicWebHelper') } } } catch {}
+    try { if ($pf86 -and (Test-Path (Join-Path $pf86 'GOG Galaxy\GalaxyClient.exe'))) { $ls += @{ Name = 'GOG Galaxy'; Procs = @('GalaxyClient') } } } catch {}
+    try { if ($pf86 -and (Test-Path (Join-Path $pf86 'Battle.net\Battle.net.exe'))) { $ls += @{ Name = 'Battle.net'; Procs = @('Battle.net') } } } catch {}
+    return @($ls)
+}
+
+function Get-WpiProcessLassoPath {
+    $cands = @()
+    try { if ($env:ProgramFiles) { $cands += (Join-Path $env:ProgramFiles 'Process Lasso\ProcessLasso.exe') } } catch {}
+    try { $pf86 = [Environment]::GetFolderPath('ProgramFilesX86'); if ($pf86) { $cands += (Join-Path $pf86 'Process Lasso\ProcessLasso.exe') } } catch {}
+    foreach ($c in $cands) { if (Test-Path $c) { return $c } }
+    return $null
+}
+
+# Resumen de hardware para el chequeo previo (cacheado: WMI solo una vez;
+# el boton "Refrescar chequeo" limpia la cache).
+function Get-WpiGamingHwLines {
+    if ($script:GamingHwLines) { return $script:GamingHwLines }
+    $ls = @()
+    $script:GamingGpuIsVirtual = $false
+    try {
+        $vm0 = @{ ByVenDev = @{}; ByName = @{} }
+        $infos = @()
+        foreach ($g in @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)) { $infos += (Get-WpiGpuInfo -Gpu $g -VramMap $vm0) }
+        $reales = @($infos | Where-Object { -not $_.Virtual })
+        $mejor = $null
+        foreach ($i in $reales) { if (-not $mejor -or ($i.Active -and -not $mejor.Active) -or ($i.Kind -eq 'dedicada' -and $mejor.Kind -ne 'dedicada')) { $mejor = $i } }
+        if ($mejor) {
+            $extra = @((Tr ([string]$mejor.Kind)))
+            $vt = Format-WpiSize -Bytes $mejor.Bytes
+            if ($vt) { $extra += ($vt + ' VRAM') }
+            if ($mejor.Driver) { $extra += ('driver ' + [string]$mejor.Driver) }
+            if ($mejor.Date) { $extra += (Get-Date $mejor.Date -Format 'yyyy-MM-dd') }
+            $ls += ((Tr 'GPU principal: {0}') -f ([string]$mejor.Name + '   [' + ($extra -join '  ·  ') + ']'))
+        } elseif (@($infos).Count -gt 0) {
+            $script:GamingGpuIsVirtual = $true
+            $ls += (Tr 'GPU: solo se detectan adaptadores virtuales (maquina virtual o escritorio remoto).')
+        }
+    } catch {}
+    try {
+        $cpu = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
+        $ls += ((Tr 'CPU: {0} ({1} nucleos / {2} hilos)') -f ([string]$cpu.Name).Trim(), [int]$cpu.NumberOfCores, [int]$cpu.NumberOfLogicalProcessors)
+    } catch {}
+    try {
+        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+        $ls += ((Tr 'RAM instalada: {0} GB') -f ([math]::Round([double]$cs.TotalPhysicalMemory / 1GB, 1)))
+    } catch {}
+    $mt = ''
+    try {
+        $part = Get-Partition -DriveLetter C -ErrorAction Stop
+        $pd = @(Get-PhysicalDisk -ErrorAction Stop) | Where-Object { [string]$_.DeviceId -eq [string]$part.DiskNumber } | Select-Object -First 1
+        if ($pd) { $mt = [string]$pd.MediaType }
+    } catch {}
+    $script:GamingDiskIsHdd = ($mt -eq 'HDD')
+    if ($mt -and $mt -ne 'Unspecified') { $ls += ((Tr 'Disco del sistema (C:): {0}') -f $mt) }
+    else { $ls += ((Tr 'Disco del sistema (C:): {0}') -f (Tr 'tipo no identificado')) }
+    $script:GamingHwLines = $ls
+    return $ls
+}
+
+# ---- Ayudantes visuales del panel (mismo lenguaje de tarjetas premium) ----
+function New-WpiGamingCard {
+    param([string]$Title, [string]$TitleColor)
+    $card = New-Object Windows.Controls.Border
+    $card.Background = Get-ThemeBrush($Theme.Card); $card.BorderBrush = Get-ThemeBrush($Theme.CardBorder)
+    $card.BorderThickness = New-Object Windows.Thickness(1); $card.CornerRadius = New-Object Windows.CornerRadius(11)
+    $card.Padding = New-Object Windows.Thickness(16,14,16,16)
+    $card.Margin = New-Object Windows.Thickness(0,0,0,10)
+    $sp = New-Object Windows.Controls.StackPanel
+    $card.Child = $sp
+    if ($Title) {
+        $h = New-Object Windows.Controls.TextBlock
+        $h.Text = $Title; $h.FontWeight = 'Bold'; $h.FontSize = 13.5
+        $h.Foreground = Get-ThemeBrush($(if ($TitleColor) { $TitleColor } else { $Theme.Text }))
+        $sp.Children.Add($h) | Out-Null
+    }
+    return @{ Card = $card; Panel = $sp }
+}
+
+function New-WpiGamingText {
+    param([string]$Text, [string]$Color = '', [double]$Size = 12, [bool]$Bold = $false, [object]$Margin = $null)
+    $tb = New-Object Windows.Controls.TextBlock
+    $tb.Text = $Text; $tb.FontSize = $Size; $tb.TextWrapping = 'Wrap'
+    if ($Bold) { $tb.FontWeight = 'Bold' }
+    $tb.Foreground = Get-ThemeBrush($(if ($Color) { $Color } else { $Theme.Sub }))
+    $tb.Margin = $(if ($Margin) { $Margin } else { New-Object Windows.Thickness(0,4,0,0) })
+    return $tb
+}
+
+function New-WpiGamingButton {
+    param([string]$Text, [string]$Bg = '#FF1F3A2E', [string]$Border = '#FF3E6B54', [object]$Tag = $null)
+    $b = New-Object Windows.Controls.Button
+    $b.Content = $Text
+    $b.Background = Get-ThemeBrush($Bg); $b.BorderBrush = Get-ThemeBrush($Border)
+    $b.Foreground = Get-ThemeBrush($Theme.Text)
+    $b.FontSize = 12; $b.FontWeight = 'Bold'
+    $b.Padding = New-Object Windows.Thickness(12,6,12,6)
+    $b.Margin = New-Object Windows.Thickness(0,8,8,0)
+    $b.HorizontalAlignment = 'Left'
+    $b.Cursor = [Windows.Input.Cursors]::Hand
+    if ($null -ne $Tag) { $b.Tag = $Tag }
+    return $b
+}
+
+# ============ S10-ter: GAMING NIVEL SUPERIOR (ayudantes solo lectura) ============
+# HAGS y VRR leidos del registro (informativo; se cambian en Ajustes de Windows).
+function Get-WpiHagsVrrLines {
+    $lines = @()
+    try {
+        $h = Get-WpiRegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode'
+        $txt = $(if ($h -eq 2) { Tr 'ACTIVADA' } elseif ($h -eq 1) { Tr 'desactivada' } else { Tr 'no disponible en esta GPU/driver' })
+        $lines += ((Tr 'Aceleracion de GPU por hardware (HAGS): {0}') -f $txt)
+    } catch {}
+    try {
+        $g = [string](Get-WpiRegValue 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' 'DirectXUserGlobalSettings')
+        $v = $(if ($g -match 'VRROptimizeEnable=1') { Tr 'ACTIVADA' } elseif ($g -match 'VRROptimizeEnable=0') { Tr 'desactivada' } else { Tr 'por defecto del sistema' })
+        $lines += ((Tr 'Optimizacion para pantallas de refresco variable (VRR): {0}') -f $v)
+    } catch {}
+    return $lines
+}
+
+# Radar de overlays y grabadores: SOLO LECTURA. Cada entrada: Name, Active, Note.
+function Get-WpiOverlayRadar {
+    $items = @()
+    try {
+        $gb = Get-WpiRegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' 'AppCaptureEnabled'
+        $items += @{ Name = 'Game Bar / captura de Windows'; Active = (-not ($gb -eq 0)); Note = (Tr 'Se apaga con el tweak "Desactivar Game Bar y grabacion en segundo plano".') }
+    } catch {}
+    $procMap = @(
+        @{ P = 'Discord';        N = 'Overlay de Discord';        T = (Tr 'Discord esta abierto: su overlay se configura en Discord > Ajustes > Overlay.') }
+        @{ P = 'NVIDIA Overlay'; N = 'Overlay de NVIDIA';         T = (Tr 'El overlay de NVIDIA (GeForce/App) esta corriendo; se configura en la app de NVIDIA.') }
+        @{ P = 'obs64';          N = 'OBS Studio';                T = (Tr 'OBS esta abierto: grabar o emitir mientras juegas consume GPU (es su trabajo).') }
+        @{ P = 'GameBarPresenceWriter'; N = 'Presencia de Game Bar'; T = (Tr 'Proceso auxiliar de Game Bar en ejecucion.') }
+        @{ P = 'RTSS';           N = 'RivaTuner (OSD)';           T = (Tr 'RivaTuner esta corriendo: su OSD se inyecta en los juegos (util para medir; apagalo si da conflictos).') }
+    )
+    foreach ($pm in $procMap) {
+        $on = $false
+        try { $on = (@(Get-Process -Name ([string]$pm.P) -ErrorAction SilentlyContinue).Count -gt 0) } catch {}
+        $items += @{ Name = [string]$pm.N; Active = $on; Note = [string]$pm.T }
+    }
+    try {
+        $steamOn = (@(Get-Process -Name 'steam' -ErrorAction SilentlyContinue).Count -gt 0)
+        if ($steamOn) {
+            $so = Get-WpiRegValue 'HKCU:\Software\Valve\Steam' 'InGameOverlay'
+            $items += @{ Name = 'Overlay de Steam'; Active = (-not ($so -eq 0)); Note = (Tr 'Se configura en Steam > Parametros > En el juego.') }
+        }
+    } catch {}
+    return $items
+}
+
+# Juegos INSTALADOS detectados (solo lectura): Steam (.acf), Epic (manifiestos
+# .item con el exe exacto) y GOG (registro). Devuelve Name, Exe, Source.
+function Get-WpiInstalledGames {
+    $games = New-Object System.Collections.Generic.List[object]
+    $skipExe = '^(unitycrash|ue4prereq|ueprereq|vc_?redist|vcredist|dxsetup|dotnet|setup|unins|crash|launcher_installer|easyanticheat|eac)'
+    # --- Steam ---
+    try {
+        $sp = [string](Get-WpiRegValue 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam' 'InstallPath')
+        if ($sp -and (Test-Path $sp)) {
+            $libs = @((Join-Path $sp 'steamapps'))
+            $vdf = Join-Path $sp 'steamapps\libraryfolders.vdf'
+            if (Test-Path $vdf) {
+                foreach ($m in [regex]::Matches((Get-Content $vdf -Raw -ErrorAction SilentlyContinue), '"path"\s+"([^"]+)"')) {
+                    $lp = Join-Path ($m.Groups[1].Value.Replace('\\\\','\')) 'steamapps'
+                    if (Test-Path $lp) { $libs += $lp }
+                }
+            }
+            foreach ($lib in ($libs | Select-Object -Unique)) {
+                foreach ($acf in @(Get-ChildItem $lib -Filter 'appmanifest_*.acf' -ErrorAction SilentlyContinue)) {
+                    try {
+                        $raw = Get-Content $acf.FullName -Raw
+                        $nm = [regex]::Match($raw, '"name"\s+"([^"]+)"').Groups[1].Value
+                        $dir = [regex]::Match($raw, '"installdir"\s+"([^"]+)"').Groups[1].Value
+                        if (-not $nm -or -not $dir) { continue }
+                        if ($nm -match 'Steamworks|Redistributable|Proton|Steam Linux') { continue }
+                        $gdir = Join-Path $lib ('common\' + $dir)
+                        $exe = $null
+                        if (Test-Path $gdir) {
+                            $exe = @(Get-ChildItem $gdir -Filter *.exe -ErrorAction SilentlyContinue |
+                                Where-Object { $_.BaseName -notmatch $skipExe } |
+                                Sort-Object Length -Descending | Select-Object -First 1)
+                        }
+                        if ($exe) { [void]$games.Add([pscustomobject]@{ Name = $nm; Exe = $exe[0].BaseName; Source = 'Steam' }) }
+                    } catch {}
+                }
+            }
+        }
+    } catch {}
+    # --- Epic Games (manifiestos .item: traen el exe exacto) ---
+    try {
+        $mf = Join-Path $env:ProgramData 'Epic\EpicGamesLauncher\Data\Manifests'
+        foreach ($it in @(Get-ChildItem $mf -Filter *.item -ErrorAction SilentlyContinue)) {
+            try {
+                $j = Get-Content $it.FullName -Raw | ConvertFrom-Json
+                $nm = [string]$j.DisplayName
+                $le = [string]$j.LaunchExecutable
+                if ($nm -and $le) { [void]$games.Add([pscustomobject]@{ Name = $nm; Exe = [IO.Path]::GetFileNameWithoutExtension($le); Source = 'Epic' }) }
+            } catch {}
+        }
+    } catch {}
+    # --- GOG Galaxy (registro por juego, con exe) ---
+    try {
+        foreach ($k in @(Get-ChildItem 'HKLM:\SOFTWARE\WOW6432Node\GOG.com\Games' -ErrorAction SilentlyContinue)) {
+            try {
+                $nm = [string]$k.GetValue('gameName')
+                $ex = [string]$k.GetValue('exe')
+                if ($nm -and $ex) { [void]$games.Add([pscustomobject]@{ Name = $nm; Exe = [IO.Path]::GetFileNameWithoutExtension($ex); Source = 'GOG' }) }
+            } catch {}
+        }
+    } catch {}
+    # --- Xbox / Game Pass (carpeta XboxGames en cada disco fijo) ---
+    try {
+        foreach ($dl in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Root -match '^[A-Z]:\\$' })) {
+            $xg = Join-Path $dl.Root 'XboxGames'
+            if (-not (Test-Path $xg)) { continue }
+            foreach ($gd in @(Get-ChildItem $xg -Directory -ErrorAction SilentlyContinue)) {
+                $cont = Join-Path $gd.FullName 'Content'
+                if (-not (Test-Path $cont)) { continue }
+                $exe = @(Get-ChildItem $cont -Filter *.exe -ErrorAction SilentlyContinue |
+                    Where-Object { $_.BaseName -notmatch $skipExe -and $_.BaseName -notmatch '^gamelaunchhelper$' } |
+                    Sort-Object Length -Descending | Select-Object -First 1)
+                if ($exe) { [void]$games.Add([pscustomobject]@{ Name = $gd.Name; Exe = $exe[0].BaseName; Source = 'Xbox' }) }
+            }
+        }
+    } catch {}
+    # --- Ubisoft Connect (registro Installs -> InstallDir) ---
+    try {
+        foreach ($k in @(Get-ChildItem 'HKLM:\SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs' -ErrorAction SilentlyContinue)) {
+            try {
+                $dir = [string]$k.GetValue('InstallDir')
+                if ($dir -and (Test-Path $dir)) {
+                    $exe = @(Get-ChildItem $dir -Filter *.exe -ErrorAction SilentlyContinue |
+                        Where-Object { $_.BaseName -notmatch $skipExe } |
+                        Sort-Object Length -Descending | Select-Object -First 1)
+                    if ($exe) { [void]$games.Add([pscustomobject]@{ Name = (Split-Path $dir.TrimEnd('\/') -Leaf); Exe = $exe[0].BaseName; Source = 'Ubisoft' }) }
+                }
+            } catch {}
+        }
+    } catch {}
+    # --- Riot Games (carpeta estandar en cada disco fijo) ---
+    try {
+        foreach ($dl in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Root -match '^[A-Z]:\\$' })) {
+            $rg = Join-Path $dl.Root 'Riot Games'
+            if (-not (Test-Path $rg)) { continue }
+            foreach ($gd in @(Get-ChildItem $rg -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '^Riot Client' })) {
+                $exe = @(Get-ChildItem $gd.FullName -Filter *.exe -ErrorAction SilentlyContinue |
+                    Where-Object { $_.BaseName -notmatch $skipExe } |
+                    Sort-Object Length -Descending | Select-Object -First 1)
+                if ($exe) { [void]$games.Add([pscustomobject]@{ Name = $gd.Name; Exe = $exe[0].BaseName; Source = 'Riot' }) }
+            }
+        }
+    } catch {}
+    # --- Desinstaladores de editores de juegos (Blizzard/EA: InstallLocation) ---
+    try {
+        foreach ($root in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) {
+            foreach ($k in @(Get-ChildItem $root -ErrorAction SilentlyContinue)) {
+                try {
+                    $pub = [string]$k.GetValue('Publisher')
+                    if ($pub -notmatch 'Blizzard Entertainment|Electronic Arts|EA Digital') { continue }
+                    $nm = [string]$k.GetValue('DisplayName')
+                    $loc = [string]$k.GetValue('InstallLocation')
+                    if (-not $nm -or -not $loc -or -not (Test-Path $loc)) { continue }
+                    if ($nm -match 'Battle\.net|EA app|EA Desktop|Launcher') { continue }
+                    $exe = @(Get-ChildItem $loc -Filter *.exe -ErrorAction SilentlyContinue |
+                        Where-Object { $_.BaseName -notmatch $skipExe } |
+                        Sort-Object Length -Descending | Select-Object -First 1)
+                    $src = $(if ($pub -match 'Blizzard') { 'Battle.net' } else { 'EA' })
+                    if ($exe) { [void]$games.Add([pscustomobject]@{ Name = $nm; Exe = $exe[0].BaseName; Source = $src }) }
+                } catch {}
+            }
+        }
+    } catch {}
+    # --- RED GENERICA: GameConfigStore de Windows (cualquier juego que se haya
+    # --- ejecutado al menos una vez, lo detecte Windows como juego) ---
+    try {
+        foreach ($k in @(Get-ChildItem 'HKCU:\System\GameConfigStore\Children' -ErrorAction SilentlyContinue)) {
+            try {
+                $fp = [string]$k.GetValue('MatchedExeFullPath')
+                if (-not $fp) { continue }
+                $bn = [IO.Path]::GetFileNameWithoutExtension($fp)
+                if (-not $bn -or $bn -match $skipExe) { continue }
+                # Nombre legible: carpeta del juego si existe; si no, el propio exe.
+                $nm = $bn
+                try { $pd = Split-Path (Split-Path $fp -Parent) -Leaf; if ($pd -and $pd -notmatch '^(bin|binaries|win64|win32|x64|game|content|retail|shipping)$') { $nm = $pd } } catch {}
+                [void]$games.Add([pscustomobject]@{ Name = $nm; Exe = $bn; Source = 'Windows' })
+            } catch {}
+        }
+    } catch {}
+    # Dedupe por proceso (Exe): gana la fuente mas rica (orden de insercion:
+    # Steam/Epic/GOG/Xbox/Ubisoft/Riot/editores y por ultimo la red generica).
+    $seenExe = @{}
+    $final = New-Object System.Collections.Generic.List[object]
+    foreach ($g in $games) {
+        $kx = ([string]$g.Exe).ToLower()
+        if ($kx -and -not $seenExe.ContainsKey($kx)) { $seenExe[$kx] = $true; [void]$final.Add($g) }
+    }
+    return @($final | Sort-Object Name)
+}
+
+# Busca la version de CONSOLA de PresentMon (la GUI no sirve para capturas
+# automatizadas). Devuelve la ruta del exe o $null.
+function Find-WpiPresentMonCli {
+    $cands = @()
+    try { $c = Get-Command 'presentmon' -ErrorAction SilentlyContinue; if ($c) { $cands += [string]$c.Source } } catch {}
+    foreach ($pat in @(
+        (Join-Path $env:ProgramFiles 'Intel\PresentMon\*\PresentMon-*.exe'),
+        (Join-Path $env:ProgramFiles 'PresentMon\PresentMon*.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\PresentMon\PresentMon*.exe'),
+        (Join-Path $PSScriptRoot 'PresentMon*.exe')
+    )) {
+        try { $cands += @(Get-ChildItem $pat -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) } catch {}
+    }
+    foreach ($c in $cands) {
+        # La GUI se llama PresentMon.exe pero vive en WindowsApps; los binarios de
+        # consola llevan sufijo de version/arquitectura o responden a --help.
+        if ($c -and (Test-Path $c)) { return $c }
+    }
+    return $null
+}
+
+function Build-GamingUI {
+    if ($null -eq $script:GamingPauseList) { $script:GamingPauseList = @() }
+    $p = $script:GamingList
+    $p.Children.Clear()
+
+    # Cabecera del panel
+    $hdr = New-Object Windows.Controls.TextBlock
+    $hdr.Text = (Tr 'GAMING OPTIMIZER  ·  PREPARACION HONESTA PARA JUGAR')
+    $hdr.FontSize = 15; $hdr.FontWeight = 'Bold'
+    $hdr.Foreground = Get-ThemeBrush($Theme.Optimize)
+    $hdr.Margin = New-Object Windows.Thickness(2,10,0,2)
+    $p.Children.Add($hdr) | Out-Null
+    $p.Children.Add((New-WpiGamingText -Text (Tr 'Sin promesas de FPS: estabilidad, latencia y frametimes, con todo reversible y verificado.') -Margin (New-Object Windows.Thickness(2,0,0,12)))) | Out-Null
+
+    # FASE B2: modo facil arriba, detalle experto debajo (misma pantalla).
+    $bEasy = New-Object Windows.Controls.Button
+    $bEasy.Content = (Tr 'Optimizar para jugar (modo facil)')
+    $bEasy.Background = Get-ThemeBrush('#FF1F3A2E'); $bEasy.BorderBrush = Get-ThemeBrush('#FF3E6B54')
+    $bEasy.Foreground = Get-ThemeBrush($Theme.Text)
+    $bEasy.FontSize = 14; $bEasy.FontWeight = 'Bold'
+    $bEasy.Padding = New-Object Windows.Thickness(20,10,20,10)
+    $bEasy.Margin = New-Object Windows.Thickness(2,0,0,4)
+    $bEasy.HorizontalAlignment = 'Left'
+    $bEasy.Cursor = [Windows.Input.Cursors]::Hand
+    $bEasy.Add_Click({
+        $r = Show-WpiMessage((Tr 'Optimizar para jugar (modo facil)? Se hara: 1) chequeo del equipo, 2) activar el Game Mode de Windows si no lo esta (reversible), 3) abrir Process Lasso si esta instalado (perfil Equilibrado). Nada mas.'), 'Gaming Optimizer', 'YesNo', 'Question')
+        if ($r -ne 'Yes') { return }
+        $script:GamingHwLines = $null
+        $gmv2 = Get-WpiRegValue 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled'
+        if (-not (($null -eq $gmv2) -or ($gmv2 -eq 1))) {
+            try {
+                if (-not (Test-Path 'HKCU:\Software\Microsoft\GameBar')) { New-Item -Path 'HKCU:\Software\Microsoft\GameBar' -Force | Out-Null }
+                Set-ItemProperty -Path 'HKCU:\Software\Microsoft\GameBar' -Name 'AutoGameModeEnabled' -Value 1 -Type DWord
+                Add-WpiJournal -Names @('Activar Modo Juego (Game Mode)') -Action 'apply'
+                Add-WpiGamingLog 'ok' (Tr 'Modo facil: Game Mode de Windows activado (reversible desde Tweaks o con "Deshacer lo de hoy").')
+            } catch {}
+        }
+        $pl2 = Get-WpiProcessLassoPath
+        if ($pl2) { try { Start-Process $pl2 } catch {} }
+        else { Add-WpiGamingLog 'dim' (Tr 'Modo facil: Process Lasso no esta instalado; puedes instalarlo con su boton (opcional).') }
+        Add-WpiGamingLog 'head' (Tr 'Modo facil aplicado: chequeo refrescado, Game Mode revisado y ProBalance delegado en Process Lasso.')
+        Refresh-GamingUI
+    })
+    $p.Children.Add($bEasy) | Out-Null
+    $p.Children.Add((New-WpiGamingText -Text (Tr 'Un clic seguro: chequeo + Game Mode + ProBalance. El detalle experto, en las tarjetas de abajo.') -Size 11.5 -Margin (New-Object Windows.Thickness(2,0,0,10)))) | Out-Null
+
+    # ---- S10-ter: SUBNAVEGACION (menos scroll: 4 subsecciones tipo pildora) ----
+    if (-not $script:GamingSubTab) { $script:GamingSubTab = 'prep' }
+    $secPrep = New-Object Windows.Controls.StackPanel
+    $secPlay = New-Object Windows.Controls.StackPanel
+    $secAuto = New-Object Windows.Controls.StackPanel
+    $secMeas = New-Object Windows.Controls.StackPanel
+    $script:GamingNavMap = [ordered]@{
+        prep = @{ Panel = $secPrep; Label = (Tr 'Preparar') }
+        play = @{ Panel = $secPlay; Label = (Tr 'Jugar') }
+        auto = @{ Panel = $secAuto; Label = (Tr 'Automatizar') }
+        meas = @{ Panel = $secMeas; Label = (Tr 'Medir') }
+    }
+    $navWrap = New-Object Windows.Controls.WrapPanel
+    $navWrap.Margin = New-Object Windows.Thickness(2,0,0,10)
+    foreach ($k in @($script:GamingNavMap.Keys)) {
+        $nb = New-Object Windows.Controls.Button
+        $nb.Content = [string]$script:GamingNavMap[$k].Label
+        $nb.Tag = [string]$k
+        $nb.FontSize = 12.5; $nb.FontWeight = 'Bold'
+        $nb.Padding = New-Object Windows.Thickness(16,6,16,6)
+        $nb.Margin = New-Object Windows.Thickness(0,0,8,0)
+        $nb.Cursor = [Windows.Input.Cursors]::Hand
+        $nb.Add_Click({
+            $script:GamingSubTab = [string]$this.Tag
+            foreach ($k2 in @($script:GamingNavMap.Keys)) {
+                $e2 = $script:GamingNavMap[$k2]
+                $on = ($k2 -eq $script:GamingSubTab)
+                $e2.Panel.Visibility = $(if ($on) { 'Visible' } else { 'Collapsed' })
+                try {
+                    $e2.Btn.Background  = Get-ThemeBrush($(if ($on) { '#FF0A4D5E' } else { '#FF1B1B25' }))
+                    $e2.Btn.BorderBrush = Get-ThemeBrush($(if ($on) { '#FF00E5FF' } else { '#FF55555F' }))
+                    $e2.Btn.Foreground  = Get-ThemeBrush($(if ($on) { '#FF76E0FF' } else { $Theme.Sub }))
+                } catch {}
+            }
+        })
+        $script:GamingNavMap[$k].Btn = $nb
+        $navWrap.Children.Add($nb) | Out-Null
+    }
+    $p.Children.Add($navWrap) | Out-Null
+    $p.Children.Add($secPrep) | Out-Null
+    $p.Children.Add($secPlay) | Out-Null
+    $p.Children.Add($secAuto) | Out-Null
+    $p.Children.Add($secMeas) | Out-Null
+    # Estado inicial de la subnavegacion (visibilidad + estilo del boton activo)
+    foreach ($k2 in @($script:GamingNavMap.Keys)) {
+        $e2 = $script:GamingNavMap[$k2]
+        $on = ($k2 -eq $script:GamingSubTab)
+        $e2.Panel.Visibility = $(if ($on) { 'Visible' } else { 'Collapsed' })
+        $e2.Btn.Background  = Get-ThemeBrush($(if ($on) { '#FF0A4D5E' } else { '#FF1B1B25' }))
+        $e2.Btn.BorderBrush = Get-ThemeBrush($(if ($on) { '#FF00E5FF' } else { '#FF55555F' }))
+        $e2.Btn.Foreground  = Get-ThemeBrush($(if ($on) { '#FF76E0FF' } else { $Theme.Sub }))
+    }
+
+    $sess = Get-WpiGameSessionState
+
+    # AUTOCURACION: sesion huerfana de una ejecucion anterior de Winzard
+    if ($sess -and -not $script:GamingSessionOwned) {
+        $z0 = New-WpiGamingCard -Title (Tr 'SESION DE MODO JUEGO PENDIENTE DE RESTAURAR') -TitleColor $Theme.Clean
+        $z0.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Se encontro una sesion de Modo Juego de una ejecucion anterior (gaming_session.json): hay cambios sin deshacer. Puedes restaurar ahora el plan de energia y reanudar los procesos pausados.'))) | Out-Null
+        $b0 = New-WpiGamingButton -Text (Tr 'Restaurar todo ahora') -Bg '#FF4A3A1F' -Border '#FFFFB454'
+        $b0.Add_Click({ [void](Stop-WpiGameSession); $script:GamingSessionOwned = $false; Refresh-GamingUI })
+        $z0.Panel.Children.Add($b0) | Out-Null
+        $p.Children.Add($z0.Card) | Out-Null
+    }
+
+    # ---- ZONA 1: CHEQUEO PREVIO (solo lectura) ----
+    $z1 = New-WpiGamingCard -Title (Tr 'CHEQUEO PREVIO  ·  ESTA TU PC LISTO PARA JUGAR?') -TitleColor $Theme.Install
+    $z1.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Solo lectura: esta tarjeta analiza y recomienda, pero no cambia nada por su cuenta.'))) | Out-Null
+    foreach ($ln in @(Get-WpiGamingHwLines)) { $z1.Panel.Children.Add((New-WpiGamingText -Text $ln -Color $Theme.Text -Size 11.5 -Margin (New-Object Windows.Thickness(8,3,0,0)))) | Out-Null }
+    # S10-ter: HAGS y VRR visibles en el chequeo (solo lectura, con guia honesta)
+    foreach ($ln in @(Get-WpiHagsVrrLines)) { $z1.Panel.Children.Add((New-WpiGamingText -Text $ln -Color $Theme.Text -Size 11.5 -Margin (New-Object Windows.Thickness(8,3,0,0)))) | Out-Null }
+    $z1.Panel.Children.Add((New-WpiGamingText -Text (Tr 'HAGS y VRR se cambian en Ajustes > Sistema > Pantalla > Graficos (Winzard solo informa: dependen de tu GPU y driver).') -Size 10.5 -Margin (New-Object Windows.Thickness(8,1,0,0)))) | Out-Null
+
+    $z1.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Ajustes gaming del catalogo (verde = ya aplicado):') -Color $Theme.Text -Bold $true -Margin (New-Object Windows.Thickness(0,12,0,2)))) | Out-Null
+    $gTweaks = @($TweaksCatalog | Where-Object { [string]$_.Cat -eq 'Gaming' })
+    $gApplied = 0; $gTotal = 0; $gPending = 0
+    $dotc = [string][char]0x25CF
+    foreach ($tw in $gTweaks) {
+        $nm = [string]$tw.Name
+        if (-not $TweakDetectors.ContainsKey($nm)) { continue }
+        $gTotal++
+        $on = $false; $okDet = $true
+        try { $on = [bool](Invoke-Expression $TweakDetectors[$nm]) } catch { $okDet = $false }
+        $col = '#FF8A8A95'; $suf = (Tr 'no comprobable')
+        if ($okDet -and $on) { $gApplied++; $col = '#FF5CFF8F'; $suf = (Tr 'YA APLICADO') }
+        elseif ($okDet) { $gPending++; $col = '#FFB0B0BC'; $suf = (Tr 'no aplicado') }
+        $z1.Panel.Children.Add((New-WpiGamingText -Text ('{0} {1}   ({2})' -f $dotc, (Tr $nm), $suf) -Color $col -Size 11.5 -Margin (New-Object Windows.Thickness(8,2,0,0)))) | Out-Null
+    }
+    $z1.Panel.Children.Add((New-WpiGamingText -Text ((Tr '{0} de {1} ajustes gaming ya aplicados en este PC.') -f $gApplied, $gTotal) -Size 11.5)) | Out-Null
+
+    $z1.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Carga actual (solo informativo): esto es lo que mas pesa de fondo ahora mismo.') -Color $Theme.Text -Bold $true -Margin (New-Object Windows.Thickness(0,12,0,2)))) | Out-Null
+    try {
+        $procs = @(Get-Process -ErrorAction SilentlyContinue)
+        $topRam = @($procs | Sort-Object WorkingSet64 -Descending | Select-Object -First 5)
+        $lnR = @(); foreach ($pr in $topRam) { $lnR += ('{0} ({1} MB)' -f $pr.ProcessName, [int]($pr.WorkingSet64 / 1MB)) }
+        $z1.Panel.Children.Add((New-WpiGamingText -Text ((Tr 'Top 5 por RAM:') + '  ' + ($lnR -join '  ·  ')) -Size 11.5 -Margin (New-Object Windows.Thickness(8,2,0,0)))) | Out-Null
+        $topCpu = @($procs | Where-Object { $_.CPU } | Sort-Object CPU -Descending | Select-Object -First 5)
+        $lnC = @(); foreach ($pr in $topCpu) { $lnC += ('{0} ({1} s)' -f $pr.ProcessName, [int]$pr.CPU) }
+        $z1.Panel.Children.Add((New-WpiGamingText -Text ((Tr 'Top 5 por CPU acumulada desde su arranque:') + '  ' + ($lnC -join '  ·  ')) -Size 11.5 -Margin (New-Object Windows.Thickness(8,2,0,0)))) | Out-Null
+    } catch {}
+
+    $recs = @()
+    $act0 = Get-WpiActivePowerPlan; $max0 = Get-WpiMaxPowerPlan
+    if ($act0 -and $max0 -and ($act0.Guid -ne $max0.Guid) -and -not $sess) { $recs += (Tr 'Tu plan de energia actual no es el de maximo rendimiento: el Modo Juego por sesion puede cambiarlo solo mientras juegas y devolverlo despues.') }
+    if ($script:GamingGpuIsVirtual) { $recs += (Tr 'GPU virtual detectada (maquina virtual o escritorio remoto): los ajustes de MPO/FSO no aplican aqui.') }
+    if ($gPending -gt 0) { $recs += ((Tr 'Tienes {0} ajuste(s) gaming sin aplicar: revisalos en "Tweaks y ajustes" (los avanzados, solo si los necesitas).') -f $gPending) }
+    if ($script:GamingDiskIsHdd) { $recs += (Tr 'El disco del sistema parece HDD: pasar a un SSD es la mejora real mas notable en tiempos de carga.') }
+    $z1.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Recomendaciones (nada se aplica automaticamente):') -Color $Theme.Text -Bold $true -Margin (New-Object Windows.Thickness(0,12,0,2)))) | Out-Null
+    if (@($recs).Count -eq 0) { $z1.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Todo listo: no hay recomendaciones pendientes.') -Color '#FF5CFF8F' -Size 11.5 -Margin (New-Object Windows.Thickness(8,2,0,0)))) | Out-Null }
+    foreach ($r in $recs) { $z1.Panel.Children.Add((New-WpiGamingText -Text ('- ' + $r) -Size 11.5 -Margin (New-Object Windows.Thickness(8,2,0,0)))) | Out-Null }
+    $bRef = New-WpiGamingButton -Text (Tr 'Refrescar chequeo') -Bg '#FF1A2B3C' -Border '#FF3A5B7C'
+    $bRef.Add_Click({ $script:GamingHwLines = $null; Refresh-GamingUI })
+    $z1.Panel.Children.Add($bRef) | Out-Null
+    $secPrep.Children.Add($z1.Card) | Out-Null
+
+    # ---- S10-ter (Preparar): RADAR DE OVERLAYS ----
+    $zR = New-WpiGamingCard -Title (Tr 'RADAR DE OVERLAYS  ·  FUENTES REALES DE MICROTIRONES') -TitleColor $Theme.Clean
+    $zR.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Que se dibuja o graba encima de tus juegos ahora mismo (solo lectura).') -Size 11.5)) | Out-Null
+    $zR.Panel.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará' 'QUÉ ES: un radar de overlays y grabadores: capas que se inyectan o dibujan encima del juego (Game Bar, Discord, NVIDIA, OBS, RivaTuner, Steam) y que son causa REAL y frecuente de microtirones. QUÉ HACE: comprueba en el momento qué overlays están activos o corriendo y te dice dónde se apaga cada uno; Winzard no cierra ni toca ninguno por su cuenta. QUÉ PASARÁ: nada — es informativo puro; tú decides cuáles apagar en su propia app, y con "Refrescar" vuelves a comprobar en segundos.' $Theme.Clean)) | Out-Null
+    try {
+        foreach ($ov in @(Get-WpiOverlayRadar)) {
+            $row = New-Object Windows.Controls.StackPanel
+            $row.Orientation = 'Horizontal'; $row.Margin = New-Object Windows.Thickness(8,3,0,0)
+            $dotO = New-Object Windows.Controls.TextBlock
+            $dotO.Text = [string][char]0x25CF; $dotO.FontSize = 12; $dotO.VerticalAlignment = 'Center'
+            $dotO.Margin = New-Object Windows.Thickness(0,0,7,0)
+            $dotO.Foreground = Get-ThemeBrush($(if ($ov.Active) { '#FFFFD166' } else { '#FF5CFF8F' }))
+            $row.Children.Add($dotO) | Out-Null
+            $txtO = New-Object Windows.Controls.TextBlock
+            $txtO.Text = ('{0}: {1}' -f [string]$ov.Name, $(if ($ov.Active) { Tr 'ACTIVO' } else { Tr 'inactivo' }))
+            $txtO.Foreground = Get-ThemeBrush($Theme.Text); $txtO.FontSize = 11.5; $txtO.VerticalAlignment = 'Center'
+            $txtO.ToolTip = [string]$ov.Note
+            $row.Children.Add($txtO) | Out-Null
+            $zR.Panel.Children.Add($row) | Out-Null
+        }
+    } catch {}
+    $zR.Panel.Children.Add((New-WpiGamingText -Text (Tr 'ambar = activo (pasa el raton para ver donde se apaga)  ·  verde = inactivo') -Size 10.5 -Margin (New-Object Windows.Thickness(8,4,0,0)))) | Out-Null
+    $bRadar = New-WpiGamingButton -Text (Tr 'Refrescar radar') -Bg '#FF1A2B3C' -Border '#FF3A5B7C'
+    $bRadar.Add_Click({ Refresh-GamingUI })
+    $zR.Panel.Children.Add($bRadar) | Out-Null
+    $secPrep.Children.Add($zR.Card) | Out-Null
+
+    # ---- S10-ter (Preparar): RED PARA JUGAR ONLINE ----
+    $zN = New-WpiGamingCard -Title (Tr 'RED PARA JUGAR ONLINE  ·  PING Y JITTER REALES') -TitleColor $Theme.Install
+    $zN.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Prueba honesta de 10 segundos contra 1.1.1.1; sin humo, solo numeros.') -Size 11.5)) | Out-Null
+    $zN.Panel.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará' 'QUÉ ES: una medición rápida de la calidad de tu conexión para el juego online: latencia (ping) y su estabilidad (jitter), que es lo que de verdad se nota en partida. QUÉ HACE: envía 10 pings (1 por segundo) a 1.1.1.1 (Cloudflare) y calcula media, mínimo, máximo, jitter y pérdida de paquetes, con un veredicto honesto: verde fluido, ámbar aceptable, y aviso claro si hay pérdida o picos. QUÉ PASARÁ: solo se envían esos 10 pings y nada más; no se cambia ningún ajuste de red — para eso están los tweaks de DNS y de red en sus paneles, cada uno con su reversión.' $Theme.Install)) | Out-Null
+    $script:GamingNetText = New-WpiGamingText -Text (Tr 'Sin medir todavia.') -Size 11.5 -Margin (New-Object Windows.Thickness(8,4,0,0))
+    $bNet = New-WpiGamingButton -Text (Tr 'Medir red (10 s)')
+    $bNet.Add_Click({
+        if ($script:GamingNetJob) { return }
+        $script:GamingNetText.Text = (Tr 'Midiendo... (10 pings, 1 por segundo)')
+        $script:GamingNetJob = Start-Job -ScriptBlock {
+            $times = @(); $sent = 10
+            for ($i = 0; $i -lt $sent; $i++) {
+                try {
+                    $r = Get-CimInstance Win32_PingStatus -Filter "Address='1.1.1.1' AND Timeout=1500" -ErrorAction Stop
+                    if ($r.StatusCode -eq 0) { $times += [double]$r.ResponseTime }
+                } catch {}
+                Start-Sleep -Seconds 1
+            }
+            $n = @($times).Count
+            if ($n -eq 0) { return @{ Ok = $false } }
+            $avg = ($times | Measure-Object -Average).Average
+            $jit = 0.0
+            if ($n -gt 1) { $var = ($times | ForEach-Object { [math]::Pow($_ - $avg, 2) } | Measure-Object -Sum).Sum / ($n - 1); $jit = [math]::Sqrt($var) }
+            return @{ Ok = $true; Avg = [math]::Round($avg,1); Min = ($times | Measure-Object -Minimum).Minimum; Max = ($times | Measure-Object -Maximum).Maximum; Jit = [math]::Round($jit,1); Loss = ($sent - $n); Sent = $sent }
+        }
+        $t = New-Object Windows.Threading.DispatcherTimer
+        $t.Interval = [TimeSpan]::FromSeconds(1)
+        $t.Add_Tick({
+            $j = $script:GamingNetJob
+            if (-not $j) { $this.Stop(); return }
+            if ($j.State -in @('Completed','Failed','Stopped')) {
+                $res = $null
+                try { $res = Receive-Job $j -ErrorAction SilentlyContinue } catch {}
+                try { Remove-Job $j -Force } catch {}
+                $script:GamingNetJob = $null
+                $this.Stop()
+                if ($res -and $res.Ok) {
+                    $ver = $(if ($res.Loss -gt 0) { Tr 'OJO: hay perdida de paquetes; revisa cable/Wi-Fi antes de jugar online.' }
+                            elseif ($res.Avg -le 30 -and $res.Jit -le 5) { Tr 'Veredicto: FLUIDA para online.' }
+                            elseif ($res.Avg -le 60 -and $res.Jit -le 12) { Tr 'Veredicto: aceptable; puede notarse en shooters competitivos.' }
+                            else { Tr 'Veredicto: alta o inestable; prueba cable en vez de Wi-Fi.' })
+                    $script:GamingNetText.Text = ((Tr 'Ping medio {0} ms (min {1} / max {2})  ·  jitter {3} ms  ·  perdidos {4}/{5}.') -f $res.Avg, $res.Min, $res.Max, $res.Jit, $res.Loss, $res.Sent) + '  ' + $ver
+                    Add-WpiGamingLog 'info' ([string]$script:GamingNetText.Text)
+                } else {
+                    $script:GamingNetText.Text = (Tr 'No se pudo medir (sin respuesta de la red).')
+                }
+            }
+        })
+        $t.Start()
+    })
+    $zN.Panel.Children.Add($bNet) | Out-Null
+    $zN.Panel.Children.Add($script:GamingNetText) | Out-Null
+    $secPrep.Children.Add($zN.Card) | Out-Null
+
+    # ---- ZONA 2: MOTOR EN TIEMPO REAL (Process Lasso, delegado) ----
+    $z2 = New-WpiGamingCard -Title (Tr 'MOTOR EN TIEMPO REAL  ·  PROCESS LASSO (DELEGADO)') -TitleColor $Theme.Info
+    $z2.Panel.Children.Add((New-WpiGamingText -Text (Tr 'El trabajo en tiempo real (ProBalance, afinidades, prioridades) se delega en Process Lasso.') -Size 11.5)) | Out-Null
+    $z2.Panel.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará' 'QUÉ ES: el módulo en tiempo real del Gaming Optimizer, delegado en Process Lasso (Bitsum), la herramienta de referencia para moderar procesos. Winzard no reimplementa un planificador propio a ciegas: usa el mejor. QUÉ HACE: ProBalance detecta procesos que acaparan la CPU y les baja la prioridad un instante para que el sistema no dé tirones; las afinidades y prioridades por juego se configuran SIEMPRE desde la propia interfaz de Process Lasso. QUÉ PASARÁ: Instalar lo descarga por winget (gratis para uso personal; la versión Pro es de pago) y Abrir lanza su ventana; Winzard no toca ni un proceso por su cuenta y no fabrica rendimiento: modera los excesos.' $Theme.Info)) | Out-Null
+    $plPath = Get-WpiProcessLassoPath
+    if ($plPath) { $z2.Panel.Children.Add((New-WpiGamingText -Text (Tr '[OK] Process Lasso esta instalado.') -Color '#FF5CFF8F')) | Out-Null }
+    else { $z2.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Process Lasso no se ha detectado en este equipo (se busca en Archivos de programa).') -Color $Theme.Clean)) | Out-Null }
+    $wrap2 = New-Object Windows.Controls.WrapPanel
+    $bIns = New-WpiGamingButton -Text (Tr 'Instalar Process Lasso (winget)')
+    $bIns.IsEnabled = (-not $plPath)
+    $bIns.Add_Click({ Start-Worker -Mode 'install' -Ids @('BitSum.ProcessLasso') })
+    $wrap2.Children.Add($bIns) | Out-Null
+    $bOpen = New-WpiGamingButton -Text (Tr 'Abrir Process Lasso') -Bg '#FF2A1F4F' -Border '#FF9076FF' -Tag ([string]$plPath)
+    $bOpen.IsEnabled = [bool]$plPath
+    $bOpen.Add_Click({ try { Start-Process ([string]$this.Tag) } catch {} })
+    $wrap2.Children.Add($bOpen) | Out-Null
+    $z2.Panel.Children.Add($wrap2) | Out-Null
+    # (la tarjeta z2 se añade a la subseccion Jugar DESPUES del Modo Juego, mas abajo)
+
+    # ---- ZONA 3: MODO JUEGO POR SESION ----
+    $z3 = New-WpiGamingCard -Title (Tr 'MODO JUEGO POR SESION  ·  100% REVERSIBLE') -TitleColor $Theme.Maintain
+    $z3.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Plan de energia al maximo + pausa de TU lista de procesos; al desactivar, todo vuelve a como estaba.') -Size 11.5)) | Out-Null
+    $z3.Panel.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará' 'QUÉ ES: un modo de preparación por sesión, pensado para encenderse al ir a jugar y apagarse al terminar; nada queda cambiado de forma permanente. QUÉ HACE al activarlo: guarda tu plan de energía actual, cambia al de máximo rendimiento verificando el cambio, comprueba el Game Mode de Windows y PAUSA (nunca cierra) únicamente los procesos que tú hayas marcado en la lista de pausa, con el mismo mecanismo nativo que usa el Monitor de recursos. QUÉ PASARÁ al desactivarlo: cada proceso se reanuda comprobando que sigue siendo el mismo, el plan de energía original se restaura y todo queda registrado en el diario; si Winzard se cerrara a mitad, el banner de sesión pendiente lo restaura con un clic. El botón "Ver plan (sin tocar nada)" te enseña por adelantado exactamente qué haría.' $Theme.Maintain)) | Out-Null
+    $gmv = Get-WpiRegValue 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled'
+    if (($null -eq $gmv) -or ($gmv -eq 1)) { $z3.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Game Mode de Windows: ACTIVADO.') -Color '#FF5CFF8F' -Size 11.5)) | Out-Null }
+    else { $z3.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Game Mode de Windows: desactivado (puedes activarlo desde el panel "Tweaks y ajustes").') -Color $Theme.Clean -Size 11.5)) | Out-Null }
+
+    $bT = New-Object Windows.Controls.Button
+    if ($sess) { $bT.Content = (Tr 'DESACTIVAR Y RESTAURAR TODO'); $bT.Background = Get-ThemeBrush('#FF4A3A1F'); $bT.BorderBrush = Get-ThemeBrush('#FFFFB454') }
+    else { $bT.Content = (Tr 'ACTIVAR MODO JUEGO (sesion)'); $bT.Background = Get-ThemeBrush('#FF1F3A2E'); $bT.BorderBrush = Get-ThemeBrush('#FF3E6B54') }
+    $bT.Foreground = Get-ThemeBrush($Theme.Text)
+    $bT.FontSize = 14; $bT.FontWeight = 'Bold'
+    $bT.Padding = New-Object Windows.Thickness(20,10,20,10)
+    $bT.Margin = New-Object Windows.Thickness(0,10,0,4)
+    $bT.HorizontalAlignment = 'Left'
+    $bT.Cursor = [Windows.Input.Cursors]::Hand
+    $bT.Add_Click({
+        if (Get-WpiGameSessionState) {
+            [void](Stop-WpiGameSession)
+            $script:GamingSessionOwned = $false
+        } else {
+            $n = @($script:GamingPauseList).Count
+            $r = Show-WpiMessage(((Tr 'Activar el Modo Juego por sesion? Se cambiara el plan de energia al de maximo rendimiento y se pausaran {0} proceso(s) de tu lista. Todo es reversible con un clic.') -f $n), 'Gaming Optimizer', 'YesNo', 'Question')
+            if ($r -ne 'Yes') { return }
+            if (Start-WpiGameSession) { $script:GamingSessionOwned = $true }
+        }
+        Refresh-GamingUI
+    })
+    # FASE C: DryRun del Modo Juego. Boton secundario que muestra el plan exacto
+    # (plan de energia, Game Mode y procesos con sus PIDs) sin ejecutar nada.
+    $wrapT = New-Object Windows.Controls.WrapPanel
+    $wrapT.Children.Add($bT) | Out-Null
+    $bPlan = New-WpiGamingButton -Text (Tr 'Ver plan (sin tocar nada)') -Bg '#FF1A2B3C' -Border '#FF3A5B7C'
+    $bPlan.Margin = New-Object Windows.Thickness(10,10,0,4)
+    $bPlan.VerticalAlignment = 'Center'
+    $bPlan.Add_Click({
+        $ln = New-Object System.Collections.Generic.List[string]
+        $sessNow = Get-WpiGameSessionState
+        if ($sessNow) {
+            $ln.Add((Tr 'PLAN DE RESTAURACION (no se ha tocado nada):')) | Out-Null
+            $cur = Get-WpiActivePowerPlan
+            $curName = ''; if ($cur) { $curName = [string]$cur.Name }
+            if ([bool]$sessNow.PlanChanged) {
+                $prevName = [string]$sessNow.PrevPlanName
+                if (-not $prevName) { $prevName = [string]$sessNow.PrevPlanGuid }
+                $ln.Add(((Tr 'Plan de energia: {0} -> {1}') -f $curName, $prevName)) | Out-Null
+            } else {
+                $ln.Add((Tr 'Plan de energia: sin cambio (no se toco al activar).')) | Out-Null
+            }
+            $paused = @($sessNow.Paused)
+            $ln.Add(((Tr 'Procesos que se reanudarian ({0}):') -f @($paused).Count)) | Out-Null
+            foreach ($pp in $paused) { $ln.Add(('   - {0}  (PID {1})' -f [string]$pp.Name, [string]$pp.Id)) | Out-Null }
+            if (@($paused).Count -eq 0) { $ln.Add(('   ' + (Tr 'ninguno (no habia procesos pausados)'))) | Out-Null }
+        } else {
+            $ln.Add((Tr 'PLAN DE ACTIVACION (no se ha tocado nada):')) | Out-Null
+            $cur = Get-WpiActivePowerPlan
+            $max = Get-WpiMaxPowerPlan
+            $curName = ''; if ($cur) { $curName = [string]$cur.Name }
+            if ($max -and $cur -and ($cur.Guid -ne $max.Guid)) { $ln.Add(((Tr 'Plan de energia: {0} -> {1}') -f $curName, [string]$max.Name)) | Out-Null }
+            elseif ($max) { $ln.Add(((Tr 'Plan de energia: ya esta en el maximo ({0}); sin cambio.') -f $curName)) | Out-Null }
+            else { $ln.Add((Tr 'Plan de energia: sin cambio (no hay plan de maximo rendimiento disponible).')) | Out-Null }
+            $gmv2 = Get-WpiRegValue 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled'
+            if (($null -eq $gmv2) -or ($gmv2 -eq 1)) { $ln.Add((Tr 'Game Mode de Windows: ACTIVADO.')) | Out-Null }
+            else { $ln.Add((Tr 'Game Mode de Windows: desactivado (solo se avisa; no se cambia).')) | Out-Null }
+            $lista = @($script:GamingPauseList)
+            $ln.Add(((Tr 'Procesos que se pausarian ({0}):') -f @($lista).Count)) | Out-Null
+            if (@($lista).Count -eq 0) { $ln.Add(('   ' + (Tr 'ninguno marcado (la lista de pausa esta vacia)'))) | Out-Null }
+            foreach ($nm2 in $lista) {
+                $pids = @(Get-Process -Name $nm2 -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+                if (@($pids).Count -gt 0) { $ln.Add(('   - {0}  (PID {1})' -f $nm2, ($pids -join ', '))) | Out-Null }
+                else { $ln.Add(('   - {0}  ({1})' -f $nm2, (Tr 'no esta en ejecucion ahora'))) | Out-Null }
+            }
+        }
+        Add-WpiGamingLog 'info' (Tr 'Modo Juego: plan mostrado (sin tocar nada).')
+        Show-WpiMessage(($ln -join [Environment]::NewLine), 'Gaming Optimizer') | Out-Null
+    })
+    $wrapT.Children.Add($bPlan) | Out-Null
+    $z3.Panel.Children.Add($wrapT) | Out-Null
+
+    $exp3 = New-Object Windows.Controls.Expander
+    $exp3.Header = (Tr 'Lista de pausa: procesos que se pausaran al activar (los eliges tu; ninguno viene marcado)')
+    $exp3.Foreground = Get-ThemeBrush($Theme.Info); $exp3.FontWeight = 'Bold'; $exp3.FontSize = 12
+    $exp3.Margin = New-Object Windows.Thickness(0,8,0,0)
+    $spL = New-Object Windows.Controls.StackPanel
+    $spL.Children.Add((New-WpiGamingText -Text (Tr 'Marca solo procesos que reconozcas (launchers, actualizadores, apps de fondo). Se pausan con el mecanismo nativo de Windows y se reanudan al restaurar; nunca se cierran. Los procesos criticos del sistema no se listan.') -Size 11.5)) | Out-Null
+    try {
+        $mySession = $null
+        try { $mySession = (Get-Process -Id $PID -ErrorAction Stop).SessionId } catch {}
+        $seen = [ordered]@{}
+        foreach ($pr in @(Get-Process -ErrorAction SilentlyContinue | Sort-Object WorkingSet64 -Descending)) {
+            $nm = [string]$pr.ProcessName
+            if ($pr.Id -eq $PID) { continue }
+            if ($script:GamingNeverPause -contains $nm) { continue }
+            if ($null -ne $mySession -and [int]$pr.SessionId -ne [int]$mySession) { continue }
+            if ($seen.Contains($nm)) { $seen[$nm].Ram += [int64]$pr.WorkingSet64; $seen[$nm].N++ }
+            else { $seen[$nm] = @{ Ram = [int64]$pr.WorkingSet64; N = 1 } }
+        }
+        $cands = @($seen.Keys | Select-Object -First 30)
+        foreach ($nm in @($script:GamingPauseList)) { if ($cands -notcontains $nm) { $cands += $nm; if (-not $seen.Contains($nm)) { $seen[$nm] = @{ Ram = [int64]0; N = 0 } } } }
+        foreach ($nm in $cands) {
+            $cb = New-Object Windows.Controls.CheckBox
+            $inf = $seen[$nm]
+            $mb = [int]($inf.Ram / 1MB)
+            $sufx = ''
+            if ([int]$inf.N -gt 1) { $sufx = (', x' + [int]$inf.N) }
+            elseif ([int]$inf.N -eq 0) { $sufx = (', ' + (Tr 'no esta en ejecucion ahora')) }
+            $cb.Content = ('{0}   ({1} MB{2})' -f $nm, $mb, $sufx)
+            $cb.Tag = $nm
+            $cb.Foreground = Get-ThemeBrush($Theme.Text); $cb.FontSize = 11.5
+            $cb.Margin = New-Object Windows.Thickness(8,3,0,0)
+            $cb.IsChecked = (@($script:GamingPauseList) -contains $nm)
+            $cb.Add_Checked({ $n2 = [string]$this.Tag; if (@($script:GamingPauseList) -notcontains $n2) { $script:GamingPauseList = @($script:GamingPauseList) + $n2 }; Save-Settings; try { $script:GamingPauseCountLbl.Text = ((Tr '{0} proceso(s) marcados para pausar.') -f @($script:GamingPauseList).Count) } catch {} })
+            $cb.Add_Unchecked({ $n2 = [string]$this.Tag; $script:GamingPauseList = @(@($script:GamingPauseList) | Where-Object { $_ -ne $n2 }); Save-Settings; try { $script:GamingPauseCountLbl.Text = ((Tr '{0} proceso(s) marcados para pausar.') -f @($script:GamingPauseList).Count) } catch {} })
+            Set-WpiToggleStyle $cb | Out-Null
+            $spL.Children.Add($cb) | Out-Null
+        }
+    } catch {}
+    $bRL = New-WpiGamingButton -Text (Tr 'Actualizar lista de procesos') -Bg '#FF1A2B3C' -Border '#FF3A5B7C'
+    $bRL.Add_Click({ Refresh-GamingUI })
+    $spL.Children.Add($bRL) | Out-Null
+    $exp3.Content = $spL
+    $z3.Panel.Children.Add($exp3) | Out-Null
+    $script:GamingPauseCountLbl = New-WpiGamingText -Text ((Tr '{0} proceso(s) marcados para pausar.') -f @($script:GamingPauseList).Count) -Size 11.5
+    $z3.Panel.Children.Add($script:GamingPauseCountLbl) | Out-Null
+
+    # S10-ter: silenciar notificaciones SOLO mientras dura la sesion (reversible)
+    $chkMute = New-Object Windows.Controls.CheckBox
+    $chkMute.Content = (Tr 'Silenciar notificaciones durante la sesion (se restauran al desactivar)')
+    $chkMute.Foreground = Get-ThemeBrush($Theme.Text); $chkMute.FontSize = 11.5
+    $chkMute.Margin = New-Object Windows.Thickness(0,8,0,0)
+    $chkMute.IsChecked = [bool]$script:GamingMuteToasts
+    $chkMute.ToolTip = (Tr 'Al activar la sesion, las notificaciones nuevas dejan de sonar y saltar (mismo ajuste documentado del tweak de notificaciones); al desactivarla vuelven exactamente a como estaban.')
+    $chkMute.Add_Checked({ $script:GamingMuteToasts = $true; Save-Settings })
+    $chkMute.Add_Unchecked({ $script:GamingMuteToasts = $false; Save-Settings })
+    Set-WpiToggleStyle $chkMute | Out-Null
+    $z3.Panel.Children.Add($chkMute) | Out-Null
+
+    $z3.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Presets (ninguno viene preseleccionado):') -Color $Theme.Text -Bold $true -Margin (New-Object Windows.Thickness(0,12,0,0)))) | Out-Null
+    $z3.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Competitivo = plan de energia maximo + ProBalance (Process Lasso) + tu lista de pausa. Equilibrado = solo ProBalance, sin tocar el plan ni los procesos.') -Size 11.5)) | Out-Null
+    $wrap3 = New-Object Windows.Controls.WrapPanel
+    $bC = New-WpiGamingButton -Text (Tr 'Preset Competitivo')
+    $bC.Add_Click({
+        if (Get-WpiGameSessionState) { Add-WpiGamingLog 'warn' (Tr 'Modo Juego: ya hay una sesion activa.'); return }
+        $n = @($script:GamingPauseList).Count
+        $r = Show-WpiMessage(((Tr 'Aplicar el preset Competitivo? Activa el Modo Juego por sesion (plan maximo + pausa de {0} proceso(s)) y abre Process Lasso si esta instalado.') -f $n), 'Gaming Optimizer', 'YesNo', 'Question')
+        if ($r -ne 'Yes') { return }
+        if (Start-WpiGameSession) {
+            $script:GamingSessionOwned = $true
+            $pl = Get-WpiProcessLassoPath
+            if ($pl) { try { Start-Process $pl } catch {} }
+            else { Add-WpiGamingLog 'warn' (Tr 'Process Lasso no esta instalado: el preset se aplico sin ProBalance (usa el boton Instalar).') }
+        }
+        Refresh-GamingUI
+    })
+    $wrap3.Children.Add($bC) | Out-Null
+    $bE = New-WpiGamingButton -Text (Tr 'Preset Equilibrado') -Bg '#FF1A2B3C' -Border '#FF3A5B7C'
+    $bE.Add_Click({
+        $pl = Get-WpiProcessLassoPath
+        if ($pl) { try { Start-Process $pl; Add-WpiGamingLog 'ok' (Tr 'Preset Equilibrado: Process Lasso abierto (ProBalance se gestiona alli). No se ha tocado nada mas.') } catch {} }
+        else { Show-WpiMessage((Tr 'Preset Equilibrado: instala primero Process Lasso (boton "Instalar Process Lasso").'), 'Gaming Optimizer') | Out-Null }
+    })
+    $wrap3.Children.Add($bE) | Out-Null
+    $z3.Panel.Children.Add($wrap3) | Out-Null
+    $secPlay.Children.Add($z3.Card) | Out-Null
+    $secPlay.Children.Add($z2.Card) | Out-Null
+
+    # ---- ZONA B2: DETECCION AUTOMATICA DE JUEGO (apagada por defecto) ----
+    $z5 = New-WpiGamingCard -Title (Tr 'DETECCION AUTOMATICA DE JUEGO  ·  APAGADA POR DEFECTO') -TitleColor $Theme.Iso
+    $z5.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Con el interruptor maestro encendido, el Modo Juego se activa y revierte solo con tus juegos.') -Size 11.5)) | Out-Null
+    $z5.Panel.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará' 'QUÉ ES: la orquestación automática del Modo Juego por sesión de arriba; no es un motor nuevo ni un servicio residente. QUÉ HACE: con el interruptor maestro encendido, un vigilante ligero comprueba cada 5 segundos si arranca alguno de TUS juegos asociados; al detectarlo aplica su perfil (Competitivo = Modo Juego por sesión con tu lista de pausa si la activas; Equilibrado = solo abre Process Lasso) y, cuando el juego se cierra, lo revierte todo solo. QUÉ PASARÁ: viene APAGADO por defecto y no vigila nada hasta que tú lo enciendas; solo mira los procesos que tú asocies, nunca pisa una sesión manual y cada activación/reversión queda en el Live Log y el diario.' $Theme.Iso)) | Out-Null
+    $chkW = New-Object Windows.Controls.CheckBox
+    $chkW.Content = (Tr 'Interruptor maestro: vigilar los juegos asociados (comprobacion ligera cada 5 s)')
+    $chkW.Foreground = Get-ThemeBrush($Theme.Text); $chkW.FontSize = 12; $chkW.FontWeight = 'Bold'
+    $chkW.Margin = New-Object Windows.Thickness(0,8,0,2)
+    $chkW.IsChecked = [bool]$script:GamingWatchEnabled
+    $chkW.Add_Checked({ Set-WpiGameWatch $true; Refresh-GamingUI })
+    $chkW.Add_Unchecked({ Set-WpiGameWatch $false; Refresh-GamingUI })
+    Set-WpiToggleStyle $chkW | Out-Null
+    $z5.Panel.Children.Add($chkW) | Out-Null
+    if ($script:GamingWatchEnabled -and $script:GamingAutoGame) { $z5.Panel.Children.Add((New-WpiGamingText -Text ((Tr 'Vigilante ACTIVO. Juego en curso: {0}.') -f [string]$script:GamingAutoGame) -Color '#FF5CFF8F' -Size 11.5)) | Out-Null }
+    elseif ($script:GamingWatchEnabled) { $z5.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Vigilante ACTIVO: esperando a que arranque un juego asociado.') -Color '#FF5CFF8F' -Size 11.5)) | Out-Null }
+    else { $z5.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Vigilante apagado: no se comprueba nada en segundo plano.') -Size 11.5)) | Out-Null }
+
+    $z5.Panel.Children.Add((New-WpiGamingText -Text ((Tr 'Juegos asociados ({0}):') -f @($script:GamingGames).Count) -Color $Theme.Text -Bold $true -Margin (New-Object Windows.Thickness(0,10,0,2)))) | Out-Null
+    if (@($script:GamingGames).Count -eq 0) {
+        $z5.Panel.Children.Add((New-WpiGamingText -Text (Tr 'No hay juegos asociados todavia. Escribe el proceso de tu juego (ej.: eldenring) o elige su .exe.') -Size 11.5)) | Out-Null
+    }
+    foreach ($gj in @($script:GamingGames)) {
+        $row = New-Object Windows.Controls.DockPanel
+        $row.Margin = New-Object Windows.Thickness(8,3,0,0)
+        $bDel = New-Object Windows.Controls.Button
+        $bDel.Content = (Tr 'Quitar'); $bDel.Tag = [string]$gj.Exe
+        $bDel.Background = Get-ThemeBrush('#FF3A1F1F'); $bDel.BorderBrush = Get-ThemeBrush('#FF7C3A3A')
+        $bDel.Foreground = Get-ThemeBrush($Theme.Text); $bDel.FontSize = 10.5
+        $bDel.Padding = New-Object Windows.Thickness(8,2,8,2); $bDel.Margin = New-Object Windows.Thickness(6,0,0,0)
+        $bDel.Cursor = [Windows.Input.Cursors]::Hand
+        $bDel.Add_Click({ $e = [string]$this.Tag; $script:GamingGames = @(@($script:GamingGames) | Where-Object { [string]$_.Exe -ne $e }); Save-Settings; Refresh-GamingUI })
+        [Windows.Controls.DockPanel]::SetDock($bDel, [Windows.Controls.Dock]::Right)
+        $row.Children.Add($bDel) | Out-Null
+        $bAf = New-Object Windows.Controls.Button
+        $bAf.Content = (Tr 'Afinidad en Process Lasso')
+        $bAf.Background = Get-ThemeBrush('#FF2A1F4F'); $bAf.BorderBrush = Get-ThemeBrush('#FF9076FF')
+        $bAf.Foreground = Get-ThemeBrush($Theme.Text); $bAf.FontSize = 10.5
+        $bAf.Padding = New-Object Windows.Thickness(8,2,8,2); $bAf.Margin = New-Object Windows.Thickness(6,0,0,0)
+        $bAf.Cursor = [Windows.Input.Cursors]::Hand
+        $bAf.Add_Click({
+            $pl3 = Get-WpiProcessLassoPath
+            if ($pl3) { try { Start-Process $pl3 } catch {} }
+            else { Show-WpiMessage((Tr 'Preset Equilibrado: instala primero Process Lasso (boton "Instalar Process Lasso").'), 'Gaming Optimizer') | Out-Null }
+        })
+        [Windows.Controls.DockPanel]::SetDock($bAf, [Windows.Controls.Dock]::Right)
+        $row.Children.Add($bAf) | Out-Null
+        $cmb = New-Object Windows.Controls.ComboBox
+        [void]$cmb.Items.Add((Tr 'Competitivo')); [void]$cmb.Items.Add((Tr 'Equilibrado'))
+        $cmb.SelectedIndex = $(if ([string]$gj.Profile -eq 'Competitivo') { 0 } else { 1 })
+        $cmb.Tag = [string]$gj.Exe
+        $cmb.Width = 118; $cmb.FontSize = 11; $cmb.Margin = New-Object Windows.Thickness(6,0,0,0)
+        $cmb.Add_SelectionChanged({
+            $e = [string]$this.Tag
+            foreach ($g2 in @($script:GamingGames)) { if ([string]$g2.Exe -eq $e) { $g2.Profile = $(if ($this.SelectedIndex -eq 0) { 'Competitivo' } else { 'Equilibrado' }) } }
+            Save-Settings
+        })
+        [Windows.Controls.DockPanel]::SetDock($cmb, [Windows.Controls.Dock]::Right)
+        $row.Children.Add($cmb) | Out-Null
+        $chkP = New-Object Windows.Controls.CheckBox
+        $chkP.Content = (Tr 'usar lista de pausa'); $chkP.Tag = [string]$gj.Exe
+        $chkP.IsChecked = [bool]$gj.UsePause
+        $chkP.Foreground = Get-ThemeBrush($Theme.Sub); $chkP.FontSize = 10.5
+        $chkP.Margin = New-Object Windows.Thickness(6,2,0,0); $chkP.VerticalAlignment = 'Center'
+        $chkP.Add_Checked({ $e = [string]$this.Tag; foreach ($g2 in @($script:GamingGames)) { if ([string]$g2.Exe -eq $e) { $g2.UsePause = $true } }; Save-Settings })
+        $chkP.Add_Unchecked({ $e = [string]$this.Tag; foreach ($g2 in @($script:GamingGames)) { if ([string]$g2.Exe -eq $e) { $g2.UsePause = $false } }; Save-Settings })
+        Set-WpiToggleStyle $chkP | Out-Null
+        [Windows.Controls.DockPanel]::SetDock($chkP, [Windows.Controls.Dock]::Right)
+        $row.Children.Add($chkP) | Out-Null
+        $tx = New-Object Windows.Controls.TextBlock
+        $tx.Text = ([string]$gj.Exe + '.exe')
+        $tx.Foreground = Get-ThemeBrush($Theme.Text); $tx.FontSize = 11.5; $tx.VerticalAlignment = 'Center'
+        $row.Children.Add($tx) | Out-Null
+        $z5.Panel.Children.Add($row) | Out-Null
+    }
+    $addRow = New-Object Windows.Controls.WrapPanel
+    $addRow.Margin = New-Object Windows.Thickness(8,8,0,0)
+    $script:GamingNewGameBox = New-Object Windows.Controls.TextBox
+    $script:GamingNewGameBox.Width = 200; $script:GamingNewGameBox.FontSize = 11.5
+    $script:GamingNewGameBox.VerticalAlignment = 'Center'
+    $addRow.Children.Add($script:GamingNewGameBox) | Out-Null
+    $bAdd = New-WpiGamingButton -Text (Tr 'Anadir juego (proceso)')
+    $bAdd.Margin = New-Object Windows.Thickness(8,0,0,0)
+    $bAdd.Add_Click({
+        $e = ''
+        try { $e = ([string]$script:GamingNewGameBox.Text).Trim() } catch {}
+        if ($e.ToLower().EndsWith('.exe')) { $e = $e.Substring(0, $e.Length - 4) }
+        if ([string]::IsNullOrWhiteSpace($e)) { Show-WpiMessage((Tr 'Escribe el nombre del proceso del juego (sin .exe).'), 'Gaming Optimizer') | Out-Null; return }
+        if (@(@($script:GamingGames) | Where-Object { [string]$_.Exe -eq $e }).Count -gt 0) { Show-WpiMessage((Tr 'Ese proceso ya esta asociado.'), 'Gaming Optimizer') | Out-Null; return }
+        $script:GamingGames = @($script:GamingGames) + [pscustomobject]@{ Exe = $e; Profile = 'Equilibrado'; UsePause = $true }
+        Save-Settings; Refresh-GamingUI
+    })
+    $addRow.Children.Add($bAdd) | Out-Null
+    $bPick = New-WpiGamingButton -Text (Tr 'Elegir .exe...') -Bg '#FF1A2B3C' -Border '#FF3A5B7C'
+    $bPick.Margin = New-Object Windows.Thickness(8,0,0,0)
+    $bPick.Add_Click({
+        try {
+            $dlg = New-Object Microsoft.Win32.OpenFileDialog
+            $dlg.Filter = ((Tr 'Ejecutables') + ' (*.exe)|*.exe')
+            if ($dlg.ShowDialog()) {
+                $e = [IO.Path]::GetFileNameWithoutExtension([string]$dlg.FileName)
+                if (-not [string]::IsNullOrWhiteSpace($e) -and @(@($script:GamingGames) | Where-Object { [string]$_.Exe -eq $e }).Count -eq 0) {
+                    $script:GamingGames = @($script:GamingGames) + [pscustomobject]@{ Exe = $e; Profile = 'Equilibrado'; UsePause = $true }
+                    Save-Settings; Refresh-GamingUI
+                }
+            }
+        } catch {}
+    })
+    $addRow.Children.Add($bPick) | Out-Null
+    $z5.Panel.Children.Add($addRow) | Out-Null
+
+    $expL = New-Object Windows.Controls.Expander
+    $expL.Header = (Tr 'Launchers detectados (sus procesos de fondo son candidatos a la lista de pausa; nada viene marcado)')
+    $expL.Foreground = Get-ThemeBrush($Theme.Info); $expL.FontWeight = 'Bold'; $expL.FontSize = 12
+    $expL.Margin = New-Object Windows.Thickness(0,10,0,0)
+    $spLn = New-Object Windows.Controls.StackPanel
+    $lchs = @(Get-WpiGamingLaunchers)
+    if (@($lchs).Count -eq 0) { $spLn.Children.Add((New-WpiGamingText -Text (Tr 'No se han detectado launchers (Steam, Epic Games, GOG Galaxy, Battle.net).') -Size 11.5)) | Out-Null }
+    foreach ($lc in $lchs) {
+        $spLn.Children.Add((New-WpiGamingText -Text ((Tr '[OK] {0} detectado.') -f [string]$lc.Name) -Color '#FF5CFF8F' -Size 11.5)) | Out-Null
+        foreach ($pn in @($lc.Procs)) {
+            $cbl = New-Object Windows.Controls.CheckBox
+            $cbl.Content = ((Tr 'pausar {0} al activar el Modo Juego') -f $pn)
+            $cbl.Tag = $pn
+            $cbl.Foreground = Get-ThemeBrush($Theme.Text); $cbl.FontSize = 11
+            $cbl.Margin = New-Object Windows.Thickness(16,2,0,0)
+            $cbl.IsChecked = (@($script:GamingPauseList) -contains $pn)
+            $cbl.Add_Checked({ $n2 = [string]$this.Tag; if (@($script:GamingPauseList) -notcontains $n2) { $script:GamingPauseList = @($script:GamingPauseList) + $n2 }; Save-Settings })
+            $cbl.Add_Unchecked({ $n2 = [string]$this.Tag; $script:GamingPauseList = @(@($script:GamingPauseList) | Where-Object { $_ -ne $n2 }); Save-Settings })
+            Set-WpiToggleStyle $cbl | Out-Null
+            $spLn.Children.Add($cbl) | Out-Null
+        }
+    }
+    $expL.Content = $spLn
+    $z5.Panel.Children.Add($expL) | Out-Null
+    $secAuto.Children.Add($z5.Card) | Out-Null
+
+    # ---- S10-ter (Automatizar): JUEGOS INSTALADOS DETECTADOS ----
+    $zG = New-WpiGamingCard -Title (Tr 'JUEGOS INSTALADOS DETECTADOS  ·  ASOCIAR CON UN CLIC') -TitleColor $Theme.Maintain
+    $zG.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Toda tu biblioteca (Steam, Epic, GOG, Xbox, Ubisoft, Riot, EA, Battle.net y cualquier juego ya ejecutado), sin escribir nada.') -Size 11.5)) | Out-Null
+    $zG.Panel.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará' 'QUÉ ES: la lectura (solo lectura) de TODOS los juegos instalados en el PC para que los asocies a la detección automática sin teclear el nombre del proceso. QUÉ HACE: lee las bibliotecas de Steam (manifiestos), Epic (ejecutable exacto), GOG y Ubisoft (registro), Xbox/Game Pass (carpeta XboxGames de cada disco), Riot y los juegos de EA y Battle.net (desinstaladores); y como red genérica, el registro GameConfigStore de Windows, donde queda apuntado CUALQUIER juego que hayas ejecutado alguna vez, sea del lanzador que sea. QUÉ PASARÁ al pulsar Asociar: el juego se añade a "Juegos asociados" con perfil Equilibrado y su lista de pausa activada — nada más; puedes cambiarle el perfil o quitarlo cuando quieras, y ningún juego se asocia solo.' $Theme.Maintain)) | Out-Null
+    $expG = New-Object Windows.Controls.Expander
+    $expG.Header = (Tr 'Ver juegos detectados')
+    $expG.Foreground = Get-ThemeBrush($Theme.Info); $expG.FontWeight = 'Bold'; $expG.FontSize = 12
+    $expG.Margin = New-Object Windows.Thickness(0,6,0,0)
+    $spG = New-Object Windows.Controls.StackPanel
+    try {
+        $gamesDet = @(Get-WpiInstalledGames)
+        if (@($gamesDet).Count -eq 0) {
+            $spG.Children.Add((New-WpiGamingText -Text (Tr 'No se han detectado juegos instalados (Steam, Epic, GOG).') -Size 11.5)) | Out-Null
+        }
+        foreach ($gd in ($gamesDet | Select-Object -First 40)) {
+            $rowG = New-Object Windows.Controls.DockPanel
+            $rowG.Margin = New-Object Windows.Thickness(8,3,0,0)
+            $ya = (@(@($script:GamingGames) | Where-Object { [string]$_.Exe -eq [string]$gd.Exe }).Count -gt 0)
+            $bAs = New-Object Windows.Controls.Button
+            $bAs.Content = $(if ($ya) { (Tr 'Asociado') } else { (Tr 'Asociar') })
+            $bAs.IsEnabled = (-not $ya)
+            $bAs.Tag = $gd
+            $bAs.FontSize = 10.5; $bAs.Padding = New-Object Windows.Thickness(10,2,10,2)
+            $bAs.Margin = New-Object Windows.Thickness(6,0,0,0)
+            $bAs.Background = Get-ThemeBrush($(if ($ya) { '#FF1B1B25' } else { '#FF1F3A2E' }))
+            $bAs.BorderBrush = Get-ThemeBrush($(if ($ya) { '#FF55555F' } else { '#FF3E6B54' }))
+            $bAs.Foreground = Get-ThemeBrush($Theme.Text)
+            $bAs.Add_Click({
+                $g3 = $this.Tag
+                if (@(@($script:GamingGames) | Where-Object { [string]$_.Exe -eq [string]$g3.Exe }).Count -gt 0) { return }
+                $script:GamingGames = @($script:GamingGames) + [pscustomobject]@{ Exe = [string]$g3.Exe; Profile = 'Equilibrado'; UsePause = $true }
+                Save-Settings
+                Add-WpiGamingLog 'ok' ((Tr 'Juego asociado desde la biblioteca: {0} ({1}).') -f [string]$g3.Name, [string]$g3.Exe)
+                Refresh-GamingUI
+            })
+            [Windows.Controls.DockPanel]::SetDock($bAs, [Windows.Controls.Dock]::Right)
+            $rowG.Children.Add($bAs) | Out-Null
+            $txtG = New-Object Windows.Controls.TextBlock
+            $txtG.Text = ('{0}   ({1}.exe  ·  {2})' -f [string]$gd.Name, [string]$gd.Exe, [string]$gd.Source)
+            $txtG.Foreground = Get-ThemeBrush($(if ($ya) { '#FF5CFF8F' } else { $Theme.Text }))
+            $txtG.FontSize = 11.5; $txtG.VerticalAlignment = 'Center'; $txtG.TextTrimming = 'CharacterEllipsis'
+            $rowG.Children.Add($txtG) | Out-Null
+            $spG.Children.Add($rowG) | Out-Null
+        }
+    } catch {}
+    $expG.Content = $spG
+    $zG.Panel.Children.Add($expG) | Out-Null
+    $secAuto.Children.Add($zG.Card) | Out-Null
+
+    # ---- ZONA B2: MEDICION HONESTA ----
+    $z6 = New-WpiGamingCard -Title (Tr 'MEDICION HONESTA  ·  FRAMETIMES DE VERDAD') -TitleColor $Theme.Clean
+    $z6.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Mide antes y despues con herramientas de referencia; Winzard no inventa cifras.') -Size 11.5)) | Out-Null
+    $z6.Panel.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará' 'QUÉ ES: la forma honesta de saber si un cambio mejoró algo: medir frametimes reales antes y después, en vez de creerse promesas de FPS. QUÉ HACE: instala por winget las dos herramientas de referencia del sector: PresentMon (Intel, el estándar abierto de captura de frametimes) y CapFrameX (análisis y comparativas con percentiles P1/P0.2 y gráficas). QUÉ PASARÁ: se instalan como cualquier app (desinstalables cuando quieras), Winzard no las configura ni interpreta por ti, y tus conclusiones salen de TUS datos: si una métrica no mejora, el cambio no valía — eso también es información.' $Theme.Clean)) | Out-Null
+    $wrap6 = New-Object Windows.Controls.WrapPanel
+    $bPM = New-WpiGamingButton -Text (Tr 'Instalar PresentMon (winget)')
+    $bPM.Add_Click({ Start-Worker -Mode 'install' -Ids @('Intel.PresentMon') })
+    $wrap6.Children.Add($bPM) | Out-Null
+    $bCF = New-WpiGamingButton -Text (Tr 'Instalar CapFrameX (winget)')
+    $bCF.Add_Click({ Start-Worker -Mode 'install' -Ids @('CXWorld.CapFrameX') })
+    $wrap6.Children.Add($bCF) | Out-Null
+    $z6.Panel.Children.Add($wrap6) | Out-Null
+    # ---- S10-ter (Medir): MEDIR 60 SEGUNDOS AHORA (PresentMon consola) ----
+    $z6.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Medir ahora (con un juego en marcha):') -Color $Theme.Text -Bold $true -Margin (New-Object Windows.Thickness(0,10,0,2)))) | Out-Null
+    $z6.Panel.Children.Add((New-InfoExpander 'Qué es, cómo funciona y qué pasará' 'QUÉ ES: una captura real de frametimes de 60 segundos con la versión de CONSOLA de PresentMon (Intel), para comparar antes y después de un cambio con números y no con sensaciones. QUÉ HACE: lanza la captura en segundo plano mientras juegas, guarda el CSV en la carpeta logs de Winzard y al terminar calcula la media y los percentiles p95 y p99 (los picos que se sienten como tirones). QUÉ PASARÁ: necesita la edición de consola de PresentMon (la app gráfica de winget no se puede automatizar; el botón te lleva a sus descargas oficiales de GitHub si falta); la captura dura 60 segundos exactos, no cambia nada del sistema y el veredicto son TUS números: si p99 se acerca a la media, la fluidez es buena.' $Theme.Clean)) | Out-Null
+    $script:GamingFtText = New-WpiGamingText -Text (Tr 'Sin medir todavia.') -Size 11.5 -Margin (New-Object Windows.Thickness(8,4,0,0))
+    $wrapFt = New-Object Windows.Controls.WrapPanel
+    $bFt = New-WpiGamingButton -Text (Tr 'Medir 60 s (PresentMon consola)')
+    $bFt.Add_Click({
+        if ($script:GamingFtJob) { return }
+        $pmExe = Find-WpiPresentMonCli
+        if (-not $pmExe) {
+            $script:GamingFtText.Text = (Tr 'Falta la version de CONSOLA de PresentMon: usa "Descargas de PresentMon" y deja el .exe en la carpeta de Winzard o en Archivos de programa.')
+            return
+        }
+        $csv = Join-Path (Join-Path $PSScriptRoot 'logs') ('frametimes_{0}.csv' -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        $script:GamingFtText.Text = ((Tr 'Capturando 60 s con {0}... juega con normalidad.') -f (Split-Path $pmExe -Leaf))
+        $script:GamingFtJob = Start-Job -ArgumentList $pmExe, $csv -ScriptBlock {
+            param($exe, $out)
+            # PresentMon v2 usa --parametros; v1 usa -parametros. Se intenta v2 y,
+            # si no genera CSV, se reintenta con la sintaxis v1.
+            try { & $exe --output_file $out --timed 60 --terminate_after_timed --stop_existing_session 2>&1 | Out-Null } catch {}
+            if (-not (Test-Path $out)) {
+                try { & $exe -output_file $out -timed 60 -terminate_after_timed -stop_existing_session 2>&1 | Out-Null } catch {}
+            }
+            if (-not (Test-Path $out)) { return @{ Ok = $false; Reason = 'nocsv' } }
+            try {
+                $rows = Import-Csv $out
+                if (@($rows).Count -lt 30) { return @{ Ok = $false; Reason = 'pocos' } }
+                $col = $null
+                foreach ($c in @($rows[0].PSObject.Properties.Name)) {
+                    if ($c -match '^(msbetweenpresents|frametime)$') { $col = $c; break }
+                }
+                if (-not $col) { return @{ Ok = $false; Reason = 'columna' } }
+                $vals = @($rows | ForEach-Object { [double]($_.$col) } | Where-Object { $_ -gt 0 } | Sort-Object)
+                $n = @($vals).Count
+                if ($n -lt 30) { return @{ Ok = $false; Reason = 'pocos' } }
+                $avg = [math]::Round((($vals | Measure-Object -Average).Average), 2)
+                $p95 = [math]::Round($vals[[int][math]::Floor(0.95 * ($n - 1))], 2)
+                $p99 = [math]::Round($vals[[int][math]::Floor(0.99 * ($n - 1))], 2)
+                return @{ Ok = $true; N = $n; Avg = $avg; P95 = $p95; P99 = $p99; Csv = $out }
+            } catch { return @{ Ok = $false; Reason = 'parse' } }
+        }
+        $tf = New-Object Windows.Threading.DispatcherTimer
+        $tf.Interval = [TimeSpan]::FromSeconds(2)
+        $tf.Add_Tick({
+            $j = $script:GamingFtJob
+            if (-not $j) { $this.Stop(); return }
+            if ($j.State -in @('Completed','Failed','Stopped')) {
+                $res = $null
+                try { $res = Receive-Job $j -ErrorAction SilentlyContinue } catch {}
+                try { Remove-Job $j -Force } catch {}
+                $script:GamingFtJob = $null
+                $this.Stop()
+                if ($res -and $res.Ok) {
+                    $script:GamingFtText.Text = ((Tr 'Frametimes de {0} fotogramas: media {1} ms  ·  p95 {2} ms  ·  p99 {3} ms. CSV: {4}') -f $res.N, $res.Avg, $res.P95, $res.P99, (Split-Path ([string]$res.Csv) -Leaf))
+                    Add-WpiGamingLog 'ok' ([string]$script:GamingFtText.Text)
+                } else {
+                    $script:GamingFtText.Text = (Tr 'La captura no dio datos utiles (necesita un juego presentando fotogramas durante los 60 s).')
+                }
+            }
+        })
+        $tf.Start()
+    })
+    $wrapFt.Children.Add($bFt) | Out-Null
+    $bFtDl = New-WpiGamingButton -Text (Tr 'Descargas de PresentMon') -Bg '#FF1A2B3C' -Border '#FF3A5B7C'
+    $bFtDl.Add_Click({ try { Start-Process 'https://github.com/GameTechDev/PresentMon/releases' } catch {} })
+    $wrapFt.Children.Add($bFtDl) | Out-Null
+    $z6.Panel.Children.Add($wrapFt) | Out-Null
+    $z6.Panel.Children.Add($script:GamingFtText) | Out-Null
+    $secMeas.Children.Add($z6.Card) | Out-Null
+
+    # ---- ZONA 4: TRANSPARENCIA TOTAL ----
+    $z4 = New-WpiGamingCard -Title (Tr 'TRANSPARENCIA TOTAL  ·  QUE ESTA CAMBIADO AHORA MISMO') -TitleColor $Theme.Optimize
+    $actNow = Get-WpiActivePowerPlan
+    if ($sess) {
+        $z4.Panel.Children.Add((New-WpiGamingText -Text ((Tr 'Modo Juego por sesion: ACTIVO desde {0}.') -f [string]$sess.Started) -Color '#FF5CFF8F' -Bold $true)) | Out-Null
+        if ($actNow) { $z4.Panel.Children.Add((New-WpiGamingText -Text ((Tr 'Plan de energia actual: {0}') -f [string]$actNow.Name) -Color $Theme.Text -Size 11.5)) | Out-Null }
+        if ([bool]$sess.PlanChanged) { $z4.Panel.Children.Add((New-WpiGamingText -Text ((Tr 'Plan original guardado: {0} (se restaurara al desactivar).') -f [string]$sess.PrevPlanName) -Size 11.5)) | Out-Null }
+        $pz = @($sess.Paused)
+        if (@($pz).Count -gt 0) {
+            $z4.Panel.Children.Add((New-WpiGamingText -Text ((Tr 'Procesos en pausa ahora ({0}):') -f @($pz).Count) -Color $Theme.Text -Size 11.5 -Bold $true)) | Out-Null
+            foreach ($pp in $pz) {
+                $dp4 = New-Object Windows.Controls.DockPanel
+                $dp4.Margin = New-Object Windows.Thickness(8,2,0,0)
+                $rb = New-Object Windows.Controls.Button
+                $rb.Content = (Tr 'Reanudar'); $rb.Tag = [int]$pp.Id
+                $rb.Background = Get-ThemeBrush('#FF1A2B3C'); $rb.BorderBrush = Get-ThemeBrush('#FF3A5B7C')
+                $rb.Foreground = Get-ThemeBrush($Theme.Text); $rb.FontSize = 10.5
+                $rb.Padding = New-Object Windows.Thickness(8,2,8,2)
+                $rb.Cursor = [Windows.Input.Cursors]::Hand
+                $rb.Add_Click({ Resume-WpiGamePausedOne ([int]$this.Tag); Refresh-GamingUI })
+                [Windows.Controls.DockPanel]::SetDock($rb, [Windows.Controls.Dock]::Right)
+                $dp4.Children.Add($rb) | Out-Null
+                $t4 = New-Object Windows.Controls.TextBlock
+                $t4.Text = ('{0}  (PID {1})' -f [string]$pp.Name, [int]$pp.Id)
+                $t4.Foreground = Get-ThemeBrush($Theme.Text); $t4.FontSize = 11.5
+                $t4.VerticalAlignment = 'Center'
+                $dp4.Children.Add($t4) | Out-Null
+                $z4.Panel.Children.Add($dp4) | Out-Null
+            }
+        } else {
+            $z4.Panel.Children.Add((New-WpiGamingText -Text (Tr 'No hay procesos en pausa.') -Size 11.5)) | Out-Null
+        }
+        $bR = New-WpiGamingButton -Text (Tr 'Restaurar todo') -Bg '#FF4A3A1F' -Border '#FFFFB454'
+        $bR.Add_Click({ [void](Stop-WpiGameSession); $script:GamingSessionOwned = $false; Refresh-GamingUI })
+        $z4.Panel.Children.Add($bR) | Out-Null
+    } else {
+        $z4.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Modo Juego por sesion: inactivo. El Gaming Optimizer no tiene nada cambiado en tu sistema ahora mismo.'))) | Out-Null
+        if ($actNow) { $z4.Panel.Children.Add((New-WpiGamingText -Text ((Tr 'Plan de energia actual: {0}') -f [string]$actNow.Name) -Size 11.5)) | Out-Null }
+        $z4.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Cada accion de este panel queda registrada en el Live Log y en el diario (wpi_journal.jsonl).') -Size 11.5)) | Out-Null
+    }
+    if ($script:GamingWatchEnabled) { $z4.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Deteccion automatica: ACTIVADA.') -Color '#FF5CFF8F' -Size 11.5)) | Out-Null }
+    else { $z4.Panel.Children.Add((New-WpiGamingText -Text (Tr 'Deteccion automatica: apagada.') -Size 11.5)) | Out-Null }
+    $secPlay.Children.Add($z4.Card) | Out-Null
+}
+
+# Reconstruye el panel Gaming y lo vuelve a traducir (estado siempre fresco).
+function Refresh-GamingUI {
+    try { Build-GamingUI } catch {}
+    try { Translate-Tree $script:GamingScroll; Apply-WpiToolTips $script:GamingScroll } catch {}
 }
 
 function Apply-Filter {
@@ -10358,6 +17202,8 @@ function Apply-Filter {
     $script:DriversScroll.Visibility   = 'Collapsed'
     $script:WinUpdateScroll.Visibility = 'Collapsed'
     $script:RepairScroll.Visibility    = 'Collapsed'
+    $script:GamingScroll.Visibility    = 'Collapsed'
+    $script:RecoveryScroll.Visibility  = 'Collapsed'
     $script:SummaryScroll.Visibility   = 'Collapsed'
     $script:FeaturesScroll.Visibility  = 'Collapsed'
     $script:CreateIsoScroll.Visibility = 'Collapsed'
@@ -10372,18 +17218,42 @@ function Apply-Filter {
     if ($sel -eq '@GUIDES')   { $script:GuidesScroll.Visibility   = 'Visible'; return }
     if ($sel -eq '@WINUPDATE') { $script:WinUpdateScroll.Visibility = 'Visible'; if (-not $script:WuBuilt) { $script:WuBuilt=$true; try { Build-WinUpdateUI } catch {}; try { Translate-Tree $script:WinUpdateScroll; Apply-WpiToolTips $script:WinUpdateScroll } catch {} }; return }
     if ($sel -eq '@REPAIR')    { $script:RepairScroll.Visibility = 'Visible'; if (-not $script:RepBuilt) { $script:RepBuilt=$true; try { Build-RepairUI } catch {}; try { Translate-Tree $script:RepairScroll; Apply-WpiToolTips $script:RepairScroll } catch {} }; return }
+    if ($sel -eq '@GAMING')    { $script:GamingScroll.Visibility = 'Visible'; if (-not $script:GamingBuilt) { $script:GamingBuilt=$true; try { Build-GamingUI } catch {}; try { Translate-Tree $script:GamingScroll; Apply-WpiToolTips $script:GamingScroll } catch {} } else { try { Refresh-GamingUI } catch {} }; return }
+    if ($sel -eq '@RECOVERY')  {
+        $script:RecoveryScroll.Visibility = 'Visible'
+        # F4-B4 (VT2): cache con TTL 30 s — antes se reconstruia el panel ENTERO en cada
+        # visita (lecturas de disco/registro) y la navegacion rapida parpadeaba.
+        if (-not $script:RecoveryBuiltAt -or ((Get-Date) - $script:RecoveryBuiltAt).TotalSeconds -gt 30) {
+            try { Build-RecoveryUI } catch {}
+            $script:RecoveryBuiltAt = Get-Date
+            try { Translate-Tree $script:RecoveryScroll; Apply-WpiToolTips $script:RecoveryScroll } catch {}
+        }
+        return
+    }
     if ($sel -eq '@FEATURES')  { $script:FeaturesScroll.Visibility = 'Visible'; if (-not $script:FeatBuilt) { $script:FeatBuilt=$true; try { Build-FeaturesUI } catch {}; try { Translate-Tree $script:FeaturesScroll; Apply-WpiToolTips $script:FeaturesScroll } catch {} } else { try { Detect-FeatureStates; Apply-WpiToolTips $script:FeaturesScroll } catch {} }; return }
     if ($sel -eq '@CREATEISO') { $script:CreateIsoScroll.Visibility = 'Visible'; if (-not $script:IsoBuilt) { $script:IsoBuilt=$true; try { Build-CreateIsoUI } catch {}; try { Translate-Tree $script:CreateIsoScroll; Apply-WpiToolTips $script:CreateIsoScroll } catch {} } else { try { Update-IsoPrereqText; Apply-WpiToolTips $script:CreateIsoScroll } catch {} }; return }
     if ($sel -eq '@LOGVIEWER') { $script:LogViewerScroll.Visibility = 'Visible'; if (-not $script:LogViewerBuilt) { $script:LogViewerBuilt=$true; try { Build-LogViewerUI } catch {}; try { Translate-Tree $script:LogViewerScroll; Apply-WpiToolTips $script:LogViewerScroll } catch {} } else { try { Refresh-LogViewer; Apply-WpiToolTips $script:LogViewerScroll } catch {} }; return }
     if ($sel -eq '@QUICKSTART') { $script:QuickStartScroll.Visibility = 'Visible'; if (-not $script:QuickBuilt) { $script:QuickBuilt=$true; try { Build-QuickStartUI } catch {}; try { Translate-Tree $script:QuickStartScroll; Apply-WpiToolTips $script:QuickStartScroll } catch {} }; return }
     if ($sel -eq '@FINDALL') { $script:FindAllScroll.Visibility = 'Visible'; if (-not $script:FindAllBuilt) { $script:FindAllBuilt=$true; try { Build-FindAllUI } catch {}; try { Translate-Tree $script:FindAllScroll; Apply-WpiToolTips $script:FindAllScroll } catch {} }; return }
-    if ($sel -eq '@SUMMARY')   { $script:SummaryScroll.Visibility = 'Visible'; try { Build-SummaryUI } catch {} ; try { Translate-Tree $script:SummaryScroll; Apply-WpiToolTips $script:SummaryScroll } catch {} ; return }
+    if ($sel -eq '@SUMMARY')   {
+        $script:SummaryScroll.Visibility = 'Visible'
+        # F4-B4 (VT2): mismo cache TTL 30 s que Recovery (el resumen consulta WMI/discos).
+        if (-not $script:SummaryBuiltAt -or ((Get-Date) - $script:SummaryBuiltAt).TotalSeconds -gt 30) {
+            try { Build-SummaryUI } catch {}
+            $script:SummaryBuiltAt = Get-Date
+            try { Translate-Tree $script:SummaryScroll; Apply-WpiToolTips $script:SummaryScroll } catch {}
+        }
+        return
+    }
     if ($sel -eq '@DRIVERS')  {
         $script:DriversScroll.Visibility = 'Visible'
         if (-not $script:HwScanned) { $script:HwScanned = $true; try { Build-HardwareUI } catch {}; try { Translate-Tree $script:DriversScroll; Apply-WpiToolTips $script:DriversScroll } catch {} }
         return
     }
     $script:AppsScroll.Visibility = 'Visible'
+    # El boton "Ir arriba" solo existe en "Todas las apps"; en las categorias
+    # filtradas se elimina del layout (Collapsed no ocupa espacio).
+    if ($script:AppsScrollTopBtn) { $script:AppsScrollTopBtn.Visibility = $(if ($sel -eq '@ALL') { 'Visible' } else { 'Collapsed' }) }
     $q = $script:search.Text.Trim()
     foreach ($entry in $script:Cards) {
         if ($sel -ne '@ALL' -and $entry.Cat -ne $sel) {
@@ -10392,7 +17262,9 @@ function Apply-Filter {
         }
         $any = $false
         foreach ($cb in $entry.Checks) {
-            $vis = ($q -eq '' -or ($cb.Content -like "*$q*") -or ($cb.Tag -like "*$q*"))
+            # F4-B2 (VT2): el filtro tambien busca en la DESCRIPCION de la app (antes
+            # solo nombre e ID: buscar "editor de video" no encontraba nada).
+            $vis = ($q -eq '' -or ($cb.Content -like "*$q*") -or ($cb.Tag -like "*$q*") -or ((Get-AppDesc ([string]$cb.Tag)) -like "*$q*"))
             $cb.Visibility = $(if ($vis) { 'Visible' } else { 'Collapsed' })
             if ($vis) { $any = $true }
         }
@@ -10425,12 +17297,21 @@ function Invoke-TopSearch {
     try { Do-FindAll } catch {}
 }
 $script:search.Add_TextChanged({ Invoke-TopSearch })
-$script:SideList.Add_SelectionChanged({ Apply-Filter })
+$script:SideList.Add_SelectionChanged({
+    # Historial simple para la flechita "volver": recuerda la seccion anterior.
+    if ($script:NavCurIdx -ge 0 -and $script:NavCurIdx -ne $script:SideList.SelectedIndex) { $script:NavPrevIdx = $script:NavCurIdx }
+    $script:NavCurIdx = $script:SideList.SelectedIndex
+    Apply-Filter
+})
 Apply-Filter
 
 # --------- AJUSTES PERSISTENTES (wpi_settings.json) ---------
 $script:LastSelection = @()
 $script:WinGeom = $null
+$script:GamingPauseList = @()   # FASE B1: lista de pausa del Gaming Optimizer (elegida por el usuario)
+$script:GamingGames = @()       # FASE B2: juegos asociados (Exe/Profile/UsePause)
+$script:GamingWatchEnabled = $false   # FASE B2: interruptor maestro del vigilante (OFF por defecto)
+$script:GamingMuteToasts = $false     # S10-ter: silenciar notificaciones durante la sesion (OFF por defecto)
 function Load-Settings {
     try {
         if (Test-Path $Config.SettingsFile) {
@@ -10448,10 +17329,16 @@ function Load-Settings {
             if ($s.ParallelInstalls) { $Config.ParallelInstalls = [math]::Max(1, [math]::Min(3, [int]$s.ParallelInstalls)) }
             if ($null -ne $s.PSObject.Properties['AutoDetectInstalled']) { $Config.AutoDetectInstalled = [bool]$s.AutoDetectInstalled }
             if ($null -ne $s.PSObject.Properties['InstallTimeoutMin']) { $Config.InstallTimeoutMin = [math]::Max(0, [int]$s.InstallTimeoutMin) }
+            if ($null -ne $s.PSObject.Properties['InstallScope']) { $sc = [string]$s.InstallScope; if ($sc -in @('','user','machine')) { $Config.InstallScope = $sc } }
+            if ($null -ne $s.PSObject.Properties['ChocoFallback']) { $Config.ChocoFallback = [bool]$s.ChocoFallback }
             if ($s.LastSelection) { $script:LastSelection = @($s.LastSelection) }
             if ($s.WinGeom -and $s.WinGeom.W) {
                 $script:WinGeom = @{ W=[double]$s.WinGeom.W; H=[double]$s.WinGeom.H; T=[double]$s.WinGeom.T; L=[double]$s.WinGeom.L }
             }
+            if ($null -ne $s.PSObject.Properties['GamingPauseList'] -and $s.GamingPauseList) { $script:GamingPauseList = @($s.GamingPauseList | ForEach-Object { [string]$_ }) }
+            if ($null -ne $s.PSObject.Properties['GamingWatch']) { $script:GamingWatchEnabled = [bool]$s.GamingWatch }
+            if ($null -ne $s.PSObject.Properties['GamingMuteToasts']) { $script:GamingMuteToasts = [bool]$s.GamingMuteToasts }
+            if ($null -ne $s.PSObject.Properties['GamingGames'] -and $s.GamingGames) { $script:GamingGames = @($s.GamingGames | ForEach-Object { [pscustomobject]@{ Exe = [string]$_.Exe; Profile = [string]$_.Profile; UsePause = [bool]$_.UsePause } }) }
         }
     } catch {}
 }
@@ -10469,14 +17356,22 @@ function Save-Settings {
             ParallelInstalls    = [int]$Config.ParallelInstalls
             AutoDetectInstalled = [bool]$Config.AutoDetectInstalled
             InstallTimeoutMin   = [int]$Config.InstallTimeoutMin
+            InstallScope        = [string]$script:InstallScope
+            ChocoFallback       = [bool]$script:ChocoFallback
             LastSelection       = $sel
             WinGeom             = $geom
             Theme               = [string]$script:ThemeName
             Lang                = [string]$script:Lang
+            GamingPauseList     = @($script:GamingPauseList)
+            GamingWatch         = [bool]$script:GamingWatchEnabled
+            GamingMuteToasts    = [bool]$script:GamingMuteToasts
+            GamingGames         = @(@($script:GamingGames) | ForEach-Object { [pscustomobject]@{ Exe = [string]$_.Exe; Profile = [string]$_.Profile; UsePause = [bool]$_.UsePause } })
         } | ConvertTo-Json | ForEach-Object { Set-WpiContent -Path $Config.SettingsFile -Value $_ }
     } catch {}
 }
 Load-Settings
+# FASE B2: si el usuario dejo encendida la deteccion automatica, se rearma.
+if ($script:GamingWatchEnabled) { try { Set-WpiGameWatch $true } catch {} }
 
 $script:SpeedBox = $window.FindName('SpeedBox')
 $script:SpeedBox.SelectedIndex = [int]$Config.ParallelInstalls - 1
@@ -10487,37 +17382,44 @@ $script:SpeedBox.Add_SelectionChanged({
 
 # B4: ambito de instalacion (--scope) y fallback a Chocolatey (opt-in).
 # Por defecto Auto/desactivado -> comportamiento identico al actual.
-$script:InstallScope = ''
-$script:ChocoFallback = $false
+$script:InstallScope = [string]$Config.InstallScope
+$script:ChocoFallback = [bool]$Config.ChocoFallback
 $script:ScopeBox = $window.FindName('ScopeBox')
 if ($script:ScopeBox) {
-    $script:ScopeBox.SelectedIndex = 0
+    # Persistente: reflejar el ambito guardado ANTES de enganchar el handler (no re-dispara Save).
+    $script:ScopeBox.SelectedIndex = switch ($script:InstallScope) { 'user' { 1 } 'machine' { 2 } default { 0 } }
     $script:ScopeBox.Add_SelectionChanged({
         switch ($script:ScopeBox.SelectedIndex) {
             1 { $script:InstallScope = 'user' }
             2 { $script:InstallScope = 'machine' }
             default { $script:InstallScope = '' }
         }
+        Save-Settings
     })
 }
 $script:ChkChoco = $window.FindName('ChkChoco')
 if ($script:ChkChoco) {
+    # Persistente: reflejar el estado guardado ANTES de enganchar los handlers
+    # (asi no se dispara el dialogo informativo en cada arranque).
+    $script:ChkChoco.IsChecked = $script:ChocoFallback
     $script:ChkChoco.Add_Checked({
         $script:ChocoFallback = $true
         $hasChoco = $false
         try { if (Get-Command choco.exe -ErrorAction SilentlyContinue) { $hasChoco = $true } } catch {}
-        $msg = 'FALLBACK A CHOCOLATEY (activado)' + "`n`n"
-        $msg += 'Que hace: por defecto el WPI instala con winget. Con esta opcion, si winget FALLA al instalar una app concreta, el WPI reintentara ESA app con Chocolatey (choco install).' + "`n`n"
-        $msg += 'Detalles:' + "`n"
-        $msg += ' - Solo actua cuando winget falla; si winget instala bien, no se usa.' + "`n"
-        $msg += ' - Es "best-effort": esa app puede no existir en Chocolatey con el mismo nombre.' + "`n"
-        $msg += ' - El metodo usado (winget o choco) queda registrado en el log.' + "`n"
-        $msg += ' - No instala Chocolatey por ti.' + "`n`n"
-        if ($hasChoco) { $msg += 'Chocolatey DETECTADO en este equipo: el fallback podra usarse.' }
-        else { $msg += 'AVISO: Chocolatey NO esta instalado. Mientras no lo instales, el fallback no hara nada (winget seguira siendo el unico metodo).' }
-        Show-WpiMessage($msg, 'Fallback a Chocolatey', 'OK', 'Information') | Out-Null
+        # Dialogo PREMIUM por secciones (cada literal esta en TrMap -> 100% bilingue;
+        # la version anterior componia el texto con '+' y en EN salia en espanol).
+        $estadoHead = if ($hasChoco) { 'Estado en este equipo: Chocolatey detectado' } else { 'Estado en este equipo: Chocolatey NO instalado' }
+        $estadoBody = if ($hasChoco) { 'Chocolatey esta instalado: el plan B podra usarse en cuanto haga falta, sin tocar nada mas.' } else { 'Mientras no instales Chocolatey, esta opcion no hara nada (winget seguira siendo el unico metodo). Puedes instalarlo desde https://chocolatey.org/install o buscando "Chocolatey" en el panel "Buscar en winget".' }
+        $estadoColor = if ($hasChoco) { '#FF5CFF8F' } else { '#FFFFD166' }
+        Show-WpiPremiumDialog -Title 'Fallback a Chocolatey (plan B de descarga)' -Accent '#FF76E0FF' -Sections @(
+            @{ Head = 'Para que sirve'; Body = 'Es tu red de seguridad cuando winget falla: por defecto el WPI instala todo con winget (el gestor oficial de Microsoft), pero algunos instaladores fallan puntualmente (servidor caido, paquete retirado, instalador que rechaza el modo silencioso). Con esta opcion activada, cada app que winget NO consiga instalar se reintenta automaticamente con Chocolatey, el otro gran gestor de paquetes de Windows. Solo actua como plan B: si winget instala bien, Chocolatey ni se usa.'; Color = '#FF76E0FF' },
+            @{ Head = 'Como se usa (3 pasos)'; Body = '1) Marca esta casilla (ya lo has hecho).  2) Marca tus apps y pulsa INSTALAR como siempre.  3) Si winget falla con alguna, veras en el registro en vivo "winget fallo. Probando con Chocolatey..." y el resultado real del reintento. No tienes que hacer nada mas: la descarga alternativa es automatica y queda registrada en el log forense (metodo usado incluido).'; Color = '#FF5CFF8F' },
+            @{ Head = 'Detalles honestos'; Body = 'Es "best-effort": esa app puede no existir en Chocolatey o tener otro nombre alli (se avisa en el log). El resultado del reintento se VERIFICA contra Chocolatey antes de darlo por bueno. Esta opcion no instala Chocolatey por ti.'; Color = '#FF8A8A95' },
+            @{ Head = $estadoHead; Body = $estadoBody; Color = $estadoColor }
+        ) -YesText 'Entendido' | Out-Null
+        Save-Settings
     })
-    $script:ChkChoco.Add_Unchecked({ $script:ChocoFallback = $false })
+    $script:ChkChoco.Add_Unchecked({ $script:ChocoFallback = $false; Save-Settings })
 }
 
 # ---------------- MOTOR ASINCRONO: lanzador -----------------
@@ -10529,6 +17431,7 @@ $script:State = [hashtable]::Synchronized(@{
     Upgrades   = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
     SearchResults = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
     VerifyWarn = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
+    BlockedApps = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
 })
 $script:Queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[psobject]'
 $script:NameMap = @{}
@@ -10544,7 +17447,7 @@ $script:HwReportText = ''
 
 $script:ActionButtons = @('BtnInstall','BtnUpgrade','BtnList','BtnValidate','BtnAll','BtnNone','BtnSave','BtnLoad',
                           'BtnPresetGaming','BtnPresetDev','BtnPresetMedia','BtnPresetClean','BtnPresetLast',
-                          'BtnClearSel','BtnDetect','BtnUninstall') |
+                          'BtnClearSel','BtnDetect','BtnMarkInst','BtnUninstall') |
                         ForEach-Object { $window.FindName($_) }
 $script:ActionButtons += $script:BtnTweaks
 $script:ActionButtons += $script:BtnTweaksUndo
@@ -10552,6 +17455,7 @@ $script:ActionButtons += $script:BtnTweakDetect
 $script:ActionButtons += $script:BtnTweakMissing
 $script:ActionButtons += $script:BtnTweakSave
 $script:ActionButtons += $script:BtnTweakLoad
+$script:ActionButtons += $script:BtnTweakExport
 $script:ActionButtons += $script:BtnUpgScan
 $script:ActionButtons += $script:BtnUpgWpi
 $script:ActionButtons += $script:BtnUpgOther
@@ -10574,15 +17478,29 @@ $script:ActionButtons += $script:BtnDrvRestore
 $script:ActionButtons += $script:BtnGuidesTemplate
 $script:ActionButtons += $script:BtnGuidesReload
 $script:ActionButtons += ($window.FindName('BtnDownload'))
+# F5-B1 / F7-B5 (VT2): mutadores que quedaban CLICABLES con un trabajo en marcha.
+# Verificar/Deshacer-hoy ejecutan Code real de tweaks, y cambiar Tema/Idioma RELANZA
+# el proceso entero (mataria al worker a medias). Entran en la misma puerta Set-Busy.
+$script:ActionButtons += $script:BtnTweakVerify
+$script:ActionButtons += $script:BtnTweakUndoToday
+$script:ActionButtons += $script:CboTheme
+$script:ActionButtons += $script:CboLang
 
 function Set-Busy([bool]$busy) {
-    foreach ($b in $script:ActionButtons) { $b.IsEnabled = -not $busy }
-    $script:BtnCancel.IsEnabled = $busy
+    # F5-B5 (VT2): null-safe — un control que no exista (panel no construido) no debe
+    # tumbar el bloqueo de los demas.
+    foreach ($b in $script:ActionButtons) { if ($b) { $b.IsEnabled = -not $busy } }
+    if ($script:BtnCancel) { $script:BtnCancel.IsEnabled = $busy }
 }
 
 function Start-Worker {
     param([string]$Mode, [string[]]$Ids = @(), [array]$Tweaks = @(), [string]$Query = '')
-    if ($script:State.Running) { return }
+    if ($script:State.Running) {
+        # F3-B6 (VT2): antes retornaba EN SILENCIO (clic sin efecto ni pista). Con
+        # Set-Busy completo casi no puede pasar, pero si pasa, el usuario lo VE.
+        try { $script:StatusText.Text = (Tr 'Ya hay un trabajo en marcha; espera a que termine o pulsa CANCELAR.') } catch {}
+        return
+    }
     $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
     $script:CurrentLog = Join-Path $Config.LogDir ('wpi_{0}_{1}.log' -f $Mode, $stamp)
     $script:LogPathTxt.Text = $script:CurrentLog
@@ -10594,6 +17512,7 @@ function Start-Worker {
     $script:State.Upgrades.Clear()
     $script:State.SearchResults.Clear()
     $script:State.VerifyWarn.Clear()
+    $script:State.BlockedApps.Clear()
     $script:LastMode = $Mode
     $script:LastBatchIds = @($Ids)
     $script:LogExpander.IsExpanded = ($Mode -notin @('detect','scanupgrades','search'))
@@ -10612,7 +17531,7 @@ function Start-Worker {
         AddArgument($script:CurrentLog).AddArgument($Tweaks).AddArgument($script:NameMap).
         AddArgument([math]::Max(0, [int]$Config.InstallTimeoutMin)).AddArgument($Query).
         AddArgument([string]$script:InstallScope).AddArgument([bool]$script:ChocoFallback).
-        AddArgument([string]$script:Lang)
+        AddArgument([string]$script:Lang).AddArgument(@($script:UserScopeAppIds))
     $script:WorkerHandle = $script:WorkerPS.BeginInvoke()
 }
 
@@ -10681,13 +17600,15 @@ $script:Timer.Add_Tick({
             try { Detect-TweakStates } catch {}
         } elseif ($script:LastMode -in @('install','uninstall','upgradeids','download')) {
             $modoPrev = $script:LastMode
-            $verbo = if ($modoPrev -eq 'install') { 'Instalacion' } elseif ($modoPrev -eq 'upgradeids') { 'Actualizacion' } elseif ($modoPrev -eq 'download') { 'Descarga' } else { 'Desinstalacion' }
-            $txt = ("{0} terminada.`n`nCorrectas:  {1}`nFallidas:    {2}`nProcesadas: {3} de {4}" -f $verbo, $S.Ok, $S.Fail, $S.Done, $S.Total)
+            # i18n: cada pieza se traduce ANTES de componer con -f (una cadena ya
+            # compuesta con numeros nunca coincide con su clave exacta de TrMap).
+            $verbo = if ($modoPrev -eq 'install') { Tr 'Instalacion' } elseif ($modoPrev -eq 'upgradeids') { Tr 'Actualizacion' } elseif ($modoPrev -eq 'download') { Tr 'Descarga' } else { Tr 'Desinstalacion' }
+            $txt = ((Tr "{0} terminada.`n`nCorrectas:  {1}`nFallidas:    {2}`nProcesadas: {3} de {4}") -f $verbo, $S.Ok, $S.Fail, $S.Done, $S.Total)
             if ($S.Reboot -gt 0) {
-                $txt += ("`n`nNOTA: {0} aplicacion(es) requieren REINICIAR el equipo para terminar de aplicarse." -f $S.Reboot)
+                $txt += "`n`n" + ((Tr 'NOTA: {0} aplicacion(es) requieren REINICIAR el equipo para terminar de aplicarse.') -f $S.Reboot)
             }
             if ($S.Fail -gt 0) {
-                $txt += "`n`nFallos (detalle completo en el log forense):`n - " + ((@($S.FailList) | Select-Object -First 12) -join "`n - ")
+                $txt += "`n`n" + (Tr 'Fallos (detalle completo en el log forense):') + "`n - " + ((@($S.FailList) | Select-Object -First 12) -join "`n - ")
             }
             # P2/P4: avisos de verificacion (winget dijo OK pero la version no cambio)
             $verifyN = @($S.VerifyWarn).Count
@@ -10696,6 +17617,18 @@ $script:Timer.Add_Tick({
                 $txt += "`n`n" + (Tr 'Cierra esas apps si estan abiertas, reinicia el equipo, o puede que se auto-actualicen por su cuenta. Vuelve a pulsar Buscar updates para reconfirmar.')
             }
             $icon = if ($S.Fail -gt 0 -or $verifyN -gt 0) { 'Warning' } else { 'Information' }
+            # Aviso PREMIUM si alguna app NO se pudo actualizar por un servicio de
+            # Windows deshabilitado (0x80070422): explica motivo + solucion rapida.
+            $blocked = @(@($S.BlockedApps) | Select-Object -Unique)
+            if ($blocked.Count -gt 0) {
+                Show-WpiPremiumDialog -Title 'No se pudo actualizar: un servicio de Windows esta deshabilitado' -Accent '#FFFFB020' `
+                    -Sections @(
+                        @{ Head = 'Apps afectadas'; Body = ($blocked -join ', '); Color = '#FFFFB020' },
+                        @{ Head = 'Motivo'; Body = 'El instalador devolvio el error 0x80070422 ("el servicio no se puede iniciar porque esta deshabilitado"). Winget necesita servicios de Windows (Windows Update, BITS, Windows Installer) para instalar o actualizar; si alguno esta desactivado, la actualizacion NO se aplica aunque parezca terminar.' },
+                        @{ Head = 'Por que suele pasar'; Body = 'Casi siempre porque en algun momento DESACTIVASTE Windows Update o algun servicio: desde el propio WPI, con otra herramienta de debloat/privacidad, o a mano. Recuerda si lo hiciste.' },
+                        @{ Head = 'Solucion rapida'; Body = '1) Abre la seccion "Windows Update" del WPI y aplica "Valores por defecto de Windows Update" (reactiva los servicios).  2) O en services.msc pon en Manual/Automatico e inicia: Windows Update (wuauserv), BITS y Windows Installer (msiserver).  3) Vuelve a "Buscar updates" y actualiza de nuevo.'; Color = '#FF5CFF8F' }
+                    ) -YesText 'Entendido' | Out-Null
+            }
             # Aviso si alguna app procesada tiene mini-guia en espanol
             $conGuia = @()
             if ($modoPrev -in @('install','download')) {
@@ -10705,11 +17638,11 @@ $script:Timer.Add_Tick({
             }
             $jumpGuide = $false
             if ($conGuia.Count -gt 0) {
-                $txt += ("`n`nTUTORIAL: estas tienen mini-guia en espanol:`n - {0}`n`nMiralas en el panel 'Guias en espanol'." -f (($conGuia | Select-Object -Unique) -join "`n - "))
-                $rg = Show-WpiMessage($txt + "`n`nVer las guias ahora?", 'WPI Moderno', 'YesNo', $icon)
+                $txt += "`n`n" + ((Tr "TUTORIAL: estas tienen mini-guia en espanol:`n - {0}`n`nMiralas en el panel 'Guias en espanol'.") -f (($conGuia | Select-Object -Unique) -join "`n - "))
+                $rg = Show-WpiMessage($txt + "`n`n" + (Tr 'Ver las guias ahora?'), 'Winzard', 'YesNo', $icon)
                 if ($rg -eq 'Yes') { $jumpGuide = $true }
             } else {
-                Show-WpiMessage($txt, 'WPI Moderno', 'OK', $icon) | Out-Null
+                Show-WpiMessage($txt, 'Winzard', 'OK', $icon) | Out-Null
             }
             if ($modoPrev -eq 'install') {
                 foreach ($cb in $script:Checks) {
@@ -10772,7 +17705,9 @@ $window.FindName('BtnClearSel').Add_Click({
 
 function Add-PresetSelection([string]$name) {
     $ids = $QuickPresets[$name]
-    foreach ($c in $script:Checks) { if ($ids -contains $c.Tag) { $c.IsChecked = $true } }
+    # F5-B6 (VT2): un preset tematico SUSTITUYE la seleccion (antes acumulaba: pulsar
+    # Gaming y luego Multimedia dejaba marcada la union sin que nada lo indicara).
+    foreach ($c in $script:Checks) { $c.IsChecked = ($ids -contains $c.Tag) }
     Update-Count
 }
 $window.FindName('BtnPresetGaming').Add_Click({ Add-PresetSelection 'Gaming' })
@@ -10781,7 +17716,7 @@ $window.FindName('BtnPresetMedia').Add_Click({  Add-PresetSelection 'Multimedia'
 $window.FindName('BtnPresetClean').Add_Click({  Add-PresetSelection 'Esencial' })
 $window.FindName('BtnPresetLast').Add_Click({
     if ($script:LastSelection.Count -eq 0) {
-        Show-WpiMessage('Aun no hay ninguna sesion guardada. Se guarda automaticamente cada vez que pulsas INSTALAR.', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('Aun no hay ninguna sesion guardada. Se guarda automaticamente cada vez que pulsas INSTALAR.', 'Winzard') | Out-Null
         return
     }
     foreach ($c in $script:Checks) { if ($script:LastSelection -contains [string]$c.Tag) { $c.IsChecked = $true } }
@@ -10791,7 +17726,7 @@ $window.FindName('BtnPresetLast').Add_Click({
 $window.FindName('BtnSave').Add_Click({
     $sel = @($script:Checks | Where-Object { $_.IsChecked } | ForEach-Object { [string]$_.Tag })
     if ($sel.Count -eq 0) {
-        Show-WpiMessage('No has marcado ninguna aplicacion que guardar.', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('No has marcado ninguna aplicacion que guardar.', 'Winzard') | Out-Null
         return
     }
     $dlg = New-Object Microsoft.Win32.SaveFileDialog
@@ -10813,19 +17748,43 @@ $window.FindName('BtnSave').Add_Click({
                 })
             }
             Set-WpiContent -Path $dlg.FileName -Value ($doc | ConvertTo-Json -Depth 6)
-            Show-WpiMessage(((Tr "Exportadas {0} apps en formato winget.`nUso en cualquier PC:`nwinget import -i `"{1}`"") -f $sel.Count, $dlg.FileName), 'WPI Moderno') | Out-Null
+            Show-WpiMessage(((Tr "Exportadas {0} apps en formato winget.`nUso en cualquier PC:`nwinget import -i `"{1}`"") -f $sel.Count, $dlg.FileName), 'Winzard') | Out-Null
         } else {
-            Set-WpiContent -Path $dlg.FileName -Value $sel
-            Show-WpiMessage(((Tr "Preset guardado: {0} apps.`nUso desatendido:`nIniciar_WPI.bat -Preset `"{1}`"") -f $sel.Count, $dlg.FileName), 'WPI Moderno') | Out-Null
+            # Arreglo S15: $sel es un ARRAY y Set-WpiContent exige [string]; la vinculacion lanzaba
+            # y el preset .txt NUNCA se escribia (el aviso "guardado" salia igual). Un ID por linea.
+            Set-WpiContent -Path $dlg.FileName -Value ($sel -join "`r`n")
+            Show-WpiMessage(((Tr "Preset guardado: {0} apps.`nUso desatendido:`nIniciar_WPI.bat -Preset `"{1}`"") -f $sel.Count, $dlg.FileName), 'Winzard') | Out-Null
         }
     }
 })
 $window.FindName('BtnLoad').Add_Click({
     $dlg = New-Object Microsoft.Win32.OpenFileDialog
     $dlg.InitialDirectory = $PSScriptRoot
-    $dlg.Filter = 'Preset WPI (*.txt)|*.txt'
+    # F5-B2 (VT2): ademas del .txt clasico se aceptan .json — array de IDs, objetos con
+    # Id/PackageIdentifier, o el export de winget (Sources[].Packages[].PackageIdentifier),
+    # que es justo lo que genera "Clonar equipo / Snapshot".
+    $dlg.Filter = 'Preset WPI (*.txt;*.json)|*.txt;*.json|Preset de texto (*.txt)|*.txt|Preset JSON / winget export (*.json)|*.json'
     if ($dlg.ShowDialog()) {
-        $ids = Get-Content $dlg.FileName | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and -not $_.StartsWith('#') }
+        $ids = @()
+        if ([IO.Path]::GetExtension($dlg.FileName) -ieq '.json') {
+            try {
+                $j = Get-Content $dlg.FileName -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($j -is [array]) {
+                    foreach ($e in $j) { if ($e -is [string]) { $ids += [string]$e } elseif ($e.PackageIdentifier) { $ids += [string]$e.PackageIdentifier } elseif ($e.Id) { $ids += [string]$e.Id } }
+                } elseif ($j.Sources) {
+                    foreach ($s in @($j.Sources)) { foreach ($p in @($s.Packages)) { if ($p.PackageIdentifier) { $ids += [string]$p.PackageIdentifier } } }
+                } elseif ($j.LastSelection) { $ids = @($j.LastSelection | ForEach-Object { [string]$_ }) }
+            } catch {
+                Show-WpiMessage((Tr 'No se pudo leer el preset JSON (formato no valido).'), 'Winzard') | Out-Null
+                return
+            }
+            if (@($ids).Count -eq 0) {
+                Show-WpiMessage((Tr 'El JSON no contiene IDs de winget reconocibles.'), 'Winzard') | Out-Null
+                return
+            }
+        } else {
+            $ids = Get-Content $dlg.FileName | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and -not $_.StartsWith('#') }
+        }
         foreach ($c in $script:Checks) { $c.IsChecked = ($ids -contains $c.Tag) }
         Update-Count
     }
@@ -10834,7 +17793,7 @@ $window.FindName('BtnLoad').Add_Click({
 $window.FindName('BtnInstall').Add_Click({
     $ids = @($script:Checks | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag })
     if ($ids.Count -eq 0) {
-        Show-WpiMessage('No has marcado ninguna aplicacion.', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('No has marcado ninguna aplicacion.', 'Winzard') | Out-Null
         return
     }
     $script:LastSelection = @($ids | ForEach-Object { [string]$_ })
@@ -10842,13 +17801,35 @@ $window.FindName('BtnInstall').Add_Click({
     Start-Worker -Mode 'install' -Ids $ids
 })
 $window.FindName('BtnDetect').Add_Click({
-    Start-Worker -Mode 'detect' -Ids @($catalog | ForEach-Object { $_.Id })
+    # F3-B5 (VT2): el boton usa el modo 'detect' del worker (existia HUERFANO: el Timer
+    # ya sabia aplicar DetectList con Mark-Installed, pero nadie lo invocaba y la
+    # deteccion corria SINCRONA congelando la ventana varios segundos). El autodetect
+    # de arranque sigue sincrono a proposito: ocurre detras de la splash (UX-1) y
+    # alimenta las caches antes de mostrar la GUI.
+    $idsDet = @($script:Checks | ForEach-Object { [string]$_.Tag })
+    Start-Worker -Mode 'detect' -Ids $idsDet
+})
+
+# "Marcar instaladas": detecta (sincrono) y MARCA las casillas de las apps ya
+# instaladas en el PC. Un solo clic -> seleccion lista para guardar o crear ISO.
+$window.FindName('BtnMarkInst').Add_Click({
+    $set = Resolve-InstalledIds $false   # deteccion fresca; cachea para el wizard
+    $n = 0
+    foreach ($cb in $script:Checks) {
+        if ($set[([string]$cb.Tag).ToLower()]) { $cb.IsChecked = $true; Mark-One $cb; $n++ }
+    }
+    try { Update-Count } catch {}
+    if ($n -eq 0) {
+        Show-WpiMessage((Tr 'No se ha detectado ninguna app del catalogo instalada en este PC (via winget).'), (Tr 'Marcar instaladas')) | Out-Null
+    } else {
+        $script:StatusText.Text = ((Tr 'Marcadas {0} apps del catalogo que ya tienes instaladas.') -f $n)
+    }
 })
 
 # Selector de carpeta reutilizable (devuelve ruta o $null)
 function Select-DownloadFolder {
     $fb = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fb.Description = 'Elige donde guardar los instaladores descargados'
+    $fb.Description = (Tr 'Elige donde guardar los instaladores descargados')
     try { $fb.UseDescriptionForTitle = $true } catch {}
     try { $fb.SelectedPath = $Config.DownloadDir } catch {}
     if ($fb.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { return $fb.SelectedPath }
@@ -10871,7 +17852,7 @@ function Get-DownloadTarget {
     try {
         if (-not (Test-Path $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
     } catch {
-        Show-WpiMessage(((Tr "No se pudo crear la carpeta:`n{0}") -f $folder), 'WPI Moderno', 'OK', 'Error') | Out-Null
+        Show-WpiMessage(((Tr "No se pudo crear la carpeta:`n{0}") -f $folder), 'Winzard', 'OK', 'Error') | Out-Null
         return $null
     }
     $script:LastDownloadDir = $folder
@@ -10880,7 +17861,7 @@ function Get-DownloadTarget {
 $window.FindName('BtnDownload').Add_Click({
     $ids = @($script:Checks | Where-Object { $_.IsChecked } | ForEach-Object { [string]$_.Tag })
     if ($ids.Count -eq 0) {
-        Show-WpiMessage('Marca primero las apps cuyo instalador quieres descargar (sin instalarlas).', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('Marca primero las apps cuyo instalador quieres descargar (sin instalarlas).', 'Winzard') | Out-Null
         return
     }
     $folder = Get-DownloadTarget
@@ -10890,7 +17871,7 @@ $window.FindName('BtnDownload').Add_Click({
 $window.FindName('BtnUninstall').Add_Click({
     $ids = @($script:Checks | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag })
     if ($ids.Count -eq 0) {
-        Show-WpiMessage('No has marcado ninguna aplicacion que desinstalar.', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('No has marcado ninguna aplicacion que desinstalar.', 'Winzard') | Out-Null
         return
     }
     $r = Show-WpiMessage(
@@ -10909,13 +17890,20 @@ $window.FindName('BtnList').Add_Click({ Start-Worker -Mode 'scanupgrades' })
 function Confirm-UpgradeSelection($checks, $titulo, $intro) {
     $ids = @($checks | Where-Object { $_.IsChecked } | ForEach-Object { [string]$_.Tag })
     if ($ids.Count -eq 0) {
-        Show-WpiMessage('No has marcado ninguna actualizacion en este grupo.', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('No has marcado ninguna actualizacion en este grupo.', 'Winzard') | Out-Null
         return
     }
     $r = Show-WpiMessage(
-        ((Tr "{0}`n`n - {1}`n`nEl resto se queda EXACTAMENTE como esta. Continuar?") -f $intro, (($ids | Select-Object -First 18) -join "`n - ")),
+        ((Tr "{0}`n`n - {1}`n`nNOTA: si alguna de estas apps esta abierta, se cerrara automaticamente para que la actualizacion se aplique de verdad (una app abierta bloquea sus archivos y winget se quedaria en la version vieja).`n`nEl resto se queda EXACTAMENTE como esta. Continuar?") -f $intro, (($ids | Select-Object -First 18) -join "`n - ")),
         $titulo, 'YesNo', 'Question')
-    if ($r -eq 'Yes') { Start-Worker -Mode 'upgradeids' -Ids $ids }
+    if ($r -eq 'Yes') {
+        $old = $null
+        try { $old = [System.Windows.Input.Mouse]::OverrideCursor; [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait } catch {}
+        $closed = @()
+        try { $closed = Close-RunningAppsForUpgrade $ids } finally { try { [System.Windows.Input.Mouse]::OverrideCursor = $old } catch {} }
+        if (@($closed).Count -gt 0) { try { $script:StatusText.Text = ((Tr 'Cerradas {0} apps abiertas para poder actualizarlas: {1}') -f @($closed).Count, (@($closed) -join ', ')) } catch {} }
+        Start-Worker -Mode 'upgradeids' -Ids $ids
+    }
 }
 $script:BtnUpgWpi.Add_Click({
     Confirm-UpgradeSelection $script:UpgChecksWpi 'Actualizar apps del catalogo WPI' `
@@ -10930,7 +17918,7 @@ $script:BtnUpgOther.Add_Click({
 $doWgSearch = {
     $q = $script:WgSearchBox.Text.Trim()
     if ($q.Length -lt 2) {
-        Show-WpiMessage('Escribe al menos 2 caracteres para buscar.', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('Escribe al menos 2 caracteres para buscar.', 'Winzard') | Out-Null
         return
     }
     Start-Worker -Mode 'search' -Query $q
@@ -10943,7 +17931,7 @@ $script:WgSearchBox.Add_KeyDown({
 $script:BtnWgInstall.Add_Click({
     $ids = @($script:SearchChecks | Where-Object { $_.IsChecked } | ForEach-Object { [string]$_.Tag })
     if ($ids.Count -eq 0) {
-        Show-WpiMessage('No has marcado ningun resultado.', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('No has marcado ningun resultado.', 'Winzard') | Out-Null
         return
     }
     $r = Show-WpiMessage(
@@ -10954,7 +17942,7 @@ $script:BtnWgInstall.Add_Click({
 $script:BtnWgDownload.Add_Click({
     $ids = @($script:SearchChecks | Where-Object { $_.IsChecked } | ForEach-Object { [string]$_.Tag })
     if ($ids.Count -eq 0) {
-        Show-WpiMessage('No has marcado ningun resultado.', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('No has marcado ningun resultado.', 'Winzard') | Out-Null
         return
     }
     $folder = Get-DownloadTarget
@@ -10963,7 +17951,13 @@ $script:BtnWgDownload.Add_Click({
 })
 $script:BtnDebloat.Add_Click({
     $sel = @($script:DebloatChecks | Where-Object { $_.IsChecked })
-    if ($sel.Count -eq 0) { Show-WpiMessage('No has marcado ninguna app para quitar.', 'WPI Moderno') | Out-Null; return }
+    if ($sel.Count -eq 0) { Show-WpiMessage('No has marcado ninguna app para quitar.', 'Winzard') | Out-Null; return }
+    # Coherencia toggle=estado: lo ya quitado (encendido por el detector) se
+    # omite; solo se actua sobre lo que sigue instalado.
+    if ($script:DebloatDetected -and $script:DebloatInstalledSet.Count -gt 0) {
+        $sel = @($sel | Where-Object { $p = [string]$_.Tag; (-not $script:DebloatInstalledSet.ContainsKey($p)) -or $script:DebloatInstalledSet[$p] })
+    }
+    if ($sel.Count -eq 0) { Show-WpiMessage((Tr 'Todo lo marcado ya esta quitado de este PC: no hay nada que hacer.'), 'Winzard') | Out-Null; return }
     $items = @()
     foreach ($cb in $sel) { $items += @{ Name = [string]$cb.Content; Pkg = [string]$cb.Tag } }
     $r = Show-WpiMessage(
@@ -10991,26 +17985,24 @@ $script:BtnSnapImport.Add_Click({
 })
 $script:BtnCatTemplate.Add_Click({
     if (Test-Path $CatalogFile) {
-        $r = Show-WpiMessage(((Tr 'Ya existe {0}. Sobrescribir con el catalogo interno actual?') -f (Split-Path $CatalogFile -Leaf)), 'WPI Moderno', 'YesNo', 'Warning')
+        $r = Show-WpiMessage(((Tr 'Ya existe {0}. Sobrescribir con el catalogo interno actual?') -f (Split-Path $CatalogFile -Leaf)), 'Winzard', 'YesNo', 'Warning')
         if ($r -ne 'Yes') { return }
     }
     if (Export-CatalogTemplate) {
-        Show-WpiMessage(((Tr "Creado:`n{0}`n`nEditalo (anade/quita lineas) y pulsa 'Recargar catalogo.json'.") -f $CatalogFile), 'WPI Moderno') | Out-Null
+        Show-WpiMessage(((Tr "Creado:`n{0}`n`nEditalo (anade/quita lineas) y pulsa 'Recargar catalogo.json'.") -f $CatalogFile), 'Winzard') | Out-Null
         Start-Process notepad.exe $CatalogFile
     } else {
-        Show-WpiMessage('No se pudo crear el archivo.', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('No se pudo crear el archivo.', 'Winzard') | Out-Null
     }
 })
 $script:BtnCatReload.Add_Click({
     if (-not (Test-Path $CatalogFile)) {
-        Show-WpiMessage(((Tr 'No hay {0}. Crea primero la plantilla.') -f (Split-Path $CatalogFile -Leaf)), 'WPI Moderno') | Out-Null
+        Show-WpiMessage(((Tr 'No hay {0}. Crea primero la plantilla.') -f (Split-Path $CatalogFile -Leaf)), 'Winzard') | Out-Null
         return
     }
-    $r = Show-WpiMessage('Para cargar el catalogo nuevo hay que reiniciar la app. Reiniciar ahora?', 'WPI Moderno', 'YesNo', 'Question')
+    $r = Show-WpiMessage('Para cargar el catalogo nuevo hay que reiniciar la app. Reiniciar ahora?', 'Winzard', 'YesNo', 'Question')
     if ($r -eq 'Yes') {
-        try { Start-Process powershell.exe -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath) } catch {}
-        $script:Skip_Closing_Save = $true
-        $window.Close()
+        Restart-WpiProcess
     }
 })
 $script:BtnCatRemote.Add_Click({
@@ -11035,9 +18027,7 @@ $script:BtnCatRemote.Add_Click({
     if ($r -ne 'Yes') { return }
     try {
         Set-WpiContent -Path $CatalogFile -Value $raw
-        try { Start-Process powershell.exe -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath) } catch {}
-        $script:Skip_Closing_Save = $true
-        $window.Close()
+        Restart-WpiProcess
     } catch {
         Show-WpiMessage(((Tr 'No se pudo guardar el catalogo remoto: {0}') -f $_.Exception.Message), 'Catalogo remoto') | Out-Null
     }
@@ -11049,26 +18039,24 @@ $script:BtnHwScan.Add_Click({
 })
 $script:BtnGuidesTemplate.Add_Click({
     if (Test-Path $GuidesFile) {
-        $r = Show-WpiMessage(((Tr 'Ya existe {0}. Sobrescribir con las guias actuales?') -f (Split-Path $GuidesFile -Leaf)), 'WPI Moderno', 'YesNo', 'Warning')
+        $r = Show-WpiMessage(((Tr 'Ya existe {0}. Sobrescribir con las guias actuales?') -f (Split-Path $GuidesFile -Leaf)), 'Winzard', 'YesNo', 'Warning')
         if ($r -ne 'Yes') { return }
     }
     if (Export-GuidesTemplate) {
-        Show-WpiMessage(((Tr "Creado:`n{0}`n`nEditalo (anade/cambia guias) y pulsa 'Recargar guias.json'.") -f $GuidesFile), 'WPI Moderno') | Out-Null
+        Show-WpiMessage(((Tr "Creado:`n{0}`n`nEditalo (anade/cambia guias) y pulsa 'Recargar guias.json'.") -f $GuidesFile), 'Winzard') | Out-Null
         try { Start-Process notepad.exe $GuidesFile } catch {}
     } else {
-        Show-WpiMessage('No se pudo crear el archivo.', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('No se pudo crear el archivo.', 'Winzard') | Out-Null
     }
 })
 $script:BtnGuidesReload.Add_Click({
     if (-not (Test-Path $GuidesFile)) {
-        Show-WpiMessage(((Tr 'No hay {0}. Crea primero la plantilla.') -f (Split-Path $GuidesFile -Leaf)), 'WPI Moderno') | Out-Null
+        Show-WpiMessage(((Tr 'No hay {0}. Crea primero la plantilla.') -f (Split-Path $GuidesFile -Leaf)), 'Winzard') | Out-Null
         return
     }
-    $r = Show-WpiMessage('Para cargar las guias nuevas hay que reiniciar la app. Reiniciar ahora?', 'WPI Moderno', 'YesNo', 'Question')
+    $r = Show-WpiMessage('Para cargar las guias nuevas hay que reiniciar la app. Reiniciar ahora?', 'Winzard', 'YesNo', 'Question')
     if ($r -eq 'Yes') {
-        try { Start-Process powershell.exe -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath) } catch {}
-        $script:Skip_Closing_Save = $true
-        $window.Close()
+        Restart-WpiProcess
     }
 })
 $script:BtnHwCopy.Add_Click({
@@ -11117,44 +18105,80 @@ $window.FindName('BtnValidate').Add_Click({
     Start-Worker -Mode 'validate' -Ids $ids
 })
 $script:BtnTweaks.Add_Click({
-    $sel = @($script:TweakChecks | Where-Object { $_.IsChecked } | ForEach-Object {
-        [pscustomobject]@{ Name = $_.Tag.Name; Code = $_.Tag.Code }
-    })
-    if ($sel.Count -eq 0) {
-        Show-WpiMessage('No has marcado ningun tweak.', 'WPI Moderno') | Out-Null
+    $selCbs = @($script:TweakChecks | Where-Object { $_.IsChecked })
+    if ($selCbs.Count -eq 0) {
+        Show-WpiMessage('No has marcado ningun tweak.', 'Winzard') | Out-Null
         return
     }
-    $adv = @($script:TweakChecks | Where-Object { $_.IsChecked -and $_.Tag.Risk -eq 'Avanzado' })
+    $adv = @($selCbs | Where-Object { $_.Tag.Risk -eq 'Avanzado' })
     if ($adv.Count -gt 0) {
         $r = Show-WpiMessage(
             ((Tr "Has marcado {0} tweak(s) AVANZADOS (mayor impacto en el sistema). Casi todos se pueden revertir, pero asegurate. Continuar?") -f $adv.Count),
             'Tweaks avanzados', 'YesNo', 'Warning')
         if ($r -ne 'Yes') { return }
     }
+    # FASE A: aviso individual para los pocos tweaks con Warn (MPO/FSO...):
+    # se confirma cada uno por separado y un "No" SOLO salta ese tweak. En los
+    # sensibles a GPU (GpuAware) el aviso lleva delante la nota de TU grafica.
+    $confirmados = @()
+    foreach ($cb in $selCbs) {
+        $t = $cb.Tag
+        if ($t.Warn) {
+            $msg = (Tr ([string]$t.Warn))
+            if ($t.GpuAware) {
+                $nota = Get-WpiGamingGpuNote
+                if ($nota) { $msg = $nota + "`n`n" + $msg }
+            }
+            $r = Show-WpiMessage($msg, (Tr ([string]$t.Name)), 'YesNo', 'Warning')
+            if ($r -ne 'Yes') { continue }
+        }
+        $confirmados += $cb
+    }
+    if ($confirmados.Count -eq 0) { return }
+    # Coherencia toggle=estado: lo YA aplicado (interruptor encendido por el
+    # detector) se OMITE con aviso honesto; solo se ejecuta lo que falta.
+    $yaAplicados = @(); $paraAplicar = @()
+    foreach ($cb in $confirmados) {
+        $nm = [string]$cb.Tag.Name
+        $done = $false
+        if ($TweakDetectors.ContainsKey($nm)) { try { $done = [bool](Invoke-Expression $TweakDetectors[$nm]) } catch {} }
+        if ($done) { $yaAplicados += $nm } else { $paraAplicar += $cb }
+    }
+    if (@($paraAplicar).Count -eq 0) {
+        Show-WpiMessage((Tr 'Todo lo marcado ya esta aplicado en este PC: no hay nada que ejecutar.'), 'Winzard') | Out-Null
+        return
+    }
+    if (@($yaAplicados).Count -gt 0) { try { $script:StatusText.Text = ((Tr 'Se omiten {0} ajuste(s) que ya estaban aplicados.') -f @($yaAplicados).Count) } catch {} }
+    $confirmados = $paraAplicar
+    $sel = @($confirmados | ForEach-Object {
+        [pscustomobject]@{ Name = $_.Tag.Name; Code = $_.Tag.Code }
+    })
     if ($script:ChkRestore.IsChecked) {
         $rp = [pscustomobject]@{ Name = 'Punto de restauracion previo'; Code = @'
 try {
     Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
-    Checkpoint-Computer -Description "WPI Moderno - antes de tweaks" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+    Checkpoint-Computer -Description "Winzard - antes de tweaks" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
     W ok "Punto de restauracion creado."
 } catch { W warn ("Punto de restauracion no creado: {0} (Windows limita 1 cada 24h)." -f $_.Exception.Message) }
 '@ }
         $sel = @($rp) + $sel
     }
+    try { Add-WpiJournal -Names @($sel | Where-Object { $_.Name -ne 'Punto de restauracion previo' } | ForEach-Object { [string]$_.Name }) -Action 'apply' } catch {}
     Start-Worker -Mode 'tweaks' -Tweaks $sel
 })
 $script:BtnTweaksUndo.Add_Click({
+    $undoNames = @($script:TweakChecks | Where-Object { $_.IsChecked -and $_.Tag.Undo } | ForEach-Object { [string]$_.Tag.Name })
     $sel = @($script:TweakChecks | Where-Object { $_.IsChecked -and $_.Tag.Undo } | ForEach-Object {
         [pscustomobject]@{ Name = ('Revertir: ' + $_.Tag.Name); Code = $_.Tag.Undo }
     })
     if ($sel.Count -eq 0) {
-        Show-WpiMessage('No has marcado ningun ajuste reversible.', 'WPI Moderno') | Out-Null
+        Show-WpiMessage('No has marcado ningun ajuste reversible.', 'Winzard') | Out-Null
         return
     }
     $r = Show-WpiMessage(
         ((Tr "Se revertiran {0} ajuste(s) a su valor por defecto de Windows. Continuar?") -f $sel.Count),
         'Revertir tweaks', 'YesNo', 'Question')
-    if ($r -eq 'Yes') { Start-Worker -Mode 'tweaks' -Tweaks $sel }
+    if ($r -eq 'Yes') { try { Add-WpiJournal -Names $undoNames -Action 'undo' } catch {}; Start-Worker -Mode 'tweaks' -Tweaks $sel }
 })
 $script:BtnTweakDetect.Add_Click({
     $script:StatusText.Text = (Tr 'Comprobando que ajustes ya estan aplicados...')
@@ -11176,10 +18200,20 @@ $script:BtnTweakMissing.Add_Click({
 })
 $script:BtnTweakSave.Add_Click({ try { Save-TweakProfile } catch { $script:StatusText.Text = (Tr 'No se pudo guardar el perfil.') } })
 $script:BtnTweakLoad.Add_Click({ try { Load-TweakProfile } catch { $script:StatusText.Text = (Tr 'No se pudo cargar el perfil.') } })
+$script:BtnTweakExport.Add_Click({
+    try {
+        $res = Export-WpiTweaksCatalog
+        if ($res) {
+            $script:StatusText.Text = ((Tr 'Catalogo exportado: {0} tweaks.') -f $res.Count)
+            Show-WpiMessage((((Tr 'Catalogo de tweaks exportado para auditoria ({0} tweaks):') -f $res.Count) + "`n`n" + $res.Md + "`n" + $res.Json + "`n`n" + (Tr 'La lista de claves de registro es informativa (extraida por regex); no cambia nada del sistema.')), 'Winzard') | Out-Null
+            try { Start-Process (Split-Path $res.Md -Parent) } catch {}
+        } else { $script:StatusText.Text = (Tr 'No se pudo exportar el catalogo.') }
+    } catch { $script:StatusText.Text = (Tr 'No se pudo exportar el catalogo.') }
+})
 $script:BtnCancel.Add_Click({
     $script:State.Cancel = $true
     $script:BtnCancel.IsEnabled = $false
-    $script:StatusText.Text = (Tr 'Cancelando (se respetan las instalaciones en curso)...')
+    $script:StatusText.Text = (Tr 'Cancelando: cerrando por la fuerza la tarea en curso y bloqueando nuevas operaciones...')
 })
 $window.FindName('BtnOpenLog').Add_Click({
     if ($script:CurrentLog -and (Test-Path $script:CurrentLog)) {
@@ -11229,7 +18263,10 @@ try {
     if ($script:WinGeom -and $script:WinGeom.W -gt 400) {
         $window.Width  = [double]$script:WinGeom.W
         $window.Height = [double]$script:WinGeom.H
-        if ($script:WinGeom.T -ge 0 -and $script:WinGeom.L -ge 0) {
+        if ($null -ne $script:WinGeom.T -and $null -ne $script:WinGeom.L) {
+            # F1-B2 (VT2): sin exigir T,L>=0 — en multi-monitor el monitor a la izquierda
+            # del primario da Left NEGATIVO legitimo; el clamp de abajo ya recorta a la
+            # pantalla virtual real (que tambien tiene origen negativo en ese caso).
             # Guard anti fuera-de-pantalla: recorta a la pantalla virtual actual
             $vx = [System.Windows.SystemParameters]::VirtualScreenLeft
             $vy = [System.Windows.SystemParameters]::VirtualScreenTop
@@ -11253,7 +18290,7 @@ $window.Add_Closing({
     if ($script:State.Running) {
         $r = Show-WpiMessage(
             'Hay un proceso en marcha. Si cierras ahora, las instalaciones en curso seguiran en segundo plano sin supervision. Cerrar igualmente?',
-            'WPI Moderno', 'YesNo', 'Warning')
+            'Winzard', 'YesNo', 'Warning')
         if ($r -ne 'Yes') { $e.Cancel = $true; return }
         $script:State.Cancel = $true
     }
@@ -11263,10 +18300,10 @@ $window.Add_Closing({
     try { $script:SingleInstance.ReleaseMutex() } catch {}
 })
 
-# Deteccion automatica de apps ya instaladas nada mas abrir
+# Deteccion automatica de apps ya instaladas nada mas abrir (deteccion robusta)
 $window.Add_ContentRendered({
     if ($Config.AutoDetectInstalled -and -not $script:State.Running) {
-        Start-Worker -Mode 'detect' -Ids @($catalog | ForEach-Object { $_.Id })
+        try { Invoke-DetectHighlight $false | Out-Null } catch {}
     }
 })
 
@@ -11281,7 +18318,7 @@ if ($SelfTestGui) {
     foreach ($name in @(
         'SideList','AppsScroll','Lists','TweaksScroll','TweaksList','UpgradesScroll','UpgradesList',
         'DebloatScroll','DebloatList','DriversScroll','DriversList','WinUpdateScroll','WinUpdateList',
-        'RepairScroll','RepairList','CreateIsoScroll','CreateIsoList','SummaryScroll','SummaryList',
+        'RepairScroll','RepairList','GamingScroll','GamingList','RecoveryScroll','RecoveryList','CreateIsoScroll','CreateIsoList','SummaryScroll','SummaryList',
         'QuickStartScroll','QuickStartList','LogList','Prog','StatusText','BtnInstall','BtnCancel','CboLang','CboTheme'
     )) {
         try { if (-not $window.FindName($name)) { $missing.Add($name) } } catch { $missing.Add($name) }
@@ -11294,6 +18331,8 @@ if ($SelfTestGui) {
 
     try { Build-RepairUI; Translate-Tree $script:RepairScroll; Apply-WpiToolTips $script:RepairScroll } catch { Write-Host ('[FAIL] SelfTestGui: Repair UI: {0}' -f $_.Exception.Message) -ForegroundColor Red; exit 1 }
     try { Build-CreateIsoUI; Translate-Tree $script:CreateIsoScroll; Apply-WpiToolTips $script:CreateIsoScroll } catch { Write-Host ('[FAIL] SelfTestGui: Create ISO UI: {0}' -f $_.Exception.Message) -ForegroundColor Red; exit 1 }
+    try { Build-RecoveryUI; Translate-Tree $script:RecoveryScroll; Apply-WpiToolTips $script:RecoveryScroll } catch { Write-Host ('[FAIL] SelfTestGui: Recovery UI: {0}' -f $_.Exception.Message) -ForegroundColor Red; exit 1 }
+    try { Build-GamingUI; Translate-Tree $script:GamingScroll; Apply-WpiToolTips $script:GamingScroll } catch { Write-Host ('[FAIL] SelfTestGui: Gaming UI: {0}' -f $_.Exception.Message) -ForegroundColor Red; exit 1 }
 
     Write-Host '[OK] SelfTestGui: ventana WPF, controles criticos y paneles Reparacion/Crear ISO construidos correctamente.' -ForegroundColor Green
     exit 0
@@ -11320,6 +18359,14 @@ if ($BuildIsoKit) {
     $script:Wiz.Locale = 'es-ES'
     $script:Wiz.AccountName = 'Usuario'
     $script:Wiz.AccountPassword = ''
+    # F6-B1 (VT2): el kit headless heredaba de Init-IsoWizard ~56 tweaks marcados y TODO
+    # el catalogo de debloat, sin que quien automatiza lo pidiera (sorpresa peligrosa).
+    # Ahora sale NEUTRO por defecto; el contenido se pide con -IsoTweaksAll/-IsoDebloatAll
+    # o editando kit-config.json/preset_tweaks.txt. La GUI no cambia: alli el usuario VE
+    # las casillas pre-marcadas y las edita en pantalla.
+    if (-not $IsoTweaksAll)  { $script:Wiz.TweakNames  = @() }
+    if (-not $IsoDebloatAll) { $script:Wiz.DebloatPkgs = @() }
+    Write-Host ('[i] BuildIsoKit: tweaks={0} debloat={1} apps={2}  (contenido opt-in: -IsoTweaksAll / -IsoDebloatAll o editar kit-config.json)' -f @($script:Wiz.TweakNames).Count, @($script:Wiz.DebloatPkgs).Count, @($script:Wiz.AppIds).Count) -ForegroundColor Gray
 
     $kit = New-IsoBuildKit
     if ($kit -and (Test-Path -LiteralPath (Join-Path $kit 'kit-config.json') -PathType Leaf)) {
@@ -11335,6 +18382,26 @@ if ($script:SettingsRestored) {
     try { $script:StatusText.Text = (Tr 'Los ajustes estaban danados y se han restaurado a los valores por defecto (copia en wpi_settings.json.corrupt.bak).') } catch {}
 }
 
+# UX-1 (VT2): warm-up del motor async DURANTE la splash. El primer runspace de un
+# proceso paga el coste de arranque (ensamblados/JIT) y por eso la primera tarjeta
+# aplicada tras abrir la GUI tenia latencia (hallazgo "cold-start" de la 1a pasada).
+# Se paga aqui ese coste, con la splash aun visible, y el primer Start-Worker real
+# sale ya caliente. Mismo perfil que Start-Worker (MTA) y desechable.
+Update-WpiSplash 'Preparando el motor de instalaciones...' 'Warming up the install engine...'
+try {
+    $__wuRS = [runspacefactory]::CreateRunspace()
+    $__wuRS.ApartmentState = 'MTA'
+    $__wuRS.Open()
+    $__wuPS = [powershell]::Create()
+    $__wuPS.Runspace = $__wuRS
+    [void]$__wuPS.AddScript('param($x) $x').AddArgument(1)
+    [void]$__wuPS.Invoke()
+    $__wuPS.Dispose(); $__wuRS.Close(); $__wuRS.Dispose()
+} catch {}
+
+# La ventana principal ya esta lista: la splash se retira SIEMPRE justo antes
+# de mostrarla (Close-WpiSplash es inofensiva si nunca llego a crearse).
+try { Close-WpiSplash } catch {}
 [void]$window.ShowDialog()
 Write-Host ''
-Write-Host ('[OK] WPI Moderno v{0} cerrado. Logs forenses en: {1}' -f $WpiVersion, $Config.LogDir) -ForegroundColor Green
+Write-Host ('[OK] Winzard v{0} cerrado. Logs forenses en: {1}' -f $WpiVersion, $Config.LogDir) -ForegroundColor Green
