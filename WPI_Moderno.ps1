@@ -3640,6 +3640,7 @@ function Get-CodeMeaning {
         '0x8A150044' { return @{Ok=$false; Msg='se requiere aceptar acuerdos de la fuente'} }
         '0x8A15010B' { return @{Ok=$false; Msg='requiere una version de Windows superior'} }
         '0x8A150056' { return @{Ok=$false; Msg='descarga interrumpida (red)'; Retry=$true} }
+        '0x8A15003F' { return @{Ok=$false; Msg='datos de la fuente winget danados (cache corrupto)'; Retry=$true} }
         '0x8A150201' { return @{Ok=$false; Msg='el instalador devolvio error'} }
         '0x80072EE7' { return @{Ok=$false; Msg='sin conexion / DNS (red)'; Retry=$true} }
         '0x80072EFD' { return @{Ok=$false; Msg='no se pudo conectar al servidor (red)'; Retry=$true} }
@@ -3932,6 +3933,34 @@ function Invoke-WingetInstall {
         }
     }
 
+    # ROJO DEL FUEGO W10 (G7): en un Windows recien instalado el cache de la fuente
+    # winget puede llegar danado (0x8A15003F "los datos de origen estan danados o
+    # manipulados"). Recuperacion REAL: 'winget source update' reconstruye el cache
+    # y se reintenta UNA vez solo esas apps (mismo patron que el reintento-de-red).
+    $srcIds = @()
+    foreach ($f in $fail) { if ($f -match '0x8A15003F|fuente winget danad') { $srcIds += (($f -split ' - ')[0]) } }
+    if (@($srcIds).Count -gt 0 -and -not $DryRun) {
+        Write-Host ''
+        Write-Host ((L2 '[FUENTE] {0} app(s) fallaron por el cache de la fuente winget: reconstruyendo (winget source update)...' '[SOURCE] {0} app(s) failed due to the winget source cache: rebuilding (winget source update)...') -f @($srcIds).Count) -ForegroundColor Yellow
+        try { & winget source update 2>&1 | ForEach-Object { Write-Host ('    ' + $_) -ForegroundColor DarkGray } } catch {}
+        foreach ($idSrc in $srcIds) {
+            Write-Host ''
+            Write-Host ('==[ reintento ]== {0} ...' -f $idSrc) -ForegroundColor Cyan
+            $resWg3 = Invoke-WingetConTope $idSrc
+            $m3 = Get-WingetVeredicto $resWg3
+            if ($m3.Ok) {
+                $fail = @($fail | Where-Object { $_ -notmatch ('^' + [regex]::Escape($idSrc) + ' - ') })
+                $ok += ('{0} - {1}' -f $idSrc, $m3.Msg)
+                Write-Host ('[OK] {0} - {1} (reintento tras winget source update)' -f $idSrc, $m3.Msg) -ForegroundColor Green
+                [void]$script:FbOkIds.Add($idSrc)
+                try { $script:FbFailIds = [System.Collections.ArrayList]@($script:FbFailIds | Where-Object { [string]$_.Id -ne $idSrc }) } catch {}
+            } else {
+                Write-Host ('[X] {0} - {1} (reintento)' -f $idSrc, $m3.Msg) -ForegroundColor Red
+            }
+            if ($FirstBoot -and $script:FbProcBaseline) { Close-WpiNewApps -Baseline $script:FbProcBaseline -Tag $idSrc }
+        }
+    }
+
     Write-Host ''
     Write-Host '====================================================' -ForegroundColor Cyan
     Write-Host ('  RESUMEN: {0} correctas, {1} fallidas' -f @($ok).Count, @($fail).Count) -ForegroundColor Cyan
@@ -4210,11 +4239,26 @@ try { if (-not (Test-Path `$logDir)) { New-Item -ItemType Directory -Path `$logD
 `$log = Join-Path `$logDir ('reintento_apps_{0}.log' -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
 function RLog(`$m) { `$s = ('[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'), `$m); Write-Host `$s; try { Add-Content -Path `$log -Value `$s } catch {} }
 RLog ('Reintento diferido de apps: {0}' -f (`$ids -join ', '))
+# Serena post-diferido (VT2-6): instantanea PREVIA de autoarranques y procesos para
+# calmar despues SOLO lo que estos instaladores registren/abran (p. ej. Discord se
+# auto-abre tras instalarse y su System Helper pide UAC en CADA logon si queda el autorun).
+`$snapRun = @{}
+foreach (`$hv in 'HKLM','HKCU') { foreach (`$sb in 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run','SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run') {
+    `$pk = ('{0}:\{1}' -f `$hv, `$sb); if (Test-Path `$pk) { try { foreach (`$n in (Get-Item `$pk).GetValueNames()) { `$snapRun[(`$hv + '|' + `$sb + '|' + `$n)] = 1 } } catch {} }
+} }
+`$snapPids = @{}; foreach (`$pp in (Get-Process)) { `$snapPids[`$pp.Id] = 1 }
 foreach (`$id in `$ids) {
     RLog ('==[ Instalando {0} ]==' -f `$id)
     try {
         winget install --id `$id -e --source winget --silent --scope user --accept-package-agreements --accept-source-agreements 2>&1 | ForEach-Object { RLog `$_ }
         RLog ('Resultado winget para {0}: codigo {1}' -f `$id, `$LASTEXITCODE)
+        if (`$LASTEXITCODE -eq -1978269633) {
+            # 0x8A15003F: cache de la fuente winget danado (Windows recien instalado).
+            RLog '[~] Cache de la fuente winget danado (0x8A15003F): winget source update + reintento...'
+            winget source update 2>&1 | ForEach-Object { RLog `$_ }
+            winget install --id `$id -e --source winget --silent --scope user --accept-package-agreements --accept-source-agreements 2>&1 | ForEach-Object { RLog `$_ }
+            RLog ('Resultado del reintento para {0}: codigo {1}' -f `$id, `$LASTEXITCODE)
+        }
     } catch {
         RLog ('[X] Error instalando {0}: {1}' -f `$id, `$_.Exception.Message)
     }
@@ -4236,6 +4280,40 @@ try {
     }
 } catch {
     RLog ("Error al parchear acceso directo de Discord: " + `$_.Exception.Message)
+}
+# Serena post-diferido (VT2-6): calmar los autoarranques NUEVOS (reversible, mismo
+# patron que la serena de FASE 2: backup en WPI_Autoruns_Backup) y cerrar las
+# ventanas que los instaladores hayan dejado abiertas.
+`$wl = @('SecurityHealth*','WindowsDefender*','VBoxTray*','VMware*','RtkAud*','Realtek*','NVIDIA*','Nv*','AMD*','Igfx*','Intel*','ETDCtrl*','Synaptics*','WPI_*','MicrosoftEdgeAutoLaunch*')
+`$calmados = 0
+foreach (`$hv in 'HKLM','HKCU') { foreach (`$sb in 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run','SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run') {
+    `$pk = ('{0}:\{1}' -f `$hv, `$sb); if (-not (Test-Path `$pk)) { continue }
+    `$ki = `$null; try { `$ki = Get-Item `$pk -ErrorAction Stop } catch { continue }
+    foreach (`$n in @(`$ki.GetValueNames())) {
+        if ([string]::IsNullOrWhiteSpace(`$n)) { continue }
+        if (`$snapRun.ContainsKey(`$hv + '|' + `$sb + '|' + `$n)) { continue }
+        `$esBlanco = `$false; foreach (`$x in `$wl) { if (`$n -like `$x) { `$esBlanco = `$true; break } }
+        if (`$esBlanco) { continue }
+        try {
+            `$v = [string]`$ki.GetValue(`$n)
+            `$bk = ('{0}:\{1}' -f `$hv, (`$sb -replace 'Run`$', 'WPI_Autoruns_Backup'))
+            if (-not (Test-Path `$bk)) { New-Item -Path `$bk -Force | Out-Null }
+            New-ItemProperty -Path `$bk -Name `$n -Value `$v -PropertyType String -Force | Out-Null
+            Remove-ItemProperty -Path `$pk -Name `$n -Force -ErrorAction Stop
+            `$calmados++
+            RLog ('[+] Autorun del diferido desactivado (recuperable): ' + `$n)
+        } catch { RLog ('[~] No se pudo calmar el autorun ' + `$n + ': ' + `$_.Exception.Message) }
+    }
+} }
+RLog ('Serena post-diferido: ' + `$calmados + ' autoarranque(s) calmados (backup en WPI_Autoruns_Backup).')
+Start-Sleep -Seconds 5
+foreach (`$pp in (Get-Process | Where-Object { -not `$snapPids.ContainsKey(`$_.Id) -and `$_.MainWindowHandle -ne 0 })) {
+    if (`$pp.ProcessName -match '^(explorer|powershell|cmd|conhost|winget|WindowsTerminal|dwm)`$') { continue }
+    try {
+        [void]`$pp.CloseMainWindow(); Start-Sleep -Milliseconds 800
+        if (-not `$pp.HasExited) { Stop-Process -Id `$pp.Id -Force -ErrorAction SilentlyContinue }
+        RLog ('[+] Cerrada tras el diferido: ' + `$pp.ProcessName)
+    } catch {}
 }
 # UAC (VT2-4): si el lanzamiento fue por la tarea elevada, la tarea se borra a si
 # misma (bajo el respaldo RunOnce no existe y esto no hace nada).
@@ -4415,6 +4493,12 @@ function Invoke-CliDebloat {
                     W dim ((L2 '    componente del sistema (no desinstalable, se omite): {0}' '    system component (non-removable, skipped): {0}') -f $pkg.Name)
                     continue
                 }
+                # G6 (VT3): Microsoft.Xbox.TCUI esta RETIRADO de la Store (sin ficha
+                # msstore/winget, verificado 2026-07-10); quitarlo es IRREVERSIBLE.
+                if ($pkg.Name -eq 'Microsoft.Xbox.TCUI') {
+                    W dim ((L2 '    protegido (irrestaurable desde la Store, se conserva): {0}' '    protected (cannot be reinstalled from the Store, kept): {0}') -f $pkg.Name)
+                    continue
+                }
                 $matched++
                 try { $pkg | Remove-AppxPackage -ErrorAction Stop; $removed++; W ok ('    quitado: {0}' -f $pkg.Name) }
                 catch { $failed++; W err ('    fallo: {0} :: {1}' -f $pkg.Name, $_.Exception.Message) }
@@ -4424,6 +4508,10 @@ function Invoke-CliDebloat {
                 $prov = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
                     Where-Object { $dn = $_.DisplayName; @($patterns | Where-Object { $dn -like $_ }).Count -gt 0 })
                 foreach ($pp in $prov) {
+                    if ($pp.DisplayName -eq 'Microsoft.Xbox.TCUI') {
+                        W dim ((L2 '    protegido (irrestaurable desde la Store, se conserva): {0}' '    protected (cannot be reinstalled from the Store, kept): {0}') -f $pp.DisplayName)
+                        continue
+                    }
                     $matched++
                     try { Remove-AppxProvisionedPackage -Online -PackageName $pp.PackageName -ErrorAction Stop | Out-Null; $removed++; W ok ('    quitado: {0}' -f $pp.DisplayName) }
                     catch { $failed++; W err ('    fallo: {0} :: {1}' -f $pp.DisplayName, $_.Exception.Message) }
@@ -4704,10 +4792,13 @@ function Apply-MasterProfileCli {
                 $patterns = Get-DebloatPatterns $pkg
                 $found = @($patterns | ForEach-Object { Get-AppxPackage -Name $_ -ErrorAction SilentlyContinue })
                 if ($found.Count -eq 0) { W dim ('    No estaba instalada ({0}).' -f $pkg) }
-                else { foreach ($p in $found) { try { $p | Remove-AppxPackage -ErrorAction Stop } catch { W warn ('    No se pudo quitar {0}: {1}' -f $p.Name, $_.Exception.Message) } } }
+                else { foreach ($p in $found) {
+                    # G6 (VT3): TCUI retirado de la Store -> quitarlo es irreversible.
+                    if ($p.Name -eq 'Microsoft.Xbox.TCUI') { W dim ('    protegido (irrestaurable desde la Store, se conserva): {0}' -f $p.Name); continue }
+                    try { $p | Remove-AppxPackage -ErrorAction Stop } catch { W warn ('    No se pudo quitar {0}: {1}' -f $p.Name, $_.Exception.Message) } } }
                 try {
                     Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
-                        Where-Object { $dn = $_.DisplayName; @($patterns | Where-Object { $dn -like $_ }).Count -gt 0 } |
+                        Where-Object { $dn = $_.DisplayName; ($dn -ne 'Microsoft.Xbox.TCUI') -and @($patterns | Where-Object { $dn -like $_ }).Count -gt 0 } |
                         ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null }
                 } catch {}
                 W ok ('[OK] {0}' -f $pkg)
@@ -4800,6 +4891,60 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
     } catch {}
 
     Show-WpiBanner -Subtitle 'Aplicando tu configuracion automaticamente. No cierres esta ventana.'
+
+    # UX-2 (VT3, pedido del usuario): durante el primer arranque NADA debe tapar la
+    # consola premium (en el primer logon el menu Inicio u otras ventanas del shell
+    # pueden abrirse encima). La consola queda TOPMOST mientras dura -FirstBoot y se
+    # libera al terminar (rama sin reinicio); con reinicio la sesion muere igualmente.
+    $script:FbConsoleH = [IntPtr]::Zero
+    if ($FirstBoot -and -not $DryRun) {
+        try {
+            Add-Type -Namespace WpiFb -Name Win32 -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint f); [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);' -ErrorAction Stop
+            $script:FbConsoleH = [WpiFb.Win32]::GetConsoleWindow()
+            if ($script:FbConsoleH -ne [IntPtr]::Zero) {
+                # UX-4 (VT3): apta para 1080p/1440p/4K y DPI actuales — la consola se
+                # CENTRA y se dimensiona proporcional a la pantalla REAL (px fisicos):
+                # 62% de ancho x 68% de alto, con minimos sensatos. Una sola llamada
+                # hace posicion + tamano + TOPMOST (HWND_TOPMOST=-1, SWP_SHOWWINDOW).
+                $____scrW = [WpiFb.Win32]::GetSystemMetrics(0)
+                $____scrH = [WpiFb.Win32]::GetSystemMetrics(1)
+                if ($____scrW -gt 0 -and $____scrH -gt 0) {
+                    $____w = [Math]::Max(880, [int]($____scrW * 0.62))
+                    $____h = [Math]::Max(560, [int]($____scrH * 0.68))
+                    if ($____w -gt $____scrW) { $____w = $____scrW }
+                    if ($____h -gt $____scrH) { $____h = $____scrH }
+                    $____x = [int](($____scrW - $____w) / 2)
+                    $____y = [int](($____scrH - $____h) / 2)
+                    [void][WpiFb.Win32]::SetWindowPos($script:FbConsoleH, [IntPtr](-1), $____x, $____y, $____w, $____h, 0x0040)
+                } else {
+                    [void][WpiFb.Win32]::SetWindowPos($script:FbConsoleH, [IntPtr](-1), 0, 0, 0, 0, 0x0043)
+                }
+                [void][WpiFb.Win32]::SetForegroundWindow($script:FbConsoleH)
+            }
+            # UX-3 (VT3, pedido del usuario): mientras dura el primer arranque, NI se
+            # apaga la pantalla NI se duerme/suspende el equipo (en cualquier Windows
+            # y version). ES_CONTINUOUS|ES_SYSTEM_REQUIRED|ES_DISPLAY_REQUIRED; es por
+            # proceso y se libera solo al reiniciar (o en la rama sin reinicio).
+            [void][WpiFb.Win32]::SetThreadExecutionState(0x80000003)
+        } catch {}
+        # UX-3: panel premium de indicadores desde el primer momento (bilingue)
+        $____fbLine = ('=' * 60)
+        Write-Host ''
+        Write-Host ('  ' + $____fbLine) -ForegroundColor DarkCyan
+        Write-Host ('   ' + (L2 'INSTALACION AUTOMATICA EN MARCHA   -   Winzard se encarga' 'AUTOMATIC SETUP IN PROGRESS   -   Winzard has got this')) -ForegroundColor Cyan
+        Write-Host ('  ' + $____fbLine) -ForegroundColor DarkCyan
+        Write-Host ('   >  ' + (L2 'NO cierres esta ventana: todo va solo y queda registrado.' 'Do NOT close this window: everything runs on its own and is logged.')) -ForegroundColor White
+        Write-Host ('   >  ' + (L2 'Empiezan las DESCARGAS e instalaciones: puede llevar un rato.' 'DOWNLOADS and installs are starting: it can take a while.')) -ForegroundColor Gray
+        Write-Host ('   >  ' + (L2 'No toques el equipo mientras tanto (ni teclado ni raton).' 'Do not touch the PC in the meantime (no keyboard, no mouse).')) -ForegroundColor Gray
+        Write-Host ('   >  ' + (L2 'La pantalla NO se apagara y el equipo NO se suspendera.' 'The screen will NOT turn off and the PC will NOT go to sleep.')) -ForegroundColor Gray
+        # UX-4: lineas <=72 columnas (sin saltos feos ni en consolas de 80 cols)
+        Write-Host ('      ' + (L2 '(bloqueo temporal de esta ventana: NO cambia tu configuracion' '(temporary lock held by this window: it does NOT change your')) -ForegroundColor DarkGray
+        Write-Host ('      ' + (L2 ' de energia; al reiniciar todo queda como tu lo tengas)' ' power settings; after the reboot everything stays as you set it)')) -ForegroundColor DarkGray
+        Write-Host ('   >  ' + (L2 'Al terminar, el equipo se REINICIARA SOLO con todo aplicado.' 'When done, the PC will REBOOT BY ITSELF with everything applied.')) -ForegroundColor Yellow
+        Write-Host ('  ' + $____fbLine) -ForegroundColor DarkCyan
+        Write-Host ('   ' + (L2 'Sientate y relajate: Winzard esta trabajando por ti.' 'Sit back and relax: Winzard is working for you.')) -ForegroundColor Green
+        Write-Host ''
+    }
 
     # P0 (VT2): $isAdmin UNA sola vez, a nivel de script, para TODAS las fases CLI.
     # Antes solo existia como local de Invoke-CliTweaks: los Code de Windows Update
@@ -5044,6 +5189,10 @@ if ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath) {
         Write-Host ''
         try { Restart-Computer -Force } catch { Write-Host ('[X] No se pudo reiniciar: {0}' -f $_.Exception.Message) -ForegroundColor Red }
     } else {
+        # UX-2: liberar el TOPMOST de la consola al terminar sin reinicio
+        try { if ($script:FbConsoleH -and $script:FbConsoleH -ne [IntPtr]::Zero) { [void][WpiFb.Win32]::SetWindowPos($script:FbConsoleH, [IntPtr](-2), 0, 0, 0, 0, 0x0043) } } catch {}
+        # UX-3: liberar el bloqueo de energia/pantalla (rama sin reinicio)
+        try { if ($FirstBoot) { [void][WpiFb.Win32]::SetThreadExecutionState(0x80000000) } } catch {}
         Write-Host ''
         Write-Host (L2 '  Proceso terminado.' '  Process finished.') -ForegroundColor Green
         # En DryRun no se espera tecla: permite usarlo desde guiones sin bloqueo.
@@ -5142,6 +5291,7 @@ $WorkerScript = {
             '0x8A150044' { return @{Ok=$false; Msg=(L2 'se requiere aceptar acuerdos de la fuente' 'source agreements must be accepted')} }
             '0x8A15010B' { return @{Ok=$false; Msg=(L2 'requiere una version de Windows superior' 'requires a newer version of Windows')} }
             '0x8A150056' { return @{Ok=$false; Msg=(L2 'descarga interrumpida (red)' 'download interrupted (network)'); Retry=$true} }
+            '0x8A15003F' { return @{Ok=$false; Msg=(L2 'datos de la fuente winget danados (cache corrupto)' 'winget source data damaged (corrupted cache)'); Retry=$true} }
             '0x80072EE7' { return @{Ok=$false; Msg=(L2 'sin conexion / DNS (red)' 'no connection / DNS (network)'); Retry=$true} }
             '0x80072EFD' { return @{Ok=$false; Msg=(L2 'no se pudo conectar al servidor (red)' 'could not connect to the server (network)'); Retry=$true} }
             '0x00000643' { return @{Ok=$false; Msg=(L2 '1603: error fatal del instalador MSI' '1603: fatal MSI installer error')} }
@@ -5462,16 +5612,41 @@ $WorkerScript = {
                                 if ($inst -and $Fallback -and -not $r.Killed) {
                                     if (Get-Command choco -ErrorAction SilentlyContinue) {
                                         W warn ((L2 '[~] {0}: winget fallo. Probando con Chocolatey (best-effort)...' '[~] {0}: winget failed. Trying Chocolatey (best-effort)...') -f (NameOf $r.Id))
+                                        # G4 (VT3): los IDs de winget (Editor.Producto) casi nunca
+                                        # existen tal cual en choco. Se prueba el ID exacto y, si no
+                                        # esta, un candidato derivado (ultimo segmento en minusculas,
+                                        # p.ej. 7zip.7zip -> 7zip), SIEMPRE confirmado con
+                                        # 'choco search --exact' ANTES de instalar (best-effort honesto).
+                                        $cands = @([string]$r.Id)
                                         try {
-                                            $cp = Start-Process choco -ArgumentList ('install ' + $r.Id + ' -y --no-progress') -WindowStyle Hidden -Wait -PassThru
-                                            if ($cp -and $cp.ExitCode -in @(0, 1641, 3010)) {
-                                                # VERIFICACION REAL: el exit code de choco no basta; se
-                                                # comprueba que el paquete quedo registrado como instalado.
-                                                $cl = ''
-                                                try { $cl = (& choco list --exact $r.Id --limit-output 2>&1 | Out-String) } catch {}
-                                                if ($cl -match ('(?im)^' + [regex]::Escape($r.Id) + '\|')) { $okFb = $true }
-                                            }
+                                            $cTail = ([string]$r.Id -split '\.')[-1].ToLowerInvariant()
+                                            if ($cTail -and ($cTail -ne ([string]$r.Id).ToLowerInvariant())) { $cands += $cTail }
                                         } catch {}
+                                        foreach ($cid in $cands) {
+                                            $csHit = $false
+                                            try { $cs = (& choco search $cid --exact --limit-output 2>&1 | Out-String); if ($cs -match ('(?im)^' + [regex]::Escape($cid) + '\|')) { $csHit = $true } } catch {}
+                                            if (-not $csHit) { W dim ((L2 '    "{0}" no existe en choco (search --exact vacio).' '    "{0}" does not exist on choco (search --exact empty).') -f $cid); continue }
+                                            W info ((L2 '    choco tiene "{0}": instalando...' '    choco has "{0}": installing...') -f $cid)
+                                            try {
+                                                # Tope propio del fallback (VT2-6): el feed comunitario de choco
+                                                # puede tardar >18 min por throttling; sin tope, un cuelgue aqui
+                                                # congelaria la tanda entera (mismo espiritu que el watchdog winget).
+                                                $cp = Start-Process choco -ArgumentList ('install ' + $cid + ' -y --no-progress') -WindowStyle Hidden -PassThru
+                                                $cpVivo = $true
+                                                if ($cp) { $cpVivo = $cp.WaitForExit(1200000) }   # 20 min
+                                                if (-not $cpVivo) {
+                                                    try { & taskkill /PID $cp.Id /T /F 2>$null | Out-Null } catch {}
+                                                    W warn ((L2 '    [WATCHDOG] choco supero el tope de 20 min con "{0}": cortado (arbol de procesos terminado).' '    [WATCHDOG] choco exceeded the 20 min cap with "{0}": cut off (process tree terminated).') -f $cid)
+                                                }
+                                                if ($cp -and $cpVivo -and $cp.ExitCode -in @(0, 1641, 3010)) {
+                                                    # VERIFICACION REAL: el exit code de choco no basta; se
+                                                    # comprueba que el paquete quedo registrado como instalado.
+                                                    $cl = ''
+                                                    try { $cl = (& choco list --exact $cid --limit-output 2>&1 | Out-String) } catch {}
+                                                    if ($cl -match ('(?im)^' + [regex]::Escape($cid) + '\|')) { $okFb = $true; break }
+                                                }
+                                            } catch {}
+                                        }
                                         if (-not $okFb) { W warn ((L2 '    Chocolatey no pudo instalar {0} (o la verificacion posterior no lo encontro instalado; puede que el ID no exista en choco).' '    Chocolatey could not install {0} (or the post-install verification did not find it installed; the ID may not exist on choco).') -f $r.Id) }
                                     } else {
                                         W warn (L2 '    Fallback Choco activado, pero Chocolatey no esta instalado (instalalo para usarlo).' '    Choco fallback enabled, but Chocolatey is not installed (install it to use this).')
@@ -5890,6 +6065,13 @@ $WorkerScript = {
                                 W dim ((L2 '    componente del sistema (no desinstalable, se omite): {0}' '    system component (non-removable, skipped): {0}') -f $pkg.Name)
                                 continue
                             }
+                            # G6 (VT3): Microsoft.Xbox.TCUI esta RETIRADO de la Store
+                            # (sin ficha msstore/winget, verificado 2026-07-10):
+                            # quitarlo es IRREVERSIBLE -> se protege y se informa.
+                            if ($pkg.Name -eq 'Microsoft.Xbox.TCUI') {
+                                W dim ((L2 '    protegido (irrestaurable desde la Store, se conserva): {0}' '    protected (cannot be reinstalled from the Store, kept): {0}') -f $pkg.Name)
+                                continue
+                            }
                             $matched++
                             try { $pkg | Remove-AppxPackage -ErrorAction Stop; $removed++; W ok ((L2 '    quitado: {0}' '    removed: {0}') -f $pkg.Name) }
                             catch { $failed++; W warn ((L2 '    fallo: {0} :: {1}' '    failed: {0} :: {1}') -f $pkg.Name, $_.Exception.Message) }
@@ -5899,6 +6081,10 @@ $WorkerScript = {
                             $prov = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
                                 Where-Object { $dn = $_.DisplayName; @($patterns | Where-Object { $dn -like $_ }).Count -gt 0 })
                             foreach ($pp in $prov) {
+                                if ($pp.DisplayName -eq 'Microsoft.Xbox.TCUI') {
+                                    W dim ((L2 '    protegido (irrestaurable desde la Store, se conserva): {0}' '    protected (cannot be reinstalled from the Store, kept): {0}') -f $pp.DisplayName)
+                                    continue
+                                }
                                 $matched++
                                 try { Remove-AppxProvisionedPackage -Online -PackageName $pp.PackageName -ErrorAction Stop | Out-Null; $removed++; W ok ((L2 '    quitado: {0}' '    removed: {0}') -f $pp.DisplayName) }
                                 catch { $failed++; W warn ((L2 '    fallo: {0} :: {1}' '    failed: {0} :: {1}') -f $pp.DisplayName, $_.Exception.Message) }
@@ -6583,6 +6769,8 @@ $script:TrMap['Rufus no esta instalado. Es la herramienta que graba la ISO al US
 $script:TrMap['winget no esta disponible: instala Rufus desde la seccion de apps y vuelve a intentarlo.']='winget is not available: install Rufus from the apps section and try again.'
 $script:TrMap['No se pudo localizar Rufus tras instalarlo. Abrelo a mano y selecciona tu ISO.']='Could not locate Rufus after installing it. Open it manually and select your ISO.'
 $script:TrMap['Rufus abierto: elige tu USB y esta ISO, luego EMPEZAR.']='Rufus opened: pick your USB and this ISO, then START.'
+$script:TrMap['Rufus abierto con tu ISO ya cargada: elige tu USB y pulsa EMPEZAR.']='Rufus opened with your ISO already loaded: pick your USB and click START.'
+$script:TrMap['Se abrira Rufus CON ESTA ISO YA CARGADA (WPI se la pasa al abrirlo). En Rufus solo: 1) comprueba tu USB en "Dispositivo"  2) pulsa EMPEZAR. El USB se borrara por completo: eso lo hace Rufus cuando tu lo confirmes, no WPI.']='Rufus will open WITH THIS ISO ALREADY LOADED (WPI hands it over on launch). In Rufus just: 1) check your USB under "Device"  2) click START. The USB will be fully erased: Rufus does that when you confirm, not WPI.'
 $script:TrMap['No se pudo abrir Rufus: {0}']='Could not open Rufus: {0}'
 $script:TrMap['Vas a grabar tu ISO a un USB con Rufus']='You are about to write your ISO to a USB with Rufus'
 $script:TrMap['Se abrira Rufus. En Rufus: 1) elige tu USB en "Dispositivo"  2) en "Eleccion de arranque" selecciona esta ISO  3) pulsa EMPEZAR. El USB se borrara por completo: eso lo hace Rufus cuando tu lo confirmes, no WPI.']='Rufus will open. In Rufus: 1) pick your USB under "Device"  2) under "Boot selection" choose this ISO  3) click START. The USB will be fully erased: Rufus does that when you confirm, not WPI.'
@@ -13456,6 +13644,9 @@ foreach ($ei in $indices) {
                 Log ('   no estaba presente: ' + $pat)
             } else {
                 foreach ($pp in $hits) {
+                    # G6 (VT3): TCUI retirado de la Store; sin el en la imagen, un
+                    # usuario que luego quiera el stack Xbox no podria recuperarlo.
+                    if ($pp.DisplayName -eq 'Microsoft.Xbox.TCUI') { Log ('   protegido (irrestaurable desde la Store, se conserva): ' + $pp.DisplayName); continue }
                     try { Remove-AppxProvisionedPackage -Path $mount -PackageName $pp.PackageName -ErrorAction Stop | Out-Null; Log ('   quitado: ' + $pp.DisplayName) }
                     catch { Log ('   fallo: ' + $pp.DisplayName + ' :: ' + $_.Exception.Message) }
                 }
@@ -15172,16 +15363,19 @@ function Invoke-WpiWriteUsbRufus {
     #    Tras "Abrir Rufus ahora" NO hay ninguna llamada posterior que pueda
     #    reabrir el selector: la funcion termina aqui.
     $sec = @(
-        @{ Head = 'Vas a grabar tu ISO a un USB con Rufus'; Body = ((Tr 'ISO') + ':  ' + (Split-Path $iso -Leaf) + "`n`n" + (Tr 'Se abrira Rufus. En Rufus: 1) elige tu USB en "Dispositivo"  2) en "Eleccion de arranque" selecciona esta ISO  3) pulsa EMPEZAR. El USB se borrara por completo: eso lo hace Rufus cuando tu lo confirmes, no WPI.')); Color = '#FF00E5FF' },
+        @{ Head = 'Vas a grabar tu ISO a un USB con Rufus'; Body = ((Tr 'ISO') + ':  ' + (Split-Path $iso -Leaf) + "`n`n" + (Tr 'Se abrira Rufus CON ESTA ISO YA CARGADA (WPI se la pasa al abrirlo). En Rufus solo: 1) comprueba tu USB en "Dispositivo"  2) pulsa EMPEZAR. El USB se borrara por completo: eso lo hace Rufus cuando tu lo confirmes, no WPI.')); Color = '#FF00E5FF' },
         @{ Head = 'Recordatorio importante'; Body = 'Si Rufus muestra la ventana "Experiencia de usuario de Windows", deja TODAS las casillas SIN marcar y pulsa Aceptar. Si marcas algo, Rufus crea su propio autounattend y SOBREESCRIBE la configuracion de tu ISO (apps, tweaks y ajustes no se aplicarian).'; Color = '#FFFFD166' }
     )
     $ok = Show-WpiPremiumDialog -Title 'Grabar la ISO a un USB (Rufus)' -Accent '#FFFF8C1A' -Sections $sec -YesText 'Abrir Rufus ahora' -NoText 'Cancelar'
     if (-not $ok) { return }
     try {
-        Start-Process -FilePath $rufus
-        # Copia la ruta de la ISO al portapapeles para que sea facil pegarla/encontrarla.
+        # G2 (VT3): Rufus 4.x acepta -i <iso> y abre con la imagen YA cargada
+        # (verificado en real con 4.14: dispositivo removible auto-seleccionado,
+        # esquema GPT). El usuario solo confirma el USB y pulsa EMPEZAR.
+        Start-Process -FilePath $rufus -ArgumentList ('-i "' + $iso + '"')
+        # Portapapeles como respaldo (por si su Rufus es antiguo y no carga -i).
         try { Set-Clipboard -Value $iso } catch {}
-        $script:StatusText.Text = (Tr 'Rufus abierto: elige tu USB y esta ISO, luego EMPEZAR.')
+        $script:StatusText.Text = (Tr 'Rufus abierto con tu ISO ya cargada: elige tu USB y pulsa EMPEZAR.')
     } catch { Show-WpiMessage(((Tr 'No se pudo abrir Rufus: {0}') -f $_.Exception.Message), (Tr 'Grabar a USB (Rufus)')) | Out-Null }
     } finally { $script:RufusEnCurso = $false }
 }
@@ -18260,22 +18454,42 @@ Update-DebloatCount
 
 # Restaurar tamano/posicion de ventana guardados
 try {
+    # Bug real (VT2-8, 2a parte): en pantallas menores que el minimo de diseno
+    # (p.ej. 1024x768), el MinWidth=1180 del XAML impedia encoger la ventana aunque
+    # el clamp bajara Width -> desbordaba igual y los controles del borde derecho
+    # quedaban inalcanzables. El MINIMO de diseno (y el tamano por defecto del XAML,
+    # 1480x880, para el primer arranque sin geometria guardada) se recortan SIEMPRE
+    # a la pantalla virtual real.
+    $vwS = [System.Windows.SystemParameters]::VirtualScreenWidth
+    $vhS = [System.Windows.SystemParameters]::VirtualScreenHeight
+    if ($window.MinWidth  -gt $vwS) { $window.MinWidth  = $vwS }
+    if ($window.MinHeight -gt $vhS) { $window.MinHeight = $vhS }
+    if ($window.Width  -gt $vwS) { $window.Width  = $vwS }
+    if ($window.Height -gt $vhS) { $window.Height = $vhS }
     if ($script:WinGeom -and $script:WinGeom.W -gt 400) {
-        $window.Width  = [double]$script:WinGeom.W
-        $window.Height = [double]$script:WinGeom.H
+        # Bug real (VT2-8, cazado en la VM del fuego): una geometria guardada MAYOR que
+        # la pantalla actual (settings heredados de un monitor grande) dejaba la ventana
+        # DESBORDADA y los controles del borde derecho INALCANZABLES (los "Ejecutar" de
+        # Reparacion quedaban fuera de una pantalla de 1024x768 con W=1480 guardado).
+        # El TAMANO tambien se recorta a la pantalla virtual, no solo la posicion.
+        $vx = [System.Windows.SystemParameters]::VirtualScreenLeft
+        $vy = [System.Windows.SystemParameters]::VirtualScreenTop
+        $vw = [System.Windows.SystemParameters]::VirtualScreenWidth
+        $vh = [System.Windows.SystemParameters]::VirtualScreenHeight
+        $gw = [double]$script:WinGeom.W; if ($gw -gt $vw) { $gw = $vw }
+        $gh = [double]$script:WinGeom.H; if ($gh -gt $vh) { $gh = $vh }
+        $window.Width  = $gw
+        $window.Height = $gh
         if ($null -ne $script:WinGeom.T -and $null -ne $script:WinGeom.L) {
             # F1-B2 (VT2): sin exigir T,L>=0 — en multi-monitor el monitor a la izquierda
             # del primario da Left NEGATIVO legitimo; el clamp de abajo ya recorta a la
             # pantalla virtual real (que tambien tiene origen negativo en ese caso).
-            # Guard anti fuera-de-pantalla: recorta a la pantalla virtual actual
-            $vx = [System.Windows.SystemParameters]::VirtualScreenLeft
-            $vy = [System.Windows.SystemParameters]::VirtualScreenTop
-            $vw = [System.Windows.SystemParameters]::VirtualScreenWidth
-            $vh = [System.Windows.SystemParameters]::VirtualScreenHeight
+            # Guard anti fuera-de-pantalla: la ventana queda ENTERA dentro de la pantalla
+            # virtual (antes solo se recortaba la esquina superior izquierda).
             $top  = [double]$script:WinGeom.T
             $left = [double]$script:WinGeom.L
-            $maxL = $vx + $vw - 120
-            $maxT = $vy + $vh - 80
+            $maxL = $vx + $vw - $gw
+            $maxT = $vy + $vh - $gh
             if ($left -lt $vx) { $left = $vx }; if ($left -gt $maxL) { $left = $maxL }
             if ($top  -lt $vy) { $top  = $vy }; if ($top  -gt $maxT) { $top  = $maxT }
             $window.WindowStartupLocation = 'Manual'
@@ -18300,15 +18514,15 @@ $window.Add_Closing({
     try { $script:SingleInstance.ReleaseMutex() } catch {}
 })
 
-# Deteccion automatica de apps ya instaladas nada mas abrir (deteccion robusta)
-$window.Add_ContentRendered({
-    if ($Config.AutoDetectInstalled -and -not $script:State.Running) {
-        try { Invoke-DetectHighlight $false | Out-Null } catch {}
-    }
-})
+# UX-5 (VT2-8, encargo del usuario): la deteccion automatica de apps instaladas
+# corria SINCRONA en ContentRendered -> 15-25 s de cursor ocupado con la ventana
+# YA visible (la app parecia lenta o colgada nada mas abrir). Ahora corre BAJO la
+# splash, con su propia etapa visible (ver justo antes del revelado), y la ventana
+# se muestra SOLO cuando todo esta cargado: lista para usar del tiron.
 
 # C2: si el idioma es ingles, traduce toda la interfaz ya construida (chrome,
 # barra inferior, panel inicial). Los paneles perezosos se traducen al abrirse.
+Update-WpiSplash 'Aplicando tu tema y tus ajustes...' 'Applying your theme and settings...'
 try { Translate-Tree $window; Apply-WpiToolTips $window } catch {}
 # Tras traducir: fija el contador "(0)" del boton de aplicar tweaks (usa Tr, no filtra)
 try { Update-TweakCount } catch {}
@@ -18382,6 +18596,14 @@ if ($script:SettingsRestored) {
     try { $script:StatusText.Text = (Tr 'Los ajustes estaban danados y se han restaurado a los valores por defecto (copia en wpi_settings.json.corrupt.bak).') } catch {}
 }
 
+# UX-5 (VT2-8): la deteccion de apps instaladas (la fase LARGA del arranque,
+# 15-25 s con muchos programas) corre AQUI, bajo la splash y con etapa visible,
+# en vez de congelar la ventana ya mostrada (antes iba en ContentRendered).
+if ($Config.AutoDetectInstalled) {
+    Update-WpiSplash 'Detectando tus programas instalados...' 'Detecting your installed programs...'
+    try { Invoke-DetectHighlight $false | Out-Null } catch {}
+}
+
 # UX-1 (VT2): warm-up del motor async DURANTE la splash. El primer runspace de un
 # proceso paga el coste de arranque (ensamblados/JIT) y por eso la primera tarjeta
 # aplicada tras abrir la GUI tenia latencia (hallazgo "cold-start" de la 1a pasada).
@@ -18401,6 +18623,7 @@ try {
 
 # La ventana principal ya esta lista: la splash se retira SIEMPRE justo antes
 # de mostrarla (Close-WpiSplash es inofensiva si nunca llego a crearse).
+Update-WpiSplash 'Todo listo. Abriendo Winzard...' 'All set. Opening Winzard...'
 try { Close-WpiSplash } catch {}
 [void]$window.ShowDialog()
 Write-Host ''

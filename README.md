@@ -447,6 +447,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Verificar_Proyecto.ps1 -Co
 
 > 🌍 Winzard is bilingual: <img src="docs/img/wpi-es.png" alt="Spanish version" width="49%"> <img src="docs/img/wpi-en.png" alt="English version" width="49%">
 
+---
+
+## 💜 Support Winzard
+
+Winzard is **free and open source, and it will stay that way** — no paid tiers, no locked features. If it saved you an afternoon of setting up Windows and you feel like giving something back:
+
+- ⭐ **Star the repo** — costs nothing and helps more people find it.
+- 💖 **[GitHub Sponsors](https://github.com/sponsors/Rebel1487)** — one-off or monthly, any amount.
+
+Donations are **100 % optional** and never unlock anything: everything in Winzard is free for everyone, always.
+
+---
+
 ## 🙏 Inspiration & credits
 
 Winzard was born, **with respect and admiration**, from the ecosystem of professional Windows post-install tools. It especially pays tribute to:

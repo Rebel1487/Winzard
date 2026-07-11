@@ -7,6 +7,28 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.2.0] — 2026-07-11  *(app build v7.4)*
+
+The **polish release**: everything new was battle-tested in two more live-fire installs (Windows 11 **and** Windows 10 ISOs built by Winzard itself, installed 100 % unattended in VMs) plus runtime verification on a real PC.
+
+### Added
+- 🛡️ **Premium unattended first boot**: the console is pinned **always-on-top** so nothing covers it; the **screen never sleeps and the PC never suspends** while it works (process-level `SetThreadExecutionState` — it evaporates on reboot and never touches your power settings); a **framed premium status panel** tells you exactly what is happening and what not to touch; the window is **centered and sized for 1080p/1440p/4K** at any DPI.
+- ⚡ **Premium app opening**: installed-app detection now runs **under the startup splash** with its own stage texts — the window appears only when everything is truly loaded, ready to click instantly (measured: interactive in ~25 ms after reveal).
+- 💿 **Rufus with the ISO preloaded**: the "Write to USB" button now launches Rufus with `-i <iso>` so your ISO is already selected (clipboard fallback for older Rufus builds).
+- 🍫 **Chocolatey fallback that actually lands**: winget IDs are mapped to a derived choco candidate (`7zip.7zip` → `7zip`) confirmed with `choco search --exact` before installing, and the whole fallback has a **20-minute cap with process-tree kill** so a stuck choco can never hang the batch.
+- 💜 **Optional donations**: `FUNDING.yml` (GitHub Sponsors) and a support section in both READMEs. Everything stays free, always.
+
+### Fixed
+- 🩹 **Corrupted winget cache on freshly installed Windows (`0x8A15003F`)**: now classified as retryable — Winzard runs `winget source update` and retries those apps once, in the first-boot engine, the GUI worker and the deferred retry script alike.
+- 🖥️ **Window geometry on small screens**: saved (or default) window size is now clamped to the real screen — moving from a big monitor to a smaller display can no longer leave buttons unreachable off-screen (two-part fix, including the XAML minimum width).
+- 🎮 **Xbox debloat protects `Microsoft.Xbox.TCUI`**: the framework was retired from the Store and cannot be reinstalled, so Winzard refuses to remove it (honest notice instead of an irreversible loss).
+- 🧘 **Calm desktop after deferred installs**: the deferred first-sign-in installer (e.g. Discord) now runs the same "serene experience" cleanup, so the desktop ends clean too.
+
+### Docs
+- 📸 **Seven fresh README screenshots** (hero, apps, tweaks, repair, ISO wizard, ES/EN side-by-side) captured at high resolution with this exact build.
+
+---
+
 ## [1.1.0] — 2026-07-10  *(app build v7.4)*
 
 The **verified release**: every section, every button, both languages, exercised one by one on a real PC **twice** (two full verification passes), plus a live-fire test — a custom ISO installed 100 % unattended in a VM with **18/18 apps installing themselves** on first boot. Every bug found on the way was fixed and re-verified.

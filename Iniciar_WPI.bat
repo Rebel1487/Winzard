@@ -17,7 +17,10 @@ if errorlevel 1 (
 )
 net session >nul 2>&1
 if errorlevel 1 (
-    echo [i] Pidiendo permisos de administrador... / Requesting administrator rights...
+    echo.
+    echo    WINZARD se esta preparando... acepta el aviso de permisos para continuar.
+    echo    WINZARD is getting ready... please accept the permissions prompt to continue.
+    echo.
     if "%~1"=="" ( powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs" ) else ( powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs" )
     exit /b
 )
