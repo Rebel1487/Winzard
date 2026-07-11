@@ -464,12 +464,15 @@ Las donaciones son **100 % opcionales** y no desbloquean nada: todo Winzard es g
 
 ## 🙏 Inspiración y créditos
 
-Winzard nace, **con respeto y admiración**, del ecosistema de herramientas profesionales de post-instalación de Windows. En especial, rinde homenaje al trabajo de:
+Winzard nace, **con respeto y admiración**, del ecosistema de herramientas profesionales de post-instalación de Windows. A quien corresponde el mérito, se le da — estos proyectos abrieron el camino, pusieron el listón y demostraron que cuidar Windows puede ser gratis y de código abierto:
 
-- **[Chris Titus Tech](https://github.com/ChrisTitusTech/winutil)** y su **WinUtil** — referencia absoluta del género (de ahí el tema "Azul" como guiño).
-- La comunidad de scripts de *debloat*, *tweaks* y automatización de Windows que lleva años compartiendo conocimiento.
+- **[WinUtil](https://github.com/ChrisTitusTech/winutil)** de **Chris Titus Tech** — la referencia absoluta del género y la mayor inspiración de Winzard. Su enfoque de "todo en una ventana" (instalaciones, tweaks y arreglos) enseñó lo que podía ser un compañero de Windows. El **tema "Azul" de Winzard es un homenaje visual directo** a él.
+- **[Winhance](https://github.com/memstechtips/Winhance)** de **Memory (memstechtips)** — una lección magistral de optimización y debloat de Windows con una interfaz limpia y honesta, y la prueba viva de que un desarrollador en solitario puede sostener una herramienta gratuita y pulida gracias al apoyo de su comunidad.
+- **[Sophia Script for Windows](https://github.com/farag2/Sophia-Script-for-Windows)** de **farag2 y Team Sophia** — la biblioteca de tweaks en PowerShell más grande y rigurosa que existe. Su obsesión por la **reversibilidad y la compatibilidad por versión de Windows** marca el estándar al que Winzard aspira en cada tweak.
+- **[Win11Debloat](https://github.com/Raphire/Win11Debloat)** de **Raphire** — el patrón oro del debloat ligero y sin humo: simple, transparente, eficaz. Gran influencia en la filosofía de Winzard de "quita solo lo que tú elijas, siempre reinstalable".
+- La comunidad de scripts de *debloat*, *tweaks* y automatización de Windows que lleva años compartiendo conocimiento abiertamente.
 
-Sobre esa inspiración, Winzard aporta su **propia visión**: interfaz **bilingüe**, **creador de ISO integrado**, catálogo **curado** de +360 apps, **perfiles** portables y una **suite de reparación por fases** con filosofía anti falsos OK.
+Winzard es una **base de código independiente, escrita desde cero** — el homenaje de arriba es a sus ideas, estándares y generosidad, no a su código. Sobre esa inspiración, Winzard aporta su **propia visión**: interfaz **bilingüe**, **creador de ISO integrado** con instalación 100 % desatendida, catálogo **curado** de +360 apps, **perfiles** portables, un **Gaming Optimizer honesto** y una **suite de reparación por fases** con filosofía anti falsos OK.
 
 ---
 

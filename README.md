@@ -463,12 +463,15 @@ Donations are **100 % optional** and never unlock anything: everything in Winzar
 
 ## 🙏 Inspiration & credits
 
-Winzard was born, **with respect and admiration**, from the ecosystem of professional Windows post-install tools. It especially pays tribute to:
+Winzard was born, **with respect and admiration**, from the ecosystem of professional Windows post-install tools. Credit where credit is due — these projects paved the way, set the bar, and proved that caring for Windows can be free and open source:
 
-- **[Chris Titus Tech](https://github.com/ChrisTitusTech/winutil)** and his **WinUtil** — the absolute reference of the genre (hence the "Blue" theme as a nod).
-- The community of Windows *debloat*, *tweak* and automation scripts that has shared knowledge for years.
+- **[WinUtil](https://github.com/ChrisTitusTech/winutil)** by **Chris Titus Tech** — the absolute reference of the genre and the single biggest inspiration behind Winzard. Its one-window approach to installs, tweaks and fixes showed what a Windows companion could be. Winzard's **"Blue" theme is a direct visual tribute** to it.
+- **[Winhance](https://github.com/memstechtips/Winhance)** by **Memory (memstechtips)** — a masterclass in focused Windows optimization and debloating with a clean, honest interface, and living proof that a solo developer can sustain a polished free tool through community support.
+- **[Sophia Script for Windows](https://github.com/farag2/Sophia-Script-for-Windows)** by **farag2 & Team Sophia** — the largest and most rigorous PowerShell tweak library there is. Its obsession with **reversibility and per-build compatibility** set the standard Winzard aims for in every tweak.
+- **[Win11Debloat](https://github.com/Raphire/Win11Debloat)** by **Raphire** — the gold standard of lightweight, no-nonsense debloating: simple, transparent, effective. A big influence on Winzard's "remove only what you choose, always reinstallable" philosophy.
+- The wider community of Windows *debloat*, *tweak* and automation scripts that has shared its knowledge openly for years.
 
-On top of that inspiration, Winzard brings its **own vision**: a **bilingual** interface, an **integrated ISO creator**, a **curated** catalog of 360+ apps, portable **profiles** and a **phase-based repair suite** with an anti false-OK philosophy.
+Winzard is an **independent codebase, written from scratch** — the tribute above is to their ideas, standards and generosity, not their code. On top of that inspiration, Winzard brings its **own vision**: a **bilingual** interface, an **integrated ISO creator** with 100 % unattended installs, a **curated** catalog of 360+ apps, portable **profiles**, an **honest Gaming Optimizer** and a **phase-based repair suite** with an anti false-OK philosophy.
 
 ---
 
