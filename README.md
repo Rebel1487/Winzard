@@ -454,6 +454,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Verificar_Proyecto.ps1 -Co
 Winzard is **free and open source, and it will stay that way** — no paid tiers, no locked features. If it saved you an afternoon of setting up Windows and you feel like giving something back:
 
 - ⭐ **Star the repo** — costs nothing and helps more people find it.
+- ☕ **[Buy me a coffee on Ko-fi](https://ko-fi.com/rebel1487)** — a quick one-off tip.
 - 💖 **[GitHub Sponsors](https://github.com/sponsors/Rebel1487)** — one-off or monthly, any amount.
 
 Donations are **100 % optional** and never unlock anything: everything in Winzard is free for everyone, always.

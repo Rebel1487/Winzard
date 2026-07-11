@@ -1,6 +1,6 @@
 # Winzard funding model (like winutil / winhance / Sophia Script)
 # This file makes GitHub show the "Sponsor" button at the top of the repo.
 # NOTE for the maintainer: GitHub Sponsors must be enabled on your account
-# (github.com/sponsors) for the button to appear. Add Ko-fi when the account exists.
+# (github.com/sponsors) for that entry to appear.
 github: Rebel1487
-# ko_fi: TU_USUARIO_KOFI   # pendiente: crear cuenta en ko-fi.com y descomentar
+ko_fi: rebel1487
