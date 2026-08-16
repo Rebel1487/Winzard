@@ -17,7 +17,7 @@ Everything you need is already in this repo. Follow the order.
 
 Open PowerShell:
 ```powershell
-cd C:\Users\alex\Desktop\github\Winzard
+cd C:\ruta\a\tu\Winzard
 git remote add origin https://github.com/Rebel1487/Winzard.git
 git push -u origin main
 ```
@@ -45,7 +45,7 @@ On the repo page, top-right in **About** (⚙️):
 - Save them in `docs/img/` with the exact names (`wpi-hero.png`, `wpi-apps.png`, etc.).
 - Push them:
 ```powershell
-cd C:\Users\alex\Desktop\github\Winzard
+cd C:\ruta\a\tu\Winzard
 git add docs/img
 git commit -m "docs: screenshots"
 git push
@@ -58,10 +58,10 @@ The READMEs will show them automatically.
 
 **a) Build the ZIP** (exact bytes, already verified):
 ```powershell
-cd C:\Users\alex\Desktop\github\Winzard
+cd C:\ruta\a\tu\Winzard
 git archive --format=zip -o ..\Winzard-v1.0.0.zip HEAD
 ```
-It lands in `C:\Users\alex\Desktop\github\Winzard-v1.0.0.zip`.
+It lands in `C:\ruta\a\tu\Winzard-v1.0.0.zip`.
 > *(One is already built there; regenerate it with the command above if you make more commits.)*
 
 **b) Publish the Release:**
@@ -85,7 +85,7 @@ It lands in `C:\Users\alex\Desktop\github\Winzard-v1.0.0.zip`.
 ## 🔁 When you make more changes later
 
 ```powershell
-cd C:\Users\alex\Desktop\github\Winzard
+cd C:\ruta\a\tu\Winzard
 git add -A
 git commit -m "describe the change"
 git push

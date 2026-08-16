@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+title: "Winzard"
+message: "If you use this software, please cite it as indicated below."
+type: software
+authors:
+  - name: "<<NOMBRE_LEGAL_PENDIENTE>>"
+    alias: "Rebel1487"
+    affiliation: "Independent"
+repository-code: "https://github.com/Rebel1487/Winzard"
+url: "https://github.com/Rebel1487/Winzard"
+abstract: >-
+  Winzard is a free and open-source all-in-one command centre for Windows 10/11
+  post-install, maintenance and customisation. It installs curated applications
+  through Microsoft's official winget, applies reversible privacy and
+  performance tweaks with per-item state detection, removes bloatware
+  transparently, repairs the system through a 17-phase suite, and builds custom
+  Windows installation images that install fully unattended. Bilingual
+  (English/Spanish), portable, written entirely in PowerShell and WPF.
+keywords:
+  - "windows"
+  - "windows-11"
+  - "windows-10"
+  - "winget"
+  - "powershell"
+  - "debloat"
+  - "tweaks"
+  - "post-install"
+  - "system-repair"
+  - "iso-builder"
+  - "unattended-installation"
+license: MIT
+version: "1.3.0"
+date-released: "2026-08-16"

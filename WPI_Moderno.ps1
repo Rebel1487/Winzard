@@ -1,4 +1,7 @@
-﻿# ============================================================
+﻿# Winzard - https://github.com/Rebel1487/Winzard
+# Copyright (c) 2026 <<NOMBRE_LEGAL_PENDIENTE>> (GitHub: Rebel1487) - creator and founder of the project
+# SPDX-License-Identifier: MIT
+# ============================================================
 # WINZARD (antes WPI Moderno) - Post-instalador premium de Windows
 # GUI WPF de nueva generacion + motor winget asincrono.
 #
@@ -452,35 +455,51 @@ if (-not $PSScriptRoot) {
 }
 
 # --- AUTO-ELEVACION: WPI SIEMPRE debe correr como Administrador ---
-# Tweaks, debloat, Control de Windows Update y reparaciones tocan HKLM y
-# servicios: sin admin fallan. El lanzador Iniciar_WPI.bat ya eleva, pero si se
-# abre el .ps1 directamente (doble clic, acceso directo al .ps1) tambien debe
-# elevarse. Si no es admin, se relanza elevado conservando los argumentos y se
-# cierra esta instancia. NO se eleva en -SelfTestGui (prueba headless). Si el
-# usuario cancela el UAC, se continua sin admin con el aviso de mas abajo.
-if (-not $SelfTestGui -and -not $ExportCatalog) {
-    # F1-B3 (VT2): -ExportCatalog es headless (solo escribe el catalogo); no debe
-    # disparar UAC ni splash, igual que -SelfTestGui.
-    $__isAdminBoot = $false
-    try { $__isAdminBoot = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch {}
-    if (-not $__isAdminBoot) {
-        $__selfPath = $PSCommandPath
-        if (-not $__selfPath) { try { $__selfPath = $MyInvocation.MyCommand.Path } catch {} }
-        if ($__selfPath -and (Test-Path $__selfPath)) {
-            $__argStr = '-NoProfile -ExecutionPolicy Bypass -STA -File "{0}"' -f $__selfPath
-            foreach ($__kv in $PSBoundParameters.GetEnumerator()) {
-                $__val = $__kv.Value
-                if ($__val -is [System.Management.Automation.SwitchParameter]) {
-                    if ($__val.IsPresent) { $__argStr += (' -{0}' -f $__kv.Key) }
-                } else {
-                    $__argStr += (' -{0} "{1}"' -f $__kv.Key, ([string]$__val))
-                }
-            }
-            try {
-                Start-Process -FilePath 'powershell.exe' -ArgumentList $__argStr -Verb RunAs | Out-Null
-                exit 0
-            } catch {}
+# ===================== MODELO DE PRIVILEGIOS (v1.3.0) =====================
+# MINIMO PRIVILEGIO. Winzard arranca SIEMPRE con los permisos con los que se le
+# abre; NUNCA se auto-eleva ni se relanza solo. Antes (<=v1.2.0) esta seccion
+# relanzaba el script elevado nada mas abrirlo: comodo durante el desarrollo,
+# pero significaba pedir administrador para TODO el programa aunque el usuario
+# solo quisiera mirar el catalogo o leer un manual. Eso se ha eliminado.
+#
+# Ahora:
+#   1) Aqui solo se DETECTA el estado (no se exige nada).
+#   2) La cabecera de la ventana muestra si eres Usuario estandar o Administrador.
+#   3) Cada operacion que necesita permisos los pide EN SU MOMENTO, explicando
+#      antes que va a hacer y por que los necesita (elevacion bajo demanda, que
+#      ya existia y se conserva: Suite de Reparacion, ISO, verificador, etc.).
+#   4) Quien prefiera trabajar elevado toda la sesion puede hacerlo de forma
+#      informada desde el aviso inicial (boton "Reiniciar como administrador").
+#
+# $script:IsAdminSession queda disponible para toda la aplicacion.
+$script:IsAdminSession = $false
+try {
+    $script:IsAdminSession = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+} catch {}
+
+# Relanza Winzard elevado SOLO si el usuario lo pide expresamente (nunca solo).
+# Devuelve $true si el relanzamiento se lanzo (el llamante debe cerrar esta
+# instancia); $false si fallo o si el usuario cancelo el aviso de UAC.
+function Request-WpiElevation {
+    $selfPath = $PSCommandPath
+    if (-not $selfPath) { try { $selfPath = $MyInvocation.MyCommand.Path } catch {} }
+    if (-not $selfPath -or -not (Test-Path $selfPath)) { return $false }
+    $argStr = '-NoProfile -ExecutionPolicy Bypass -STA -File "{0}"' -f $selfPath
+    foreach ($kv in $PSBoundParameters.GetEnumerator()) {
+        $val = $kv.Value
+        if ($val -is [System.Management.Automation.SwitchParameter]) {
+            if ($val.IsPresent) { $argStr += (' -{0}' -f $kv.Key) }
+        } else {
+            $argStr += (' -{0} "{1}"' -f $kv.Key, ([string]$val))
         }
+    }
+    try {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList $argStr -Verb RunAs | Out-Null
+        return $true
+    } catch {
+        # El usuario rechazo el UAC (excepcion 1223) o fallo el relanzamiento:
+        # no se reintenta ni se insiste. Se sigue como usuario estandar.
+        return $false
     }
 }
 
@@ -5227,12 +5246,59 @@ if (-not $gotMutex) {
     exit 0
 }
 
-# --- Aviso si no se ejecuta como Administrador ---
+# --- Sesion de usuario estandar: informar y OFRECER elevar (nunca imponerlo) ---
+# v1.3.0 (minimo privilegio): antes esto era un aviso de alarma que mandaba
+# "cerrar y volver a abrir". Ahora es una eleccion informada: se explica que
+# funciona sin permisos, que los necesita, y se ofrece elevar de una vez si el
+# usuario va a hacer varias operaciones seguidas. Decir que NO es perfectamente
+# valido: la aplicacion funciona igual y cada operacion pedira permisos cuando
+# de verdad los necesite.
 try {
-    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    if (-not $isAdmin -and -not $SelfTestGui) {
+    if (-not $script:IsAdminSession -and -not $SelfTestGui -and -not $ExportCatalog) {
         Set-WpiSplashTopmost $false
-        [System.Windows.MessageBox]::Show('Atencion: NO se esta ejecutando como Administrador (se rechazo el aviso de permisos). Muchas instalaciones, tweaks, el Control de Windows Update y el debloat fallaran. Cierra y vuelve a abrir WPI aceptando el aviso de Control de cuentas de usuario (UAC).', 'Winzard', 'OK', 'Warning') | Out-Null
+        $msgStd = @'
+Winzard se esta ejecutando como USUARIO ESTANDAR (sin permisos de administrador).
+
+QUE FUNCIONA YA: el catalogo de aplicaciones, la busqueda, los manuales, el
+resumen del sistema, la informacion de hardware, el visor de registros, las
+guias y los temas e idioma.
+
+QUE NECESITA PERMISOS: instalar y desinstalar programas, los tweaks, el debloat,
+el Control de Windows Update, la Suite de Reparacion y el creador de ISO. Cada
+una de esas operaciones te pedira permiso cuando la ejecutes, y te dira antes
+para que lo necesita.
+
+Si vas a hacer varias de esas operaciones seguidas, puedes reiniciar Winzard
+como administrador ahora y no volver a ver el aviso de Windows.
+
+- SI  = reiniciar Winzard como administrador (Windows te pedira confirmacion)
+- NO  = seguir como usuario estandar (podras elevar despues, operacion a operacion)
+
+------------------------------------------------------------------------------
+
+Winzard is running as a STANDARD USER (no administrator rights).
+
+WORKS RIGHT NOW: the app catalog, search, the manuals, system summary, hardware
+info, the log viewer, the guides, and themes/language.
+
+NEEDS PERMISSIONS: installing/uninstalling apps, tweaks, debloat, Windows Update
+control, the Repair Suite and the ISO builder. Each of those will ask for
+permission when you run it, telling you first what it needs it for.
+
+If you are going to do several of those in a row, you can restart Winzard as
+administrator now and not see the Windows prompt again.
+
+- YES = restart Winzard as administrator (Windows will ask you to confirm)
+- NO  = continue as a standard user (you can still elevate later, per operation)
+'@
+        $resp = [System.Windows.MessageBox]::Show($msgStd, 'Winzard', 'YesNo', 'Information')
+        if ($resp -eq 'Yes') {
+            if (Request-WpiElevation) { exit 0 }
+            # UAC rechazado o fallo el relanzamiento: se continua sin insistir.
+            [System.Windows.MessageBox]::Show(
+                "No se ha elevado (se cancelo el aviso de Windows). Winzard sigue abierto como usuario estandar y cada operacion pedira permisos cuando haga falta.`r`n`r`nNot elevated (the Windows prompt was cancelled). Winzard stays open as a standard user and each operation will ask for permission when needed.",
+                'Winzard', 'OK', 'Information') | Out-Null
+        }
         Set-WpiSplashTopmost $true
     }
 } catch {}

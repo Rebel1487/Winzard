@@ -1,3 +1,6 @@
+# Winzard - https://github.com/Rebel1487/Winzard
+# Copyright (c) 2026 <<NOMBRE_LEGAL_PENDIENTE>> (GitHub: Rebel1487) - creator and founder of the project
+# SPDX-License-Identifier: MIT
 # ============================================================================
 #  WPI - Cerebro de la Suite de Reparacion (helper)
 #  Invocado por el .bat: powershell -File suite_helper.ps1 -Action <accion> ...

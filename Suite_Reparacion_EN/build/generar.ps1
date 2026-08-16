@@ -1,3 +1,6 @@
+# Winzard - https://github.com/Rebel1487/Winzard
+# Copyright (c) 2026 <<NOMBRE_LEGAL_PENDIENTE>> (GitHub: Rebel1487) - creator and founder of the project
+# SPDX-License-Identifier: MIT
 <#
 .SYNOPSIS
     Generador de build de la Suite de Reparacion de Windows (v3.0 "WPI").

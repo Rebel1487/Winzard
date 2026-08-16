@@ -65,3 +65,20 @@ desktop.ini
 # --- Backups de seguridad ---
 *_backup_*/
 *.bak
+
+# --- Marcas de agua privadas de autoria (NUNCA publicar: si se publican pierden su valor) ---
+.watermarks.private.md
+
+# --- INFORMES INTERNOS Y ESTRATEGIA (privados: no se publican) ---
+WINZARD_ENCARGOS_MAESTRO.md
+PLAN_DE_TRABAJO.md
+AUDIT_REPORT.md
+VEREDICTO.md
+INFORME_PRIVILEGIOS.md
+INFORME_SINCRONIZACION.md
+AUDITORIA_TECNICA.md
+ESTRATEGIA_ACTUALIZADA.md
+INCIDENCIAS.md
+PENDIENTE_USUARIO.md
+docs/lanzamiento/PLAN_PROMOCION.md
+docs/lanzamiento/BRIEFING_CREADORES.md

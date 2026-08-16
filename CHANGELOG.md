@@ -7,6 +7,35 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.0] — 2026-08-16  *(app build v7.4)*
+
+The **minimum-privilege release**. Winzard no longer asks for administrator rights just to open, and the integrity manifests of both Repair Suites are correct again. This is a **security and trust release**: no new features, everything you already had, asked for more honestly.
+
+### Changed
+- 🔐 **Winzard starts as a standard user.** The two global pre-emptive elevation points have been removed: `Iniciar_WPI.bat` no longer relaunches itself with `Start-Process -Verb RunAs`, and `WPI_Moderno.ps1` no longer re-spawns elevated and exits at boot. You can now browse the full app catalog, search, read the manuals, inspect hardware, view the system summary and read logs **without granting any permissions at all**.
+- 🧾 **The "not running as administrator" warning is now an informed choice.** The old alarm dialog that told you to *"close and reopen accepting the UAC prompt"* has been replaced by a bilingual dialog that explains what already works, what needs permissions, and offers two buttons: restart elevated, or carry on as a standard user. **Declining is a valid answer** — Winzard keeps working and never nags or retries in a loop.
+- 📖 **README installation instructions** updated: there is no UAC prompt on launch any more.
+
+### Added
+- 🆕 **`Request-WpiElevation`**: elevation now happens **only** on an explicit user request. UAC refusal (exception 1223) is handled calmly instead of breaking the app.
+- 📄 **`SECURITY.md` now documents the full privilege model**: what works without admin, what asks for it and why, **every scheduled task Winzard can create** (`WPI_ReintentoApps`, `WPI_ReintentoManual`, `WPI_Mantenimiento_Mensual` — with the fact that the first one deletes itself), the justification for `ExecutionPolicy Bypass`, and an explicit list of what Winzard **never** does: it never modifies your UAC settings, never uses UAC bypass techniques, never installs services or background agents, never sends telemetry.
+- 🏷️ **Authorship and attribution files**: `NOTICE`, `AUTHORS`, `CITATION.cff` (enables GitHub's "Cite this repository"), `TRADEMARK.md` (bilingual trademark policy) and `THIRD_PARTY_NOTICES.md` (documents that Winzard bundles no third-party code, and credits the projects that inspired it).
+- ✍️ **SPDX headers** (`SPDX-License-Identifier`) on 100 % of the project's own PowerShell sources.
+
+### Fixed
+- 🔏 **Integrity of 8 distributed files.** `Suite_Reparacion_ES/HASHES.sha256` and `Suite_Reparacion_EN/HASHES.sha256` declared stale hashes for 4 + 4 shipped `.bat` files (`Suite_Reparacion_TodoEnUno` / `Repair_Suite_AllInOne`, phases 01, 05 and 14). A user verifying integrity as the README instructs would have got a mismatch. **Both manifests regenerated from the real files.**
+- 🧱 **36 stale build artifacts.** The `build/out` `.bat` files of both suites carried LIBRARY and BRAIN blocks out of sync with the canonical `src/` — they were missing the v3.2 `set "SELF=%~f0"` fix. The shipped root files were always correct, but anyone regenerating from `build/out` would have reintroduced the bug. **Both suites fully regenerated.**
+- 🔤 **`Manuales/generar_manual_completo.ps1`** contained non-ASCII characters **without a BOM**, so Windows PowerShell 5.1 read it as ANSI and mangled the accents. BOM added, per the project's own encoding rule.
+- 🔤 **BOM removed** from `Manuales/en/00_COMPLETE_MANUAL.md` and `Manuales/es/00_MANUAL_COMPLETO.md` (data files must not carry one).
+- 🕵️ **Developer paths removed** from `docs/lanzamiento/PASOS_PUBLICAR.md`, which exposed the developer's Windows username in public documentation.
+
+### Verification
+- ✅ `Verificar_Proyecto.ps1`: **28/28 OK, 0 warnings, 0 failures** (v1.2.0 shipped with **5 failures**).
+- ✅ `Verificar_Proyecto.ps1 -ConsoleSmoke`: **38 OK, 0 failures** — including `/help`, `/version`, `/selftest` and `/dry` on both suites and the WPF GUI self-test.
+- ✅ Full parse of `WPI_Moderno.ps1` clean after every change.
+
+---
+
 ## [1.2.0] — 2026-07-11  *(app build v7.4)*
 
 The **polish release**: everything new was battle-tested in two more live-fire installs (Windows 11 **and** Windows 10 ISOs built by Winzard itself, installed 100 % unattended in VMs) plus runtime verification on a real PC.
