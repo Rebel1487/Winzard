@@ -17,6 +17,13 @@
 
 </div>
 
+> **Creado y mantenido por [Rebel1487](https://github.com/Rebel1487)**
+> Proyecto original: <https://github.com/Rebel1487/Winzard> · Primera publicación: julio de 2026
+>
+> Winzard es software libre. Su uso, copia y modificación están permitidos conforme a la licencia.
+> **La atribución al autor original es obligatoria** y no puede eliminarse.
+> El nombre "Winzard" es una marca del autor y **no** se concede con la licencia de software — ver [TRADEMARK.md](TRADEMARK.md).
+
 <p align="center">
   <img src="docs/img/wpi-hero.png" alt="Winzard — vista principal" width="860">
 </p>
@@ -31,13 +38,15 @@
 
 ---
 
-> ### ✨ Novedades de la 1.1.0 — la versión *verificada*
-> Cada sección y cada botón ejercitados uno a uno, en los dos idiomas, **dos veces**, en un PC real — más una prueba de fuego en VM: una ISO personalizada instalada **100 % desatendida** (ni una sola tecla) y **18/18 apps instalándose solas** en el primer arranque.
-> - 📖 **Lee los manuales dentro de Winzard**: un botón por manual en el Inicio rápido, con ventana de lectura premium — cada botón explicado y con ejemplos prácticos.
-> - ⏳ **Pantalla de carga con barra de progreso** al abrir — la app aparece lista del tirón, nunca a medio dibujar.
-> - 🥇 **Primer arranque premium**: progreso por app + título de ventana en vivo, vigilante anticuelgues, reintento automático de red, y diferidos por tarea elevada — **cero avisos de UAC**.
-> - 🛠️ **14 herramientas rápidas de un clic** en Reparación, sobre el motor asíncrono.
-> - 🧯 Más de 20 bugs reales cazados por la campaña de verificación, arreglados y re-verificados (ver [CHANGELOG](CHANGELOG.md)).
+> ### 🔐 Novedades de la 1.3.0 — la versión de *mínimo privilegio*
+> **Winzard ya no pide permisos de administrador solo para abrirse.** Ahora arranca como **usuario normal**, y solo pide elevación para las operaciones que de verdad la necesitan — diciéndote antes exactamente para qué. Decir que no es una respuesta perfectamente válida: la app sigue funcionando.
+> - 🔓 **Puedes recorrer todo el catálogo de apps, buscar, leer los manuales, ver tu hardware y revisar los registros sin conceder ningún permiso.**
+> - 🧾 **Cada operación con privilegios se explica** antes de que Windows muestre su aviso. Sin insistir y sin bucles de reintento.
+> - 📖 **Modelo de privilegios documentado al detalle** en [SECURITY.md](SECURITY.md) — incluidas todas las tareas programadas que Winzard puede crear y la lista explícita de lo que **nunca** hace (jamás toca tu configuración de UAC).
+> - 🔏 **Integridad reparada**: los manifiestos SHA-256 de las dos Suites de Reparación ya coinciden exactamente con los ficheros distribuidos (en la v1.2.0 había 8 desfasados). Verifica antes de ejecutar.
+> - ✅ **El verificador del proyecto pasa al 100 %** (`Verificar_Proyecto.ps1 -ConsoleSmoke`: 38 comprobaciones OK, 0 fallos).
+>
+> <sub>Anteriormente, en la 1.1.0–1.2.0: cada sección y cada botón ejercitados uno a uno en los dos idiomas, dos veces, en un PC real — más pruebas de fuego en VM donde una ISO personalizada se instaló **100 % desatendida** (ni una sola tecla) y **18/18 apps se instalaron solas** en el primer arranque. Ver el [CHANGELOG](CHANGELOG.md).</sub>
 
 ---
 
@@ -88,6 +97,7 @@ Está construido en **PowerShell + WPF** (la interfaz gráfica nativa de Windows
 | 🛠️ **Suite de reparación de 17 fases** | Bilingüe, autónoma, con filosofía *anti falsos OK*. |
 | 💿 **Creador de ISO personalizada** | Tu Windows ideal en un `.iso` listo para grabar en un USB. |
 | 🌍 **Bilingüe (ES/EN) + 3 temas** | Español o inglés, con tema Claro, Oscuro o Azul. |
+| 🔐 **Mínimo privilegio** | Arranca como **usuario normal**. Solo pide administrador para las operaciones que lo necesitan — y te dice para qué. |
 | ✅ **100% legal y transparente** | Nada de pirateo: todo viene de **winget** y de fuentes oficiales. Acciones con logs. |
 
 ---
@@ -97,7 +107,7 @@ Está construido en **PowerShell + WPF** (la interfaz gráfica nativa de Windows
 - **Windows 10 o 11** (x64).
 - **PowerShell 5.1 o superior** (viene de serie en Windows).
 - **winget / App Installer** (incluido en Windows moderno; si falta, WPI te avisa).
-- **Permisos de administrador** para las operaciones de sistema (Windows pedirá elevación UAC).
+- **Permisos de administrador** *solo* para las operaciones de sistema: Windows los pedirá en ese momento, no al abrir la app.
 - *(Opcional)* **Windows ADK / oscdimg** únicamente si vas a **crear una ISO personalizada**.
 
 ---
@@ -108,15 +118,18 @@ Winzard es *portable*: **no se instala**, se ejecuta.
 
 ```text
 1. Descarga el ZIP del último release.
-2. Extrae el contenido en una carpeta local — por ejemplo  C:\WPI
+2. Extrae el contenido en una carpeta local — por ejemplo  C:\Winzard
 3. Ejecuta  Iniciar_WPI.bat
-4. Acepta la elevación de permisos (UAC) cuando Windows la pida.
-5. Elige idioma y tema, y empieza por la sección que necesites.
+4. Elige idioma y tema, y empieza por la sección que necesites.
 ```
 
-> 💡 **Consejo:** extrae la carpeta en una ruta **sin tildes ni espacios raros** (`C:\WPI` es ideal). El creador de ISO trabaja mejor así.
+> 💡 **Consejo:** extrae la carpeta en una ruta **sin tildes ni espacios raros** (`C:\Winzard` es ideal). El creador de ISO trabaja mejor así.
 
-El lanzador `Iniciar_WPI.bat` se encarga de configurar la codificación UTF-8, pedir permisos de administrador y abrir la interfaz gráfica.
+**Sin aviso de UAC al abrir.** Desde la v1.3.0, el lanzador `Iniciar_WPI.bat` configura la codificación UTF-8 y abre la interfaz **como usuario normal**. Puedes recorrer el catálogo, buscar, leer los manuales, ver tu hardware y revisar los registros de inmediato.
+
+Cuando ejecutes algo que sí necesita permisos de administrador —instalar apps, tweaks, debloat, la Suite de Reparación, el creador de ISO— Winzard pide la elevación **en ese momento**, y te dice para qué. Si vas a hacer varias de esas operaciones seguidas, te ofrece reiniciar elevado una sola vez para no repetir el aviso. Decir que no es perfectamente válido: la app sigue funcionando.
+
+> 🔐 El modelo de privilegios completo, con todas las tareas programadas que Winzard puede crear y todo lo que nunca hace, está documentado en **[SECURITY.md](SECURITY.md)**.
 
 > ℹ️ **Nota:** la app se abre con `Iniciar_WPI.bat` y su ventana muestra **WPI Moderno** — es el nombre del motor interno detrás de **Winzard**.
 
@@ -271,7 +284,7 @@ Esta es la función que eleva a WPI por encima de un simple instalador de apps. 
 
 El **Creador de ISO** parte de una **ISO oficial de Windows** (la que descargas de Microsoft) y la transforma en **tu** ISO: misma base legítima, pero con tu software, tus ajustes y tu cuenta ya integrados. Cuando instales Windows con ella, arrancarás directamente en un sistema limpio, optimizado y **listo para usar**.
 
-Y la instalación es **100 % desatendida de verdad**: clave genérica de instalación integrada (Windows se activa después con normalidad), páginas de región/teclado del OOBE de 25H2 suprimidas — **ni una sola tecla** desde que arranca la ISO hasta el escritorio. El **primer arranque es una experiencia premium en cualquier PC**: las apps se instalan una a una con barra de progreso en vivo, tiempo por app y título de ventana vivo; cada instalador se cierra solo para que nunca se apilen ventanas; un **vigilante anticuelgues** corta cualquier instalación clavada; las que caen por un corte de red se **reintentan solas** al volver la conexión; las apps difíciles se difieren al primer inicio de sesión mediante una **tarea elevada — cero avisos de UAC**; y terminas con un **informe HTML** en el escritorio, un script de reintento sin UAC para lo que fallara y un **punto de restauración "Recién instalado"**.
+Y la instalación es **100 % desatendida de verdad**: clave genérica de instalación integrada (Windows se activa después con normalidad), páginas de región/teclado del OOBE de 25H2 suprimidas — **ni una sola tecla** desde que arranca la ISO hasta el escritorio. El **primer arranque es una experiencia premium en cualquier PC**: las apps se instalan una a una con barra de progreso en vivo, tiempo por app y título de ventana vivo; cada instalador se cierra solo para que nunca se apilen ventanas; un **vigilante anticuelgues** corta cualquier instalación clavada; las que caen por un corte de red se **reintentan solas** al volver la conexión; las apps difíciles se difieren al primer inicio de sesión mediante una **tarea programada que corre elevada y luego se borra sola** (documentada al detalle en [SECURITY.md](SECURITY.md)); y terminas con un **informe HTML** en el escritorio, un script de reintento de un clic para lo que fallara y un **punto de restauración "Recién instalado"**.
 
 ### La genialidad del proceso
 
@@ -428,7 +441,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Verificar_Proyecto.ps1 -Co
 
 - 🚫 **Sin software pirata.** Todo se instala con winget desde manifiestos oficiales.
 - 📜 **Logs de todo.** Las acciones relevantes dejan registro.
-- 🔐 **Administrador solo cuando hace falta.** Las operaciones de sistema piden elevación.
+- 🔐 **Mínimo privilegio.** Winzard arranca como usuario normal y pide administrador **solo** para las operaciones que lo necesitan, explicando para qué. **Nunca** modifica tu configuración de UAC ni usa técnicas de bypass — ver [SECURITY.md](SECURITY.md).
+- 🧩 **Sin servicios, sin agentes en segundo plano, sin telemetría.** Cierras Winzard y no queda nada suyo ejecutándose.
+- 🔏 **Integridad verificable.** Cada versión publica sus hashes SHA-256 en `HASHES.sha256`.
 - 🙈 **Nada privado al repo.** No subas ISOs, logs personales ni informes internos.
 
 ---
@@ -492,6 +507,13 @@ Winzard es una **base de código independiente, escrita desde cero** — el home
 ## 📄 Licencia
 
 Distribuido bajo licencia **MIT**. Consulta **[LICENSE](LICENSE)**. Eres libre de usar, modificar y compartir el proyecto.
+
+Winzard es **gratis y de código abierto, y va a seguir siéndolo** — sin versiones de pago ni funciones bloqueadas. Dos cosas viajan siempre con el código:
+
+- 📛 **La atribución al autor original es obligatoria** y no puede eliminarse (ver [NOTICE](NOTICE) y [AUTHORS](AUTHORS)).
+- 🏷️ **El nombre "Winzard" y su logotipo son marcas** del autor. La licencia de software cubre el *código*, nunca el *nombre* — los forks deben usar otro nombre. Ver **[TRADEMARK.md](TRADEMARK.md)**.
+
+Winzard no incluye código de terceros ni tiene dependencias; los proyectos que lo inspiraron están acreditados en **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)**.
 
 ---
 

@@ -15,15 +15,15 @@ if errorlevel 1 (
     echo     PowerShell is not available on this system. WPI requires it.
     pause & exit /b 1
 )
-net session >nul 2>&1
-if errorlevel 1 (
-    echo.
-    echo    WINZARD se esta preparando... acepta el aviso de permisos para continuar.
-    echo    WINZARD is getting ready... please accept the permissions prompt to continue.
-    echo.
-    if "%~1"=="" ( powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs" ) else ( powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs" )
-    exit /b
-)
+REM ---------------------------------------------------------------------------
+REM  MINIMO PRIVILEGIO (v1.3.0): Winzard arranca como USUARIO NORMAL.
+REM  Ya NO se auto-eleva al abrir. Cada operacion que necesite permisos de
+REM  administrador (DISM, SFC, tweaks en HKLM, debloat, creador de ISO...) los
+REM  pedira en su momento, explicando antes para que los necesita.
+REM  Minimum privilege (v1.3.0): Winzard starts as a STANDARD USER. It no longer
+REM  self-elevates on launch; each operation that needs administrator rights asks
+REM  for them when you run it, telling you first exactly what it is for.
+REM ---------------------------------------------------------------------------
 powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File "%PS1%" %*
 set "EC=%errorlevel%"
 if not "%EC%"=="0" (

@@ -1,3 +1,6 @@
+# Winzard - https://github.com/Rebel1487/Winzard
+# Copyright (c) 2026 Rebel1487 - creator and founder of the project
+# SPDX-License-Identifier: MIT
 param([string]$Iso, [string]$ExpectedLang = '')
 try { $Host.UI.RawUI.WindowTitle = 'WPI - Verificador de ISO' } catch {}
 $ErrorActionPreference = 'SilentlyContinue'

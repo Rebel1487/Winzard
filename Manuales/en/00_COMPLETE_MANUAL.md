@@ -1,4 +1,4 @@
-﻿# WINZARD — COMPLETE MANUAL (English)
+# WINZARD — COMPLETE MANUAL (English)
 
 All the Winzard manuals in a single document. Each section explains what it is, what every button does and how to use it step by step. Each manual is also available separately in this folder — and you can read them all INSIDE Winzard, from the Quick start buttons.
 

@@ -17,6 +17,13 @@
 
 </div>
 
+> **Created and maintained by [Rebel1487](https://github.com/Rebel1487)**
+> Original project: <https://github.com/Rebel1487/Winzard> · First released: July 2026
+>
+> Winzard is free software. Use, copying and modification are permitted under the licence.
+> **Attribution to the original author is required and may not be removed.**
+> The name "Winzard" is a trademark of the author and is **not** granted by the software licence — see [TRADEMARK.md](TRADEMARK.md).
+
 <p align="center">
   <img src="docs/img/wpi-hero.png" alt="Winzard - main view" width="860">
 </p>
@@ -31,13 +38,15 @@
 
 ---
 
-> ### ✨ New in 1.1.0 — the *verified* release
-> Every section and every button exercised one by one, in both languages, **twice**, on a real PC — plus a live-fire VM test: a custom ISO installed **100 % unattended** (not a single keystroke) and **18/18 apps installed themselves** on first boot.
-> - 📖 **Read the manuals inside Winzard**: one button per manual on Quick start, opening a premium reading window — every button explained, with practical examples.
-> - ⏳ **Startup splash with progress bar** — the app appears fully ready, never half-drawn.
-> - 🥇 **Premium first boot**: per-app progress + live window title, anti-hang watchdog, automatic network retry, and deferred installs through an elevated task — **zero UAC prompts**.
-> - 🛠️ **14 one-click quick system tools** in Repair, wired to the async engine.
-> - 🧯 20+ real bugs found by the verification campaign, fixed and re-verified (see [CHANGELOG](CHANGELOG.md)).
+> ### 🔐 New in 1.3.0 — the *minimum privilege* release
+> **Winzard no longer asks for administrator rights just to open.** It now starts as a **standard user**, and only requests elevation for the operations that genuinely need it — telling you first exactly what it is for. Declining is a perfectly valid answer: the app keeps working.
+> - 🔓 **Browse the whole app catalog, search, read the manuals, check your hardware and review the logs with no elevation at all.**
+> - 🧾 **Every privileged operation explains itself** before Windows shows its prompt. No nagging, no retry loops.
+> - 📖 **A fully documented privilege model** in [SECURITY.md](SECURITY.md) — including every scheduled task Winzard can create, and an explicit list of what it *never* does (it never touches your UAC settings).
+> - 🔏 **Integrity fixed**: the SHA-256 manifests of both Repair Suites now match the shipped files exactly (8 files were stale in v1.2.0). Verify before you run.
+> - ✅ **The project verifier passes 100 %** (`Verificar_Proyecto.ps1 -ConsoleSmoke`: 38 checks OK, 0 failures).
+>
+> <sub>Previously, in 1.1.0–1.2.0: every section and button exercised one by one in both languages, twice, on a real PC — plus live-fire VM tests where a custom ISO installed **100 % unattended** (not a single keystroke) and **18/18 apps installed themselves** on first boot. See the [CHANGELOG](CHANGELOG.md).</sub>
 
 ---
 
@@ -88,6 +97,7 @@ It's built on **PowerShell + WPF** (Windows' native GUI framework). No installat
 | 🛠️ **17-phase repair suite** | Bilingual, standalone, with an *anti false-OK* philosophy. |
 | 💿 **Custom ISO creator** | Your ideal Windows as a ready-to-burn `.iso`. |
 | 🌍 **Bilingual (ES/EN) + 3 themes** | Spanish or English, with Light, Dark or Blue theme. |
+| 🔐 **Minimum privilege** | Starts as a **standard user**. Asks for administrator rights only for the operations that need them — and tells you what for. |
 | ✅ **100% legal & transparent** | No piracy: everything comes from **winget** and official sources. Logged actions. |
 
 ---
@@ -108,15 +118,18 @@ Winzard is *portable*: **no install**, just run it.
 
 ```text
 1. Download the latest release ZIP.
-2. Extract it to a local folder — e.g.  C:\WPI
+2. Extract it to a local folder — e.g.  C:\Winzard
 3. Run  Iniciar_WPI.bat
-4. Accept the UAC elevation prompt when Windows asks.
-5. Pick your language and theme, and start with whatever section you need.
+4. Pick your language and theme, and start with whatever section you need.
 ```
 
-> 💡 **Tip:** extract to a path **without accents or odd spaces** (`C:\WPI` is ideal). The ISO creator works best that way.
+> 💡 **Tip:** extract to a path **without accents or odd spaces** (`C:\Winzard` is ideal). The ISO creator works best that way.
 
-The `Iniciar_WPI.bat` launcher sets up UTF-8 encoding, requests administrator rights and opens the GUI.
+**No UAC prompt on launch.** Since v1.3.0 the `Iniciar_WPI.bat` launcher sets up UTF-8 encoding and opens the GUI **as a standard user**. You can browse the catalog, search, read the manuals, inspect your hardware and review logs straight away.
+
+When you run something that genuinely needs administrator rights — installing apps, tweaks, debloat, the Repair Suite, the ISO builder — Winzard asks for elevation **at that moment**, and tells you what it is for. If you are going to do several such operations in a row, it offers to restart elevated once so you are not prompted repeatedly. Saying no is fine: the app carries on.
+
+> 🔐 The full privilege model, including every scheduled task Winzard can create and everything it never does, is documented in **[SECURITY.md](SECURITY.md)**.
 
 > ℹ️ **Note:** the app is launched via `Iniciar_WPI.bat` and its window shows **WPI Moderno** — that's the internal engine name behind **Winzard**.
 
@@ -271,7 +284,7 @@ This is the feature that lifts WPI above a simple app installer. **What if your 
 
 The **ISO Creator** starts from an **official Windows ISO** (the one you download from Microsoft) and turns it into **yours**: same legitimate base, but with your software, your settings and your account already integrated. When you install Windows with it, you boot straight into a clean, optimized and **ready-to-use** system.
 
-And the install itself is **truly 100 % unattended**: generic setup key embedded (Windows activates normally afterwards), the 25H2 OOBE region/keyboard pages suppressed — **not a single keystroke** from booting the ISO to the desktop. The **first boot is a premium experience on any PC**: apps install one by one with a live progress bar, per-app timing and a live window title; each installer closes itself so windows never pile up; a **watchdog** cuts off any stuck install; apps that fail on a network drop are **retried automatically** when connectivity returns; tricky apps are deferred to the first sign-in through an **elevated task — zero UAC prompts**; and you end with an **HTML report** on the desktop, a one-click no-UAC retry script for anything that failed, and a **"Freshly installed" restore point**.
+And the install itself is **truly 100 % unattended**: generic setup key embedded (Windows activates normally afterwards), the 25H2 OOBE region/keyboard pages suppressed — **not a single keystroke** from booting the ISO to the desktop. The **first boot is a premium experience on any PC**: apps install one by one with a live progress bar, per-app timing and a live window title; each installer closes itself so windows never pile up; a **watchdog** cuts off any stuck install; apps that fail on a network drop are **retried automatically** when connectivity returns; tricky apps are deferred to the first sign-in through a **scheduled task that runs elevated and then deletes itself** (fully documented in [SECURITY.md](SECURITY.md)); and you end with an **HTML report** on the desktop, a one-click retry script for anything that failed, and a **"Freshly installed" restore point**.
 
 ### The genius of the process
 
@@ -427,7 +440,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Verificar_Proyecto.ps1 -Co
 
 - 🚫 **No pirated software.** Everything is installed with winget from official manifests.
 - 📜 **Everything is logged.** Relevant actions leave a trail.
-- 🔐 **Admin only when needed.** System operations request elevation.
+- 🔐 **Minimum privilege.** Winzard starts as a standard user and asks for administrator rights **only** for the operations that need them, explaining what for. It **never** modifies your UAC settings and **never** uses UAC bypass techniques — see [SECURITY.md](SECURITY.md).
+- 🧩 **No services, no background agents, no telemetry.** Close Winzard and nothing of it keeps running.
+- 🔏 **Verifiable integrity.** Every release publishes SHA-256 hashes in `HASHES.sha256`.
 - 🙈 **Nothing private to the repo.** Don't upload ISOs, personal logs or internal reports.
 
 ---
@@ -491,6 +506,13 @@ Contributions are welcome! See **[CONTRIBUTING.md](CONTRIBUTING.md)**. Useful id
 ## 📄 License
 
 Released under the **MIT** license. See **[LICENSE](LICENSE)**. You're free to use, modify and share the project.
+
+Winzard is **free and open source, and it will stay that way** — no paid tiers, no locked features. Two things that always travel with the code:
+
+- 📛 **Attribution to the original author is required** and may not be removed (see [NOTICE](NOTICE) and [AUTHORS](AUTHORS)).
+- 🏷️ **The name "Winzard" and its logo are trademarks** of the author. The software licence covers the *code*, never the *name* — forks must use a different name. See **[TRADEMARK.md](TRADEMARK.md)**.
+
+Winzard bundles no third-party code and has no dependencies; the projects that inspired it are credited in **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)**.
 
 ---
 
