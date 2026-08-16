@@ -25,6 +25,7 @@ The **minimum-privilege release**. Winzard no longer asks for administrator righ
 - ✍️ **SPDX headers** (`SPDX-License-Identifier`) on 100 % of the project's own PowerShell sources.
 
 ### Fixed
+- 🧪 **`/dry` really touches nothing now.** The dry-run mode is documented as *"shows what it would do, touching nothing"*, yet phase 16 still wrote an HTML report to disk **and opened it in your browser** — in four separate code paths, in both suites. A simulation that writes files and pops up windows is not a simulation. It now prints what it *would* have generated and writes nothing.
 - 🔏 **Integrity of 8 distributed files.** `Suite_Reparacion_ES/HASHES.sha256` and `Suite_Reparacion_EN/HASHES.sha256` declared stale hashes for 4 + 4 shipped `.bat` files (`Suite_Reparacion_TodoEnUno` / `Repair_Suite_AllInOne`, phases 01, 05 and 14). A user verifying integrity as the README instructs would have got a mismatch. **Both manifests regenerated from the real files.**
 - 🧱 **36 stale build artifacts.** The `build/out` `.bat` files of both suites carried LIBRARY and BRAIN blocks out of sync with the canonical `src/` — they were missing the v3.2 `set "SELF=%~f0"` fix. The shipped root files were always correct, but anyone regenerating from `build/out` would have reintroduced the bug. **Both suites fully regenerated.**
 - 🔤 **`Manuales/generar_manual_completo.ps1`** contained non-ASCII characters **without a BOM**, so Windows PowerShell 5.1 read it as ANSI and mangled the accents. BOM added, per the project's own encoding rule.

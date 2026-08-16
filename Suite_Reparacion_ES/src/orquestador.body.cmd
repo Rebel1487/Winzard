@@ -275,12 +275,18 @@ if not defined SCORE_AFTER (
 )
 if defined SCORE_BEFORE if defined SCORE_AFTER echo    %WH%Salud:%R%  !SCORE_BEFORE!/100  %DIM%-^>%R%  %GR%!SCORE_AFTER!/100%R%
 if not defined SCORE_BEFORE if defined SCORE_AFTER echo    %WH%Salud:%R%  %GR%!SCORE_AFTER!/100%R%
-:: --- (v3.1) generar el informe SIEMPRE, aunque la Fase 16 no se ejecutara ---
-set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
-if not exist "!REPORT!" call :psh report "!REPORT!" > "%CAP%" 2>&1
-if exist "!REPORT!" (
-    echo    %WH%Informe:%R%  !REPORT!
-    if "%MODE_AUTO%"=="0" start "" "!REPORT!"
+:: --- (v3.1) generar el informe aunque la Fase 16 no se ejecutara ---
+:: (v3.3) EXCEPTO en /dry: la simulacion promete "no tocar nada", asi que no
+:: puede escribir un HTML en disco ni abrir una ventana del navegador.
+if not "%DRY%"=="1" (
+    set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+    if not exist "!REPORT!" call :psh report "!REPORT!" > "%CAP%" 2>&1
+    if exist "!REPORT!" (
+        echo    %WH%Informe:%R%  !REPORT!
+        if "%MODE_AUTO%"=="0" start "" "!REPORT!"
+    )
+) else (
+    echo    %DIM%Simulacion: no se genera informe ni se escribe nada en disco.%R%
 )
 :: --- (v3.1) informe JSON opcional (/json) ---
 if "%JSON%"=="1" (
@@ -824,8 +830,14 @@ call :psh score > "%CAP%" 2>&1
 set "SCORE_AFTER="
 for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"SCORE=" "%CAP%"`) do set "SCORE_AFTER=%%a"
 if defined SCORE_AFTER ( call :pshq setafter "!SCORE_AFTER!" & call :info "Salud despues: !SCORE_AFTER!/100" )
-call :step "Generando informe HTML"
-set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
-call :psh report "%REPORT%"
-if exist "%REPORT%" ( call :ok "Informe creado en !REPORT!" & set "PH_NOTE=informe HTML generado" ) else ( call :warn "No se pudo generar el informe HTML" )
+rem (v3.3) en /dry NO se escribe el informe: la simulacion no toca el disco.
+if "%DRY%"=="1" (
+    call :info "Simulacion: aqui se generaria el informe HTML (no se escribe nada)."
+    set "PH_NOTE=simulacion: informe no generado"
+) else (
+    call :step "Generando informe HTML"
+    set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+    call :psh report "!REPORT!"
+    if exist "!REPORT!" ( call :ok "Informe creado en !REPORT!" & set "PH_NOTE=informe HTML generado" ) else ( call :warn "No se pudo generar el informe HTML" )
+)
 exit /b 0

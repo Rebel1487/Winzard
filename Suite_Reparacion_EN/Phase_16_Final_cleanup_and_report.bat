@@ -148,10 +148,16 @@ call :psh score > "%CAP%" 2>&1
 set "SCORE_AFTER="
 for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"SCORE=" "%CAP%"`) do set "SCORE_AFTER=%%a"
 if defined SCORE_AFTER ( call :pshq setafter "!SCORE_AFTER!" & call :info "Health after: !SCORE_AFTER!/100" )
-call :step "Generating HTML report"
-set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
-call :psh report "%REPORT%"
-if exist "%REPORT%" ( call :ok "Report created at !REPORT!" & set "PH_NOTE=HTML report generated" ) else ( call :warn "Could not generate HTML report" )
+rem (v3.3) in /dry NO report is written: a dry run must not touch the disk.
+if "%DRY%"=="1" (
+    call :info "Dry run: the HTML report would be generated here (nothing is written)."
+    set "PH_NOTE=dry run: report not generated"
+) else (
+    call :step "Generating HTML report"
+    set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
+    call :psh report "!REPORT!"
+    if exist "!REPORT!" ( call :ok "Report created at !REPORT!" & set "PH_NOTE=HTML report generated" ) else ( call :warn "Could not generate HTML report" )
+)
 exit /b 0
 :: ======================= LIBRERIA WPI =======================
 :wpi_initcolors

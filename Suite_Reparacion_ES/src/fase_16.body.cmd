@@ -56,8 +56,14 @@ call :psh score > "%CAP%" 2>&1
 set "SCORE_AFTER="
 for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"SCORE=" "%CAP%"`) do set "SCORE_AFTER=%%a"
 if defined SCORE_AFTER ( call :pshq setafter "!SCORE_AFTER!" & call :info "Salud despues: !SCORE_AFTER!/100" )
-call :step "Generando informe HTML"
-set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
-call :psh report "%REPORT%"
-if exist "%REPORT%" ( call :ok "Informe creado en !REPORT!" & set "PH_NOTE=informe HTML generado" ) else ( call :warn "No se pudo generar el informe HTML" )
+rem (v3.3) en /dry NO se escribe el informe: la simulacion no toca el disco.
+if "%DRY%"=="1" (
+    call :info "Simulacion: aqui se generaria el informe HTML (no se escribe nada)."
+    set "PH_NOTE=simulacion: informe no generado"
+) else (
+    call :step "Generando informe HTML"
+    set "REPORT=%WORK%\Informe_%TIMESTAMP%.html"
+    call :psh report "!REPORT!"
+    if exist "!REPORT!" ( call :ok "Informe creado en !REPORT!" & set "PH_NOTE=informe HTML generado" ) else ( call :warn "No se pudo generar el informe HTML" )
+)
 exit /b 0

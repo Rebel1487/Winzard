@@ -360,12 +360,18 @@ if not defined SCORE_AFTER (
 )
 if defined SCORE_BEFORE if defined SCORE_AFTER echo    %WH%Health:%R%  !SCORE_BEFORE!/100  %DIM%-^>%R%  %GR%!SCORE_AFTER!/100%R%
 if not defined SCORE_BEFORE if defined SCORE_AFTER echo    %WH%Health:%R%  %GR%!SCORE_AFTER!/100%R%
-:: --- (v3.1) generar el informe SIEMPRE, aunque la Phase 16 no se ejecutara ---
-set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
-if not exist "!REPORT!" call :psh report "!REPORT!" > "%CAP%" 2>&1
-if exist "!REPORT!" (
-    echo    %WH%Report:%R%  !REPORT!
-    if "%MODE_AUTO%"=="0" start "" "!REPORT!"
+:: --- (v3.1) generar el informe aunque la Phase 16 no se ejecutara ---
+:: (v3.3) EXCEPTO en /dry: la simulacion promete "no tocar nada", asi que no
+:: puede escribir un HTML en disco ni abrir una ventana del navegador.
+if not "%DRY%"=="1" (
+    set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
+    if not exist "!REPORT!" call :psh report "!REPORT!" > "%CAP%" 2>&1
+    if exist "!REPORT!" (
+        echo    %WH%Report:%R%  !REPORT!
+        if "%MODE_AUTO%"=="0" start "" "!REPORT!"
+    )
+) else (
+    echo    %DIM%Dry run: no report is generated and nothing is written to disk.%R%
 )
 :: --- (v3.1) informe JSON opcional (/json) ---
 if "%JSON%"=="1" (
@@ -908,10 +914,16 @@ call :psh score > "%CAP%" 2>&1
 set "SCORE_AFTER="
 for /f "usebackq tokens=2 delims==" %%a in (`findstr /b /c:"SCORE=" "%CAP%"`) do set "SCORE_AFTER=%%a"
 if defined SCORE_AFTER ( call :pshq setafter "!SCORE_AFTER!" & call :info "Health after: !SCORE_AFTER!/100" )
-call :step "Generating HTML report"
-set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
-call :psh report "%REPORT%"
-if exist "%REPORT%" ( call :ok "Report created at !REPORT!" & set "PH_NOTE=HTML report generated" ) else ( call :warn "Could not generate HTML report" )
+rem (v3.3) in /dry NO report is written: a dry run must not touch the disk.
+if "%DRY%"=="1" (
+    call :info "Dry run: the HTML report would be generated here (nothing is written)."
+    set "PH_NOTE=dry run: report not generated"
+) else (
+    call :step "Generating HTML report"
+    set "REPORT=%WORK%\Report_%TIMESTAMP%.html"
+    call :psh report "!REPORT!"
+    if exist "!REPORT!" ( call :ok "Report created at !REPORT!" & set "PH_NOTE=HTML report generated" ) else ( call :warn "Could not generate HTML report" )
+)
 exit /b 0
 :: ======================= LIBRERIA WPI =======================
 :wpi_initcolors

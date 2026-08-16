@@ -47,6 +47,10 @@ Nothing malicious ever happened — the files had been improved after the last h
 Get-FileHash .\WPI_Moderno.ps1 -Algorithm SHA256
 ```
 
+## 🧪 `/dry` really touches nothing now
+
+The Repair Suite's dry-run mode is documented as *"shows what it would do, touching nothing"* — but phase 16 still **wrote an HTML report to disk and opened it in your browser**, in four separate code paths across both suites. A simulation that writes files and pops up windows isn't a simulation. It now prints what it *would* have generated and writes nothing at all.
+
 ## 🧱 Also fixed
 
 - **36 stale build artifacts** in `build/out` of both suites, missing the v3.2 `SELF` fix. The files you actually run were always correct, but regenerating from `build/out` would have reintroduced the bug. Both suites fully regenerated.
