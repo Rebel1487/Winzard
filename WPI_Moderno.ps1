@@ -689,9 +689,191 @@ function Close-WpiSplash {
     $script:SplashPS = $null
 }
 
+# WPF se carga AQUI, antes que nada, porque el selector de idioma y el dialogo
+# premium se muestran mucho antes de que se construya la ventana principal (que
+# es donde historicamente se cargaban estos ensamblados). Sin esto, PowerShell no
+# puede resolver los tipos de WPF y el dialogo falla antes siquiera de abrirse.
+try { Add-Type -AssemblyName PresentationFramework -ErrorAction Stop } catch {}
+try { Add-Type -AssemblyName PresentationCore -ErrorAction SilentlyContinue } catch {}
+try { Add-Type -AssemblyName WindowsBase -ErrorAction SilentlyContinue } catch {}
+
+# ============================================================
+#  DIALOGO PREMIUM REUTILIZABLE (v1.3.0)
+# ------------------------------------------------------------
+#  Sustituye a los MessageBox nativos de Windows, que rompen la estetica de la
+#  app y no permiten controlar el tamano ni el tipo de letra. Ventana WPF propia,
+#  sin bordes, con tarjeta oscura, acento azul y botones grandes.
+#  Devuelve el texto del boton pulsado (o $null si se cierra con Escape).
+#  Funciona ANTES de que exista la ventana principal (selector de idioma) y
+#  tambien despues, como hija de ella.
+# ============================================================
+function Show-WpiPremiumDialog {
+    param(
+        [Parameter(Mandatory)][string]$Title,
+        [Parameter(Mandatory)][string]$Message,
+        [string]$Subtitle = '',
+        [Parameter(Mandatory)][string[]]$Buttons,   # el ULTIMO es el destacado
+        $Owner = $null,                             # sin tipo a proposito: ver nota
+        [int]$Width = 560
+    )
+    # NOTA: $Owner va SIN el tipo [System.Windows.Window] a proposito. PowerShell
+    # resuelve los tipos de los parametros al INVOCAR la funcion, asi que declararlo
+    # hacia que la llamada fallara con "No se encuentra el tipo" en el selector de
+    # idioma, que corre antes de que WPF este disponible en algunos equipos.
+    try {
+        [xml]$xaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
+        Background="Transparent" SizeToContent="Height" Width="$Width"
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="False">
+  <Border Background="#FF1B1F27" CornerRadius="14" BorderBrush="#FF2E3644" BorderThickness="1">
+    <Border.Effect><DropShadowEffect BlurRadius="28" ShadowDepth="6" Opacity="0.55" Color="#FF000000"/></Border.Effect>
+    <StackPanel Margin="0">
+      <Border CornerRadius="14,14,0,0" Height="5">
+        <Border.Background>
+          <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+            <GradientStop Color="#FF2F8FFF" Offset="0"/><GradientStop Color="#FF7A5CFF" Offset="1"/>
+          </LinearGradientBrush>
+        </Border.Background>
+      </Border>
+      <StackPanel Margin="30,24,30,10">
+        <TextBlock x:Name="TxtTitle" Foreground="#FFF2F5FA" FontSize="19" FontWeight="SemiBold"
+                   TextWrapping="Wrap" FontFamily="Segoe UI"/>
+        <TextBlock x:Name="TxtSub" Foreground="#FF8FA0B8" FontSize="12.5" Margin="0,5,0,0"
+                   TextWrapping="Wrap" FontFamily="Segoe UI"/>
+        <TextBlock x:Name="TxtBody" Foreground="#FFC9D4E4" FontSize="13.5" Margin="0,16,0,0"
+                   TextWrapping="Wrap" LineHeight="21" FontFamily="Segoe UI"/>
+      </StackPanel>
+      <StackPanel x:Name="PnlButtons" Orientation="Horizontal" HorizontalAlignment="Right"
+                  Margin="30,10,30,24"/>
+    </StackPanel>
+  </Border>
+</Window>
+"@
+        $rd = New-Object System.Xml.XmlNodeReader $xaml
+        $dlg = [Windows.Markup.XamlReader]::Load($rd)
+        $dlg.FindName('TxtTitle').Text = $Title
+        $sub = $dlg.FindName('TxtSub')
+        if ([string]::IsNullOrWhiteSpace($Subtitle)) { $sub.Visibility = 'Collapsed' } else { $sub.Text = $Subtitle }
+        $dlg.FindName('TxtBody').Text = $Message
+        $pnl = $dlg.FindName('PnlButtons')
+        $script:__dlgResult = $null
+        $i = 0
+        foreach ($b in $Buttons) {
+            $i++
+            $isPrimary = ($i -eq $Buttons.Count)
+            $btn = New-Object System.Windows.Controls.Button
+            $btn.Content = $b
+            $btn.Tag = $b
+            $btn.MinWidth = 120
+            $btn.Height = 38
+            $btn.Margin = '10,0,0,0'
+            $btn.FontSize = 13.5
+            $btn.FontFamily = 'Segoe UI'
+            $btn.Cursor = 'Hand'
+            $btn.BorderThickness = '1'
+            if ($isPrimary) {
+                $btn.Background = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(47,143,255)))
+                $btn.Foreground = [System.Windows.Media.Brushes]::White
+                $btn.FontWeight = 'SemiBold'
+                $btn.BorderBrush = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(47,143,255)))
+            } else {
+                $btn.Background = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(38,44,56)))
+                $btn.Foreground = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(201,212,228)))
+                $btn.BorderBrush = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(62,72,90)))
+            }
+            # OJO, no usar .GetNewClosure() aqui: crea un MODULO nuevo, de modo que
+            # el "$script:" de dentro apunta a ese modulo y no al script real; la
+            # eleccion se guardaba en el sitio equivocado y se perdia (se elegia
+            # English y la app abria en espanol). Sin clausura, $this SI es el boton
+            # pulsado y $script: es el ambito de verdad.
+            $btn.Add_Click({ $script:__dlgResult = [string]$this.Tag; $dlg.Close() })
+            [void]$pnl.Children.Add($btn)
+        }
+        # Arrastrar por cualquier punto de la tarjeta (no hay barra de titulo).
+        $dlg.Add_MouseLeftButtonDown({ try { $dlg.DragMove() } catch {} })
+        $dlg.Add_KeyDown({ if ($_.Key -eq 'Escape') { $dlg.Close() } })
+        if ($Owner) { try { $dlg.Owner = $Owner; $dlg.WindowStartupLocation = 'CenterOwner' } catch {} }
+        else { $dlg.Topmost = $true }
+        [void]$dlg.ShowDialog()
+        return $script:__dlgResult
+    } catch {
+        # Si el dialogo premium fallara por lo que sea, no se deja al usuario
+        # sin respuesta: se recurre al MessageBox clasico.
+        try {
+            $r = [System.Windows.MessageBox]::Show($Message, $Title, 'YesNo', 'Information')
+            if ($r -eq 'Yes') { return $Buttons[-1] } else { return $Buttons[0] }
+        } catch { return $null }
+    }
+}
+
+# ============================================================
+#  SELECTOR DE IDIOMA DEL PRIMER ARRANQUE (v1.3.0)
+# ------------------------------------------------------------
+#  Antes, el primer arranque era SIEMPRE en espanol: quien solo hablara ingles
+#  abria Winzard y lo veia todo en un idioma que no entiende. Ahora, la primera
+#  vez (y solo la primera) se pregunta el idioma, con el del sistema ya
+#  preseleccionado como boton destacado. La eleccion se guarda en
+#  wpi_settings.json y TODO lo demas -incluida la splash- ya carga en ese idioma.
+#  Efecto secundario importante: al conocerse el idioma desde el principio,
+#  ningun mensaje de la app necesita salir duplicado en ES/EN.
+# ============================================================
+function Get-WpiSavedLang {
+    try {
+        if (Test-Path $Config.SettingsFile) {
+            $j = Get-Content $Config.SettingsFile -Raw | ConvertFrom-Json
+            $v = [string]$j.Lang
+            if ($v -eq 'en' -or $v -eq 'es') { return $v }
+        }
+    } catch {}
+    return $null
+}
+function Set-WpiSavedLang([string]$Lang) {
+    try {
+        $obj = $null
+        if (Test-Path $Config.SettingsFile) {
+            try { $obj = Get-Content $Config.SettingsFile -Raw | ConvertFrom-Json } catch { $obj = $null }
+        }
+        if (-not $obj) { $obj = [pscustomobject]@{} }
+        $obj | Add-Member -NotePropertyName 'Lang' -NotePropertyValue $Lang -Force
+        $json = $obj | ConvertTo-Json -Depth 8
+        [IO.File]::WriteAllText($Config.SettingsFile, $json, (New-Object System.Text.UTF8Encoding $false))
+    } catch {}
+}
+function Show-WpiLanguagePicker {
+    # Se muestra SIEMPRE al abrir, no solo la primera vez: es un unico clic, da
+    # la bienvenida y permite cambiar de idioma al vuelo (algo que, si no, obliga
+    # a reiniciar la app desde la cabecera). Para que no estorbe, el idioma que
+    # ya usabas viene DESTACADO: pulsar y entrar.
+    $saved = Get-WpiSavedLang
+    if ($saved) {
+        $preferEs = ($saved -eq 'es')
+    } else {
+        # Sin eleccion previa: se propone el idioma del propio Windows.
+        $preferEs = $false
+        try { $preferEs = ([System.Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName -eq 'es') } catch {}
+    }
+    # El boton DESTACADO es el ULTIMO del array.
+    $buttons = if ($preferEs) { @('English', 'Espanol') } else { @('Espanol', 'English') }
+    $choice = Show-WpiPremiumDialog `
+        -Title 'Winzard' `
+        -Subtitle 'Choose your language  ·  Elige tu idioma' `
+        -Message ("Winzard is fully bilingual: the interface, the manuals and the logs.`r`n`r`n" +
+                  "Winzard es completamente bilingue: la interfaz, los manuales y los registros.") `
+        -Buttons $buttons -Width 520
+    # Si se cierra con Escape se respeta lo que ya hubiera (o el idioma del sistema).
+    $lang = if ($choice -eq 'English') { 'en' }
+            elseif ($choice -eq 'Espanol') { 'es' }
+            elseif ($saved) { $saved }
+            elseif ($preferEs) { 'es' } else { 'en' }
+    Set-WpiSavedLang $lang
+}
+
 # La splash SOLO tiene sentido cuando va a abrirse la ventana principal:
 # nunca en -SelfTestGui/-BuildIsoKit/-ExportCatalog (F1-B3) ni en el desatendido.
 if (-not $SelfTestGui -and -not $BuildIsoKit -and -not $ExportCatalog -and -not ($Preset -or $Tweaks -or $Debloat -or $Update -or $ProfilePath -or $FirstBoot)) {
+    Show-WpiLanguagePicker
     Show-WpiSplash
 }
 # ============================================================
@@ -5246,62 +5428,13 @@ if (-not $gotMutex) {
     exit 0
 }
 
-# --- Sesion de usuario estandar: informar y OFRECER elevar (nunca imponerlo) ---
-# v1.3.0 (minimo privilegio): antes esto era un aviso de alarma que mandaba
-# "cerrar y volver a abrir". Ahora es una eleccion informada: se explica que
-# funciona sin permisos, que los necesita, y se ofrece elevar de una vez si el
-# usuario va a hacer varias operaciones seguidas. Decir que NO es perfectamente
-# valido: la aplicacion funciona igual y cada operacion pedira permisos cuando
-# de verdad los necesite.
-try {
-    if (-not $script:IsAdminSession -and -not $SelfTestGui -and -not $ExportCatalog) {
-        Set-WpiSplashTopmost $false
-        $msgStd = @'
-Winzard se esta ejecutando como USUARIO ESTANDAR (sin permisos de administrador).
-
-QUE FUNCIONA YA: el catalogo de aplicaciones, la busqueda, los manuales, el
-resumen del sistema, la informacion de hardware, el visor de registros, las
-guias y los temas e idioma.
-
-QUE NECESITA PERMISOS: instalar y desinstalar programas, los tweaks, el debloat,
-el Control de Windows Update, la Suite de Reparacion y el creador de ISO. Cada
-una de esas operaciones te pedira permiso cuando la ejecutes, y te dira antes
-para que lo necesita.
-
-Si vas a hacer varias de esas operaciones seguidas, puedes reiniciar Winzard
-como administrador ahora y no volver a ver el aviso de Windows.
-
-- SI  = reiniciar Winzard como administrador (Windows te pedira confirmacion)
-- NO  = seguir como usuario estandar (podras elevar despues, operacion a operacion)
-
-------------------------------------------------------------------------------
-
-Winzard is running as a STANDARD USER (no administrator rights).
-
-WORKS RIGHT NOW: the app catalog, search, the manuals, system summary, hardware
-info, the log viewer, the guides, and themes/language.
-
-NEEDS PERMISSIONS: installing/uninstalling apps, tweaks, debloat, Windows Update
-control, the Repair Suite and the ISO builder. Each of those will ask for
-permission when you run it, telling you first what it needs it for.
-
-If you are going to do several of those in a row, you can restart Winzard as
-administrator now and not see the Windows prompt again.
-
-- YES = restart Winzard as administrator (Windows will ask you to confirm)
-- NO  = continue as a standard user (you can still elevate later, per operation)
-'@
-        $resp = [System.Windows.MessageBox]::Show($msgStd, 'Winzard', 'YesNo', 'Information')
-        if ($resp -eq 'Yes') {
-            if (Request-WpiElevation) { exit 0 }
-            # UAC rechazado o fallo el relanzamiento: se continua sin insistir.
-            [System.Windows.MessageBox]::Show(
-                "No se ha elevado (se cancelo el aviso de Windows). Winzard sigue abierto como usuario estandar y cada operacion pedira permisos cuando haga falta.`r`n`r`nNot elevated (the Windows prompt was cancelled). Winzard stays open as a standard user and each operation will ask for permission when needed.",
-                'Winzard', 'OK', 'Information') | Out-Null
-        }
-        Set-WpiSplashTopmost $true
-    }
-} catch {}
+# --- Sesion de usuario estandar ---
+# v1.3.0 (minimo privilegio): aqui NO se muestra ningun aviso. Un dialogo modal
+# durante el arranque competia con la pantalla de carga (el logo lo tapaba) y,
+# sobre todo, habria salido en CADA arranque: justo el "dar la lata" que este
+# modelo promete no hacer.
+# El aviso se muestra UNA SOLA VEZ, ya con la ventana principal abierta, con el
+# idioma del usuario y texto breve. Ver Show-WpiStandardUserNotice mas abajo.
 
 # ----------- WORKER ASINCRONO (corre en otro hilo) ----------
 # Toda operacion pesada (instalar, validar, actualizar, tweaks)
@@ -6418,6 +6551,9 @@ $script:TrMap = @{}
 # << TRMAP_ENTRIES >>
 $script:TrMap['motor winget asincrono']='async winget engine'
 $script:TrMap['Instalador Post-Windows']='Post-Windows Installer'
+# v1.3.0: estado de permisos mostrado en el titulo de la ventana.
+$script:TrMap['Usuario normal']='Standard user'
+$script:TrMap['Administrador']='Administrator'
 $script:TrMap['Tema: Oscuro']='Theme: Dark'
 $script:TrMap['Tema: Claro']='Theme: Light'
 $script:TrMap['Tema: Azul (Chris Titus)']='Theme: Blue (Chris Titus)'
@@ -8888,6 +9024,12 @@ $Theme = @{
 $panel = $window.FindName('Lists')
 $window.FindName('VerText').Text = (('v{0}{1}' -f $WpiVersion, $script:SepText) + (Tr 'motor winget asincrono'))
 $window.Title = (('Winzard v{0}  -  ' -f $WpiVersion) + (Tr 'Instalador Post-Windows'))
+# v1.3.0 (minimo privilegio): el estado de permisos se ve de un vistazo en el
+# titulo, sin ningun dialogo que interrumpa. Si hace falta elevar, cada operacion
+# lo pedira en su momento; no se avisa por adelantado ni se da la lata al abrir.
+try {
+    $window.Title += if ($script:IsAdminSession) { '  -  ' + (Tr 'Administrador') } else { '  -  ' + (Tr 'Usuario normal') }
+} catch {}
 # F1-B1 / F7-B2 / F7-B5 (VT2): relanzado UNICO del proceso (tema, idioma, catalogo,
 # guias). Antes cada sitio lanzaba powershell SIN -STA (WPF lo exige explicito en
 # lanzadores no interactivos) y SIN frenar el worker: cambiar tema/idioma con una
@@ -17572,6 +17714,7 @@ $script:GamingPauseList = @()   # FASE B1: lista de pausa del Gaming Optimizer (
 $script:GamingGames = @()       # FASE B2: juegos asociados (Exe/Profile/UsePause)
 $script:GamingWatchEnabled = $false   # FASE B2: interruptor maestro del vigilante (OFF por defecto)
 $script:GamingMuteToasts = $false     # S10-ter: silenciar notificaciones durante la sesion (OFF por defecto)
+$script:AdminNoticeShown = $false     # v1.3.0: el aviso de usuario estandar se muestra UNA sola vez
 function Load-Settings {
     try {
         if (Test-Path $Config.SettingsFile) {
@@ -17598,6 +17741,7 @@ function Load-Settings {
             if ($null -ne $s.PSObject.Properties['GamingPauseList'] -and $s.GamingPauseList) { $script:GamingPauseList = @($s.GamingPauseList | ForEach-Object { [string]$_ }) }
             if ($null -ne $s.PSObject.Properties['GamingWatch']) { $script:GamingWatchEnabled = [bool]$s.GamingWatch }
             if ($null -ne $s.PSObject.Properties['GamingMuteToasts']) { $script:GamingMuteToasts = [bool]$s.GamingMuteToasts }
+            if ($null -ne $s.PSObject.Properties['AdminNoticeShown']) { $script:AdminNoticeShown = [bool]$s.AdminNoticeShown }
             if ($null -ne $s.PSObject.Properties['GamingGames'] -and $s.GamingGames) { $script:GamingGames = @($s.GamingGames | ForEach-Object { [pscustomobject]@{ Exe = [string]$_.Exe; Profile = [string]$_.Profile; UsePause = [bool]$_.UsePause } }) }
         }
     } catch {}
@@ -17619,6 +17763,7 @@ function Save-Settings {
             InstallScope        = [string]$script:InstallScope
             ChocoFallback       = [bool]$script:ChocoFallback
             LastSelection       = $sel
+            AdminNoticeShown    = [bool]$script:AdminNoticeShown
             WinGeom             = $geom
             Theme               = [string]$script:ThemeName
             Lang                = [string]$script:Lang
@@ -18686,6 +18831,71 @@ try {
     [void]$__wuPS.Invoke()
     $__wuPS.Dispose(); $__wuRS.Close(); $__wuRS.Dispose()
 } catch {}
+
+# --- Sin aviso de permisos al arrancar (v1.3.0) ---
+# Se probo mostrar un dialogo informando de que la sesion es de usuario normal y
+# se descarto: obligaba a pasar por DOS ventanas antes de usar la app (idioma +
+# permisos) y su boton de elevar provocaba un segundo arranque desconcertante.
+# Con una basta. El estado de permisos se ve en el TITULO de la ventana, y cada
+# operacion que necesita administrador lo pide en su momento explicando para que,
+# que es justo lo que promete el modelo de minimo privilegio.
+# La funcion se conserva SIN USO por si alguna vez se quiere ofrecer desde un
+# boton de la interfaz (elevacion voluntaria), nunca automatica al abrir.
+function Show-WpiStandardUserNotice {
+    if ($script:IsAdminSession -or $SelfTestGui -or $ExportCatalog) { return }
+    try {
+        # El idioma ya se conoce (se eligio en el primer arranque), asi que el
+        # texto va SOLO en el idioma del usuario: ni duplicados ni parrafos dobles.
+        $en = ($script:Lang -eq 'en')
+        if ($en) {
+            $btnElev  = 'Restart as administrator'
+            $btnStay  = 'Continue as standard user'
+            $dlgTitle = 'You are running Winzard as a standard user'
+            $dlgSub   = 'This is the normal way to use it  -  shown only once'
+            $dlgBody  = @"
+Browse the app catalog, read the manuals and check your system right away - none of that needs permissions.
+
+Operations that do need administrator rights (installing apps, tweaks, debloat, the Repair Suite, the ISO builder) will ask for them when you run each one, and will tell you exactly what for.
+
+If you plan to do several of those in a row, you can restart elevated now instead.
+"@
+        } else {
+            $btnElev  = 'Reiniciar como administrador'
+            $btnStay  = 'Seguir como usuario normal'
+            $dlgTitle = 'Estas usando Winzard como usuario normal'
+            $dlgSub   = 'Es la forma habitual de usarlo  -  solo se muestra una vez'
+            $dlgBody  = @"
+Puedes recorrer el catalogo, leer los manuales y consultar tu sistema desde ya: nada de eso necesita permisos.
+
+Las operaciones que si necesitan administrador (instalar apps, tweaks, debloat, la Suite de Reparacion, el creador de ISO) te los pediran al ejecutar cada una, diciendote exactamente para que.
+
+Si vas a hacer varias de esas seguidas, puedes reiniciar elevado ahora.
+"@
+        }
+        $choice = Show-WpiPremiumDialog -Owner $window -Width 600 `
+                    -Title $dlgTitle -Subtitle $dlgSub -Message $dlgBody `
+                    -Buttons @($btnElev, $btnStay)
+        # Se marca como visto pase lo que pase: no se insiste en arranques futuros.
+        $script:AdminNoticeShown = $true
+        try { Save-Settings } catch {}
+        if ($choice -eq $btnElev) {
+            if (Request-WpiElevation) { $window.Close(); exit 0 }
+            # UAC rechazado (1223) o fallo el relanzamiento: se sigue sin insistir.
+            if ($en) {
+                $t2 = 'Not elevated'
+                $m2 = 'The Windows prompt was cancelled. Winzard stays open and each operation will ask for permission when it needs it.'
+                $b2 = 'OK'
+            } else {
+                $t2 = 'No se ha elevado'
+                $m2 = 'Se cancelo el aviso de Windows. Winzard sigue abierto y cada operacion pedira permisos cuando los necesite.'
+                $b2 = 'Entendido'
+            }
+            Show-WpiPremiumDialog -Owner $window -Width 520 -Title $t2 -Message $m2 -Buttons @($b2) | Out-Null
+        }
+    } catch {}
+}
+# (Sin enganche a ContentRendered: al abrir NO se muestra ningun dialogo de
+#  permisos. Ver la nota sobre minimo privilegio justo encima.)
 
 # La ventana principal ya esta lista: la splash se retira SIEMPRE justo antes
 # de mostrarla (Close-WpiSplash es inofensiva si nunca llego a crearse).

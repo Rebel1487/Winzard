@@ -12,9 +12,21 @@ Now Winzard **starts as a standard user**, and these work with no permissions at
 
 > the app catalogue (browse, search, select) · global search · installed-app detection · save/load profile · winget search · hardware and driver info · system summary · guides · **all the manuals** · the log viewer · theme and language
 
-Operations that genuinely need administrator rights — installing apps, tweaks, debloat, Windows Update control, the Repair Suite, the ISO builder — **ask for elevation at the moment you run them, and tell you what it's for**. If you're going to do several in a row, Winzard offers to restart elevated once so you're not prompted repeatedly.
+Operations that genuinely need administrator rights — installing apps, tweaks, debloat, Windows Update control, the Repair Suite, the ISO builder — **ask for elevation at the moment you run them, and tell you what it's for**.
 
 **Saying no is a valid answer.** Decline the Windows prompt and Winzard tells you calmly and carries on. No nagging, no retry loops.
+
+**And no warning at startup either.** Winzard says nothing about permissions when it opens — the window title just shows *Standard user* or *Administrator*. One less window between you and the app.
+
+## 🌍 Pick your language when you open it
+
+Winzard used to start in Spanish on a first run regardless of your system — an English speaker opened it and found an interface they couldn't read. Now a quick one-click card lets you choose **English or Spanish every time you launch**, with your previous choice already highlighted. Interface, manuals, logs and even the startup splash load in that language.
+
+A side effect worth having: because the language is known from the very start, **no dialog is duplicated in two languages any more**. Everything you read is half as long.
+
+## 🎨 Premium dialogs
+
+Windows message boxes are gone from the startup flow. Winzard now uses its own WPF dialog — rounded card, accent gradient, large buttons, draggable from anywhere, Escape to dismiss.
 
 ## 📖 A privilege model you can actually audit
 

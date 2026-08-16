@@ -45,6 +45,8 @@ Elevation is requested **at the moment you run the operation**, never up front:
 
 If you decline the Windows prompt, Winzard **accepts the refusal**, tells you calmly and carries on as a standard user. It never loops or nags.
 
+Winzard also shows **no permission warning at startup**. The window title simply reads *Standard user* or *Administrator*. If you want a fully elevated session, launch it with right-click → *Run as administrator*.
+
 ### Scheduled tasks Winzard can create
 
 Full disclosure, because scheduled tasks with elevated privileges deserve it:

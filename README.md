@@ -127,7 +127,11 @@ Winzard is *portable*: **no install**, just run it.
 
 **No UAC prompt on launch.** Since v1.3.0 the `Iniciar_WPI.bat` launcher sets up UTF-8 encoding and opens the GUI **as a standard user**. You can browse the catalog, search, read the manuals, inspect your hardware and review logs straight away.
 
-When you run something that genuinely needs administrator rights — installing apps, tweaks, debloat, the Repair Suite, the ISO builder — Winzard asks for elevation **at that moment**, and tells you what it is for. If you are going to do several such operations in a row, it offers to restart elevated once so you are not prompted repeatedly. Saying no is fine: the app carries on.
+When you run something that genuinely needs administrator rights — installing apps, tweaks, debloat, the Repair Suite, the ISO builder — Winzard asks for elevation **at that moment**, and tells you what it is for. Saying no is fine: the app carries on.
+
+**No nagging at startup.** Winzard never warns you about permissions when it opens — the window title simply shows whether you are running as *Standard user* or *Administrator*, and that's it. If you prefer to work elevated for a whole session, launch it with right-click → *Run as administrator*.
+
+> 🌍 **Pick your language when you open it.** A quick one-click card lets you choose English or Spanish every time you launch, with your last choice already highlighted. The whole app — interface, manuals and logs — loads in that language.
 
 > ⏳ **The first launch takes longer — that's normal.** Under the startup splash, Winzard scans your PC with winget to detect which catalog apps you already have (that's how it later shows them in green with your installed version). On a first run it also refreshes winget's sources. Give it a moment: the window appears only when everything is genuinely ready, never half-drawn.
 

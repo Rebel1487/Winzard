@@ -13,7 +13,9 @@ The **minimum-privilege release**. Winzard no longer asks for administrator righ
 
 ### Changed
 - 🔐 **Winzard starts as a standard user.** The two global pre-emptive elevation points have been removed: `Iniciar_WPI.bat` no longer relaunches itself with `Start-Process -Verb RunAs`, and `WPI_Moderno.ps1` no longer re-spawns elevated and exits at boot. You can now browse the full app catalog, search, read the manuals, inspect hardware, view the system summary and read logs **without granting any permissions at all**.
-- 🧾 **The "not running as administrator" warning is now an informed choice.** The old alarm dialog that told you to *"close and reopen accepting the UAC prompt"* has been replaced by a bilingual dialog that explains what already works, what needs permissions, and offers two buttons: restart elevated, or carry on as a standard user. **Declining is a valid answer** — Winzard keeps working and never nags or retries in a loop.
+- 🧾 **No permission warning at startup at all.** The old alarm dialog that told you to *"close and reopen accepting the UAC prompt"* is gone. Winzard now says nothing about permissions when it opens: the **window title** shows whether you are a *Standard user* or an *Administrator*, and each operation asks for elevation when it actually needs it. One less window between you and the app.
+- 🌍 **Language picker on launch.** Winzard used to start in Spanish on a first run regardless of your system, so an English speaker opened it and found an interface they couldn't read. A quick one-click card now lets you choose English or Spanish every time you launch, with your previous choice (or your Windows language, on a first run) already highlighted. Everything — interface, manuals, logs and the startup splash — loads in that language.
+- 🎨 **Premium dialogs instead of Windows message boxes.** Winzard's own WPF dialog: rounded card, accent gradient, large buttons, draggable, Escape to dismiss. Because the language is known from the start, **no dialog needs to be duplicated in two languages any more**.
 - 📖 **README installation instructions** updated: there is no UAC prompt on launch any more.
 
 ### Added
