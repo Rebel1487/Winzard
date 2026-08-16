@@ -129,6 +129,8 @@ Winzard is *portable*: **no install**, just run it.
 
 When you run something that genuinely needs administrator rights — installing apps, tweaks, debloat, the Repair Suite, the ISO builder — Winzard asks for elevation **at that moment**, and tells you what it is for. If you are going to do several such operations in a row, it offers to restart elevated once so you are not prompted repeatedly. Saying no is fine: the app carries on.
 
+> ⏳ **The first launch takes longer — that's normal.** Under the startup splash, Winzard scans your PC with winget to detect which catalog apps you already have (that's how it later shows them in green with your installed version). On a first run it also refreshes winget's sources. Give it a moment: the window appears only when everything is genuinely ready, never half-drawn.
+
 > 🔐 The full privilege model, including every scheduled task Winzard can create and everything it never does, is documented in **[SECURITY.md](SECURITY.md)**.
 
 > ℹ️ **Note:** the app is launched via `Iniciar_WPI.bat` and its window shows **WPI Moderno** — that's the internal engine name behind **Winzard**.

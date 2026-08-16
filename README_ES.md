@@ -129,6 +129,8 @@ Winzard es *portable*: **no se instala**, se ejecuta.
 
 Cuando ejecutes algo que sí necesita permisos de administrador —instalar apps, tweaks, debloat, la Suite de Reparación, el creador de ISO— Winzard pide la elevación **en ese momento**, y te dice para qué. Si vas a hacer varias de esas operaciones seguidas, te ofrece reiniciar elevado una sola vez para no repetir el aviso. Decir que no es perfectamente válido: la app sigue funcionando.
 
+> ⏳ **La primera vez tarda más en abrir, y es normal.** Bajo la pantalla de carga, Winzard escanea tu PC con winget para detectar qué apps del catálogo ya tienes (por eso luego te las marca en verde con tu versión instalada). En el primer arranque, además, actualiza las fuentes de winget. Dale un momento: la ventana aparece solo cuando todo está de verdad listo, nunca a medio dibujar.
+
 > 🔐 El modelo de privilegios completo, con todas las tareas programadas que Winzard puede crear y todo lo que nunca hace, está documentado en **[SECURITY.md](SECURITY.md)**.
 
 > ℹ️ **Nota:** la app se abre con `Iniciar_WPI.bat` y su ventana muestra **WPI Moderno** — es el nombre del motor interno detrás de **Winzard**.
