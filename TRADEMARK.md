@@ -2,7 +2,7 @@
 
 > 🇪🇸 Versión en español más abajo.
 
-"**Winzard**" and its logo are trademarks of <<NOMBRE_LEGAL_PENDIENTE>> (GitHub: [Rebel1487](https://github.com/Rebel1487)), creator and founder of the project.
+"**Winzard**" and its logo are trademarks of Rebel1487 (GitHub: [Rebel1487](https://github.com/Rebel1487)), creator and founder of the project.
 
 ## What you CAN do without permission
 
@@ -21,13 +21,13 @@
 
 The software licence covers the **code**. It grants **no rights whatsoever over the trademarks**. These are independent and cumulative rights.
 
-For trademark use requests: <<EMAIL_PENDIENTE>>
+For trademark use requests: https://github.com/Rebel1487/Winzard/issues
 
 ---
 
 # Política de Marca — Winzard
 
-"**Winzard**" y su logotipo son marcas de <<NOMBRE_LEGAL_PENDIENTE>> (GitHub: [Rebel1487](https://github.com/Rebel1487)), creador y fundador del proyecto.
+"**Winzard**" y su logotipo son marcas de Rebel1487 (GitHub: [Rebel1487](https://github.com/Rebel1487)), creador y fundador del proyecto.
 
 ## Qué SÍ puedes hacer sin permiso
 
@@ -46,4 +46,4 @@ For trademark use requests: <<EMAIL_PENDIENTE>>
 
 La licencia de software cubre el **código**. **No concede derecho alguno sobre las marcas.** Son derechos independientes y acumulativos.
 
-Para solicitudes de uso de marca: <<EMAIL_PENDIENTE>>
+Para solicitudes de uso de marca: https://github.com/Rebel1487/Winzard/issues

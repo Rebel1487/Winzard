@@ -1,5 +1,5 @@
 ﻿# Winzard - https://github.com/Rebel1487/Winzard
-# Copyright (c) 2026 <<NOMBRE_LEGAL_PENDIENTE>> (GitHub: Rebel1487) - creator and founder of the project
+# Copyright (c) 2026 Rebel1487 - creator and founder of the project
 # SPDX-License-Identifier: MIT
 # Genera el manual COMPLETO de cada idioma concatenando los manuales por seccion,
 # con indice al principio. Ejecutalo tras editar cualquier manual individual.

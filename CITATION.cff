@@ -3,7 +3,7 @@ title: "Winzard"
 message: "If you use this software, please cite it as indicated below."
 type: software
 authors:
-  - name: "<<NOMBRE_LEGAL_PENDIENTE>>"
+  - name: "Rebel1487"
     alias: "Rebel1487"
     affiliation: "Independent"
 repository-code: "https://github.com/Rebel1487/Winzard"
