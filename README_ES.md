@@ -38,7 +38,17 @@
 
 ---
 
-> ### 🔐 Novedades de la 1.3.0 — la versión de *mínimo privilegio*
+> ### 🔎 Novedades de la 1.3.1 — la versión de *resultados honestos*
+> Una auditoría externa de la v1.3.0 encontró que Winzard **daba por buenas varias cosas sin haberlas comprobado** — justo lo contrario de lo que este proyecto dice de sí mismo. Todo lo que se pudo reproducir en el código está corregido, y cada arreglo probado contra el fallo concreto. Sin funciones nuevas y sin reescribir nada.
+> - 🔴 **Una ISO incompleta podía declararse lista para grabar.** Que faltara el `autounattend.xml` no contaba como fallo grave, así que el veredicto seguía diciendo *"ISO LISTA PARA GRABAR"*; y las cinco copias con `robocopy` ignoraban su resultado, así que una copia fallida pasaba desapercibida. Ahora se comprueban las dos puntas — incluida la copia del verificador que va dentro de cada kit generado.
+> - 🔴 **`-DryRun` no era una simulación**: seguía usando la red y refrescando las fuentes de winget. Ahora de verdad no cambia nada.
+> - 🔴 **Una errata podía lanzar una reparación real.** `/auto /drry` ignoraba el error en silencio y reparaba de verdad. Ahora un argumento desconocido detiene la suite sin ejecutar nada — y `-Update` ya no convierte una errata en `winget upgrade --all`.
+> - 🏷️ **Una ISO destructiva ahora se identifica sola**: `_BORRA-DISCO0` en el nombre y un aviso en la raíz de la imagen. La opción se queda —es lo que permite la instalación de cero teclas—, pero el archivo es honesto sobre lo que es.
+> - 🧹 Los temporales ya no se acumulan (había 96) y la autoactualización sin firma queda desactivada.
+>
+> Detalle completo en las [notas de la versión](RELEASE_NOTES_v1.3.1.md).
+
+> ### 🔐 Anteriormente, en la 1.3.0 — la versión de *mínimo privilegio*
 > **Winzard ya no pide permisos de administrador solo para abrirse.** Ahora arranca como **usuario normal**, y solo pide elevación para las operaciones que de verdad la necesitan — diciéndote antes exactamente para qué. Decir que no es una respuesta perfectamente válida: la app sigue funcionando.
 > - 🔓 **Puedes recorrer todo el catálogo de apps, buscar, leer los manuales, ver tu hardware y revisar los registros sin conceder ningún permiso.**
 > - 🧾 **Cada operación con privilegios se explica** antes de que Windows muestre su aviso. Sin insistir y sin bucles de reintento.

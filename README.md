@@ -38,7 +38,17 @@
 
 ---
 
-> ### 🔐 New in 1.3.0 — the *minimum privilege* release
+> ### 🔎 New in 1.3.1 — the *honest results* release
+> An external audit of v1.3.0 found that Winzard **claimed success in several places without having verified it** — the opposite of what this project says about itself. Every finding that could be reproduced in code is fixed, each tested against its specific failure. No new features, nothing rewritten.
+> - 🔴 **An incomplete ISO could be declared ready to burn.** A missing `autounattend.xml` never counted as fatal, so the verdict still read *"ISO LISTA PARA GRABAR"*; meanwhile all five `robocopy` calls ignored their exit codes, so a failed copy passed unnoticed. Both ends now checked — including the verifier copy embedded in every generated kit.
+> - 🔴 **`-DryRun` was not dry**: it still used the network and refreshed the winget sources. Now it really changes nothing.
+> - 🔴 **A typo could trigger a real repair.** `/auto /drry` silently ignored the mistake and repaired for real. Unknown arguments now stop the suite without running anything — and `-Update` no longer turns a typo into `winget upgrade --all`.
+> - 🏷️ **A destructive ISO now identifies itself**: `_BORRA-DISCO0` in the filename plus a warning file in the image root. The option stays — it is what makes the zero-keystroke install possible — but the artifact is honest about what it is.
+> - 🧹 Temp files no longer accumulate (96 had piled up), and the unsigned self-update path is disabled.
+>
+> Full detail in the [release notes](RELEASE_NOTES_v1.3.1.md).
+
+> ### 🔐 Previously in 1.3.0 — the *minimum privilege* release
 > **Winzard no longer asks for administrator rights just to open.** It now starts as a **standard user**, and only requests elevation for the operations that genuinely need it — telling you first exactly what it is for. Declining is a perfectly valid answer: the app keeps working.
 > - 🔓 **Browse the whole app catalog, search, read the manuals, check your hardware and review the logs with no elevation at all.**
 > - 🧾 **Every privileged operation explains itself** before Windows shows its prompt. No nagging, no retry loops.
