@@ -50,6 +50,31 @@ if /i "!ARG:~0,8!"=="/phases:" (
     set "SEL_FASES=!ARG:~8!"
     set "SEL_FASES=!SEL_FASES:+=,!"
 )
+:: (v3.3) VALIDACION ESTRICTA: cualquier argumento que no exista PARA la suite.
+:: Antes el bucle eran 'if' sueltos sin 'else': un argumento desconocido se ignoraba
+:: en silencio. O sea que "/auto /drry" (errata de /dry) ejecutaba la REPARACION REAL
+:: mientras el usuario creia haber pedido un simulacro. Ahora se rechaza y no corre nada.
+:: OJO: /? va fuera del 'for' porque el '?' se interpretaria como comodin de fichero.
+set "ARGOK=0"
+if /i "!ARG!"=="/?" set "ARGOK=1"
+for %%K in (/auto /noreboot /keepwu /dry /resume /triage /selftest /quiet /help /version /json /support /quick /quickfix /nocolor /manual /cmd /plan /resetbase /fwreset) do if /i "!ARG!"=="%%K" set "ARGOK=1"
+if /i "!ARG:~0,8!"=="/source:" set "ARGOK=1"
+if /i "!ARG:~0,7!"=="/fases:"  set "ARGOK=1"
+if /i "!ARG:~0,8!"=="/phases:" set "ARGOK=1"
+if "!ARGOK!"=="0" (
+    echo(
+    echo  [X] Argumento no reconocido: !ARG!
+    echo(
+    echo      No se ha ejecutado NADA. Revisa si es una errata.
+    echo      Opciones validas: /auto /noreboot /keepwu /dry /resume /triage /selftest
+    echo                        /quiet /help /version /json /support /quick /quickfix
+    echo                        /nocolor /manual /cmd /plan /resetbase /fwreset
+    echo                        /source:RUTA  /fases:NN,NN  /phases:NN,NN
+    echo(
+    echo      Usa /help para ver la ayuda completa.
+    echo(
+    endlocal & exit /b 2
+)
 shift /1
 goto parse_loop
 :parse_done

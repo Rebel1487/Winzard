@@ -389,6 +389,12 @@ param(
     [string]$Preset,
     [string]$Tweaks,
     [string]$Debloat,
+    # (v1.3.1) Lista CERRADA de valores. Antes era un [string] libre y el despacho
+    # hacia "si es recommended -> WU; CUALQUIER OTRA COSA -> winget upgrade --all".
+    # Es decir, una errata como '-Update recomendadoo' actualizaba TODOS los programas
+    # del equipo en vez de avisar del error. Ahora PowerShell rechaza el valor invalido
+    # antes de ejecutar nada, y el mensaje enumera los validos.
+    [ValidateSet('all', 'recommended', 'recomendado', 'todo')]
     [string]$Update,
     [string]$ProfilePath,
     [switch]$FirstBoot,

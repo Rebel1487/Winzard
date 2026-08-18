@@ -49,6 +49,31 @@ if /i "!ARG:~0,8!"=="/phases:" (
     set "SEL_FASES=!ARG:~8!"
     set "SEL_FASES=!SEL_FASES:+=,!"
 )
+:: (v3.3) STRICT VALIDATION: any argument that does not exist STOPS the suite.
+:: The parse loop was a series of bare 'if' statements with no 'else', so an unknown
+:: argument was silently ignored: "/auto /drry" (a typo for /dry) ran a REAL REPAIR
+:: while the user believed they had asked for a simulation. Now it refuses to run.
+:: NOTE: /? is handled outside the 'for' because '?' would act as a file wildcard.
+set "ARGOK=0"
+if /i "!ARG!"=="/?" set "ARGOK=1"
+for %%K in (/auto /noreboot /keepwu /dry /resume /triage /selftest /quiet /help /version /json /support /quick /quickfix /nocolor /manual /cmd /plan /resetbase /fwreset) do if /i "!ARG!"=="%%K" set "ARGOK=1"
+if /i "!ARG:~0,8!"=="/source:" set "ARGOK=1"
+if /i "!ARG:~0,7!"=="/fases:"  set "ARGOK=1"
+if /i "!ARG:~0,8!"=="/phases:" set "ARGOK=1"
+if "!ARGOK!"=="0" (
+    echo(
+    echo  [X] Unrecognised argument: !ARG!
+    echo(
+    echo      NOTHING has been run. Check whether it is a typo.
+    echo      Valid options: /auto /noreboot /keepwu /dry /resume /triage /selftest
+    echo                     /quiet /help /version /json /support /quick /quickfix
+    echo                     /nocolor /manual /cmd /plan /resetbase /fwreset
+    echo                     /source:PATH  /fases:NN,NN  /phases:NN,NN
+    echo(
+    echo      Run /help to see the full help.
+    echo(
+    endlocal & exit /b 2
+)
 shift /1
 goto parse_loop
 :parse_done
