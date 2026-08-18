@@ -73,6 +73,7 @@
 - [The Repair Suite (17 phases)](#-the-repair-suite-17-phases)
 - [Two languages and three themes](#-two-languages-and-three-themes)
 - [Verification & safety](#-verification--safety)
+- [How Winzard was built (and who built it)](#-how-winzard-was-built-and-who-built-it)
 - [Inspiration & credits](#-inspiration--credits)
 - [Contributing](#-contributing)
 - [License](#-license)
@@ -489,6 +490,23 @@ Winzard is **free and open source, and it will stay that way** — no paid tiers
 - 💖 **[GitHub Sponsors](https://github.com/sponsors/Rebel1487)** — one-off or monthly, any amount.
 
 Donations are **100 % optional** and never unlock anything: everything in Winzard is free for everyone, always.
+
+---
+
+## 🤖 How Winzard was built (and who built it)
+
+**I am not a developer.** Winzard was built with AI assistance — Fable 5 and Opus 5 — over about a year. I want that stated plainly here rather than discovered later.
+
+What I actually did: I had the problem (losing a full day setting up Windows after every reinstall), I decided what the tool should do and how it should behave, I chose what went in and what stayed out, and I tested it — on real hardware and in virtual machines, button by button, in both languages, repeatedly. The verification campaigns, the bugs found and the decisions about what Winzard refuses to do are mine. The code was written with AI.
+
+**What that means for you, practically:**
+
+- **Read before you run.** It's plain PowerShell with nothing compiled, precisely so you can. That property matters more here, not less.
+- **Verify the hashes** published with every release.
+- **Try it in a VM first** if you're going to use the heavier features. That's the advice I'd give about any tool that touches your system, and I'd rather give it myself than have someone give it for me.
+- **Report what you find.** Several real defects have been found by people reading this code and telling me — the ISO verifier approving incomplete images, a dry-run that wasn't dry, arguments that ignored typos. All fixed, all credited in the [CHANGELOG](CHANGELOG.md). That process works, and I'd like it to continue.
+
+If knowing this changes your mind about using it, that's a completely reasonable call and no hard feelings.
 
 ---
 

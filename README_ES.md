@@ -73,6 +73,7 @@
 - [La Suite de Reparación (17 fases)](#-la-suite-de-reparación-17-fases)
 - [Dos idiomas y tres temas](#-dos-idiomas-y-tres-temas)
 - [Verificación y seguridad](#-verificación-y-seguridad)
+- [Cómo se hizo Winzard (y quién lo hizo)](#-cómo-se-hizo-winzard-y-quién-lo-hizo)
 - [Inspiración y créditos](#-inspiración-y-créditos)
 - [Contribuir](#-contribuir)
 - [Licencia](#-licencia)
@@ -490,6 +491,23 @@ Winzard es **gratis y de código abierto, y lo seguirá siendo** — sin version
 - 💖 **[GitHub Sponsors](https://github.com/sponsors/Rebel1487)** — puntual o mensual, la cantidad que quieras.
 
 Las donaciones son **100 % opcionales** y no desbloquean nada: todo Winzard es gratis para todos, siempre.
+
+---
+
+## 🤖 Cómo se hizo Winzard (y quién lo hizo)
+
+**No soy programador.** Winzard está hecho con ayuda de IA —Fable 5 y Opus 5— a lo largo de aproximadamente un año. Prefiero decirlo aquí claramente antes de que se descubra por otro lado.
+
+Lo que sí puse yo: el problema (perder un día entero configurando Windows después de cada formateo), qué tenía que hacer la herramienta y cómo debía comportarse, qué entraba y qué se quedaba fuera, y las pruebas — en hardware real y en máquinas virtuales, botón a botón, en los dos idiomas, muchas veces. Las campañas de verificación, los bugs encontrados y las decisiones sobre lo que Winzard **no** hace son mías. El código lo escribió la IA.
+
+**Qué significa esto para ti, en la práctica:**
+
+- **Léelo antes de ejecutarlo.** Es PowerShell plano y sin nada compilado precisamente para que puedas. Esa propiedad aquí importa más, no menos.
+- **Verifica los hashes** que se publican con cada versión.
+- **Pruébalo antes en una máquina virtual** si vas a usar las funciones más potentes. Es el consejo que daría sobre cualquier herramienta que toca tu sistema, y prefiero darlo yo a que me lo tengan que dar.
+- **Cuenta lo que encuentres.** Varios fallos reales han salido de gente leyendo este código y avisando: el verificador que aprobaba ISOs incompletas, una simulación que no simulaba, argumentos que ignoraban las erratas. Todos corregidos y acreditados en el [CHANGELOG](CHANGELOG.md). Ese proceso funciona y me gustaría que siguiera.
+
+Si saber esto te hace cambiar de idea sobre usarlo, me parece perfectamente razonable y sin ningún resentimiento.
 
 ---
 
