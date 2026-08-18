@@ -273,6 +273,18 @@ exit /b 0
 :: --- decodifica el cerebro PS incrustado a %HELPER% ---
 :wpi_extracthelper
 if not defined RUNID set "RUNID=%RANDOM%%RANDOM%"
+:: (v3.3) LIMPIEZA de temporales de ejecuciones anteriores. Cada pasada dejaba TRES
+:: ficheros en WPI_Suite (el helper .ps1, su .b64 y el _cap_.txt) que no se borraban
+:: nunca: se contaron 96 acumulados en un equipo de uso normal. Se barren solo los de
+:: MAS DE UN DIA, para no pisar jamas los de una ejecucion en curso ni los de otra
+:: instancia abierta a la vez. Los errores se silencian: si no hay nada que borrar,
+:: forfiles devuelve error y aqui eso es lo normal, no un fallo.
+:: OJO: no usar 'for %%P in (patron*)' para recorrer los patrones. El FOR de cmd
+:: expande comodines contra el DIRECTORIO ACTUAL, no contra %WORK%, asi que el bucle
+:: no llegaba a ejecutarse nunca. Van tres llamadas directas.
+forfiles /p "%WORK%" /m suite_helper_*.ps1 /d -1 /c "cmd /c del /q /f @path" >nul 2>&1
+forfiles /p "%WORK%" /m helper_*.b64 /d -1 /c "cmd /c del /q /f @path" >nul 2>&1
+forfiles /p "%WORK%" /m _cap_*.txt /d -1 /c "cmd /c del /q /f @path" >nul 2>&1
 set "HELPER=%WORK%\suite_helper_%RUNID%.ps1"
 set "HELPER_B64=%WORK%\helper_%RUNID%.b64"
 (for /f "usebackq tokens=1,* delims=:" %%a in (`findstr /b /c:"HLP:" "%~f0"`) do @echo %%b) > "%HELPER_B64%"
