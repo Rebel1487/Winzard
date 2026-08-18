@@ -225,7 +225,7 @@ A flagship feature: WPI **looks at your PC and understands what you have**.
 │
 ├─ 🟢 Do you have it installed?     → it auto-checks it
 ├─ 🔢 Which version do you have?    → the version on your machine
-├─ ⬆️  Is there a newer one?         → the latest available on winget
+├─ ⬆️  Is there a newer one?        → the latest available on winget
 └─ 🔁 Want to update?               → one click and done
 ```
 
@@ -311,47 +311,47 @@ Instead of installing Windows and *then* configuring it (the usual way), WPI **b
 
 The wizard walks you through it. Here's what happens at each step:
 
-```text
-┌──────────────────────────────────────────────────────────────┐
-│  ISO CREATOR WIZARD  ·  8 steps                              │
-├──────────────────────────────────────────────────────────────┤
-│                                                                │
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│  ISO CREATOR WIZARD  ·  8 steps                               │ 
+├───────────────────────────────────────────────────────────────────────┤
+│                                                               │
 │  1️⃣  Requirements                                             │
-│      Checks you're an administrator, that oscdimg            │
+│      Checks you're an administrator, that oscdimg             │
 │      (Windows ADK) is available, that DISM works and          │
 │      that there's enough free space on C:.                    │
-│                                                                │
+│                                                               │
 │  2️⃣  Source and output                                        │
 │      Pick the official source ISO, the output folder, the     │
 │      final ISO name and the working folder. You can detect    │
 │      the real EDITIONS in the ISO (Home, Pro…) and choose     │
 │      to customize one or all of them.                         │
-│                                                                │
+│                                                               │
 │  3️⃣  Tweaks (privacy and performance)                         │
 │      Choose which settings the ISO ships with pre-applied.    │
-│                                                                │
+│                                                               │
 │  4️⃣  Bloatware to remove                                      │
 │      Choose which preinstalled apps are removed OFFLINE       │
 │      straight from the image (they never even install).       │
-│                                                                │
+│                                                               │
 │  5️⃣  Apps to install                                          │
 │      Select which catalog programs auto-install on first      │
-│      boot.                                                     │
-│                                                                │
+│      boot.                                                    │
+│                                                               │
 │  6️⃣  Drivers to inject                                        │
-│      Inject your hardware's drivers so Windows boots with      │
+│      Inject your hardware's drivers so Windows boots with     │
 │      everything already recognized.                           │
-│                                                                │
+│                                                               │
 │  7️⃣  Unattended install                                       │
 │      Configure the local account, language and the Windows    │
 │      11 bypasses (TPM / Microsoft account) if you need them.  │
 │      A tailored autounattend.xml is generated.                │
-│                                                                │
+│                                                               │
 │  8️⃣  Summary and confirmation                                 │
 │      Review everything and build the KIT. The final ISO is    │
 │      reassembled with oscdimg as administrator.               │
-│                                                                │
-└──────────────────────────────────────────────────────────────┘
+│                                                               │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ### What it does under the hood
