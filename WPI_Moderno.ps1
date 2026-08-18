@@ -13675,6 +13675,20 @@ function Log($m) { $s = ('[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'), $m); Writ
 function Die($m) { Log ('ERROR: ' + $m); Write-Host ''; Write-Host 'La creacion se detuvo. Revisa el log.' -ForegroundColor Red; Read-Host 'Pulsa Enter para salir'; exit 1 }
 function Prog($p, $s) { try { Write-Progress -Activity 'Creando ISO WPI a medida' -Status $s -PercentComplete ([math]::Min(100, [math]::Max(0, [int]$p))) } catch {} }
 
+# (v1.3.1) Copia VERIFICADA. Antes cada robocopy iba a "| Out-Null" sin mirar el
+# resultado: si la copia fallaba, la ISO se seguia construyendo SIN el contenido y
+# nadie se enteraba hasta arrancar el USB. robocopy NO usa 0=exito: devuelve 0-7
+# para variantes correctas (0 nada que copiar, 1 copiado, 2 extras, 4 desajustes...)
+# y >=8 SOLO cuando ha fallado de verdad. Por eso no vale un simple "-ne 0".
+function Copy-Verified($from, $to, $what, [string[]]$extra) {
+    $rcArgs = @($from, $to, '/e', '/np', '/r:1', '/w:1')
+    if ($extra) { $rcArgs += $extra }
+    & robocopy @rcArgs | Out-Null
+    $rc = $LASTEXITCODE
+    if ($rc -ge 8) { Die ('Fallo al copiar ' + $what + ' (robocopy codigo ' + $rc + '). Origen: ' + $from + ' -> Destino: ' + $to) }
+    Log ('Copiado OK: ' + $what + ' (robocopy ' + $rc + ')')
+}
+
 # --- Admin ---
 $pr = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Die 'Hay que ejecutar este script como administrador.' }
@@ -13716,7 +13730,7 @@ foreach ($v in $vols) {
 if (-not $vol -and @($vols).Count -gt 0) { $vol = [string]$vols[0].DriveLetter }
 if (-not $vol) { Die 'No se pudo montar la ISO origen.' }
 $src = ($vol + ':\')
-robocopy $src $isoDir /e /np /r:1 /w:1 | Out-Null
+Copy-Verified $src $isoDir 'el contenido de la ISO origen'
 Dismount-DiskImage -ImagePath $cfg.SourceIso | Out-Null
 attrib -r ($isoDir + '\*.*') /s /d 2>$null
 Log 'Contenido copiado.'
@@ -13955,7 +13969,7 @@ foreach ($ei in $indices) {
     if (Test-Path $payload) {
         $dstWpi = Join-Path $mount 'WPI'
         if (-not (Test-Path $dstWpi)) { New-Item -ItemType Directory -Path $dstWpi -Force | Out-Null }
-        robocopy $payload $dstWpi /e /np /r:1 /w:1 | Out-Null
+        Copy-Verified $payload $dstWpi 'el payload de WPI dentro de la imagen'
         $preset = Join-Path $PSScriptRoot 'preset_apps.txt'
         if (Test-Path $preset) { Copy-Item $preset (Join-Path $dstWpi 'preset_apps.txt') -Force }
         $presetTw = Join-Path $PSScriptRoot 'preset_tweaks.txt'
@@ -14022,7 +14036,7 @@ if (Test-Path $auf) { Copy-Item $auf (Join-Path $isoDir 'autounattend.xml') -For
 try {
     $rootWpi = Join-Path $isoDir 'WPI'
     if (-not (Test-Path $rootWpi)) { New-Item -ItemType Directory -Path $rootWpi -Force | Out-Null }
-    if (Test-Path $payload) { robocopy $payload $rootWpi /e /np /r:1 /w:1 | Out-Null }
+    if (Test-Path $payload) { Copy-Verified $payload $rootWpi 'la carpeta WPI visible en la raiz de la ISO' }
     $rp1 = Join-Path $PSScriptRoot 'preset_apps.txt';   if (Test-Path $rp1) { Copy-Item $rp1 (Join-Path $rootWpi 'preset_apps.txt') -Force }
     $rp2 = Join-Path $PSScriptRoot 'preset_tweaks.txt'; if (Test-Path $rp2) { Copy-Item $rp2 (Join-Path $rootWpi 'preset_tweaks.txt') -Force }
     $leeme = @(
@@ -14201,13 +14215,19 @@ if (-not (Test-Path $wim)) { Cleanup; Read-Host '   Enter para salir'; exit 1 }
 
 Hdr 'AUTOUNATTEND  (instalacion desatendida)'
 $au = ($drv + '\autounattend.xml')
+# (v1.3.1) La AUSENCIA de autounattend.xml es un fallo CRITICO, no un aviso.
+# Antes se llamaba a NO directamente, que SOLO IMPRIME: no incrementaba $fatal, asi
+# que el veredicto seguia diciendo "ISO LISTA PARA GRABAR" con la ISO incompleta.
+Chk (Test-Path $au) `
+    'autounattend.xml presente en la raiz de la ISO.' `
+    'NO hay autounattend.xml en la raiz: la ISO esta INCOMPLETA y la instalacion NO seria automatica.' `
+    $false
 if (Test-Path $au) {
-    OK 'autounattend.xml presente en la raiz de la ISO.'
     $xml = Get-Content $au -Raw
     Chk ($xml -match 'WPI_Moderno\.ps1') 'El primer arranque lanza WPI_Moderno.ps1.' 'El autounattend NO llama a WPI_Moderno.ps1.' $false
     Chk ($xml -match '-FirstBoot') 'Marca -FirstBoot (aplica todo y reinicia al final).' 'No aparece -FirstBoot (no reiniciaria solo).' $true
     if ($xml -match 'LabConfig') { IN 'Bypass de requisitos de Windows 11: SI' } else { IN 'Bypass de requisitos de Windows 11: no' }
-} else { NO 'No hay autounattend.xml en la raiz: la instalacion NO seria automatica.' }
+}
 
 Hdr 'EDICIONES EN LA IMAGEN'
 $imgs = @(Get-WindowsImage -ImagePath $wim)
@@ -14258,7 +14278,15 @@ Write-Host ''
 Write-Host '   RUFUS: en el dialogo "Experiencia de usuario de Windows" NO marques' -ForegroundColor Yellow
 Write-Host '   NINGUNA casilla. Esquema GPT, destino UEFI. Asi se respeta el WPI.' -ForegroundColor Yellow
 Write-Host ''
-Read-Host '   Pulsa Enter para salir'
+# (v1.3.1) Pausa SOLO en consola interactiva: con stdin redirigido (guion, tarea
+# programada, CI) Read-Host esperaria para siempre una tecla que nunca llega.
+$__stdinRedir = $false
+try { $__stdinRedir = [Console]::IsInputRedirected } catch {}
+if (-not $__stdinRedir) { Read-Host '   Pulsa Enter para salir' }
+
+# (v1.3.1) CODIGO DE SALIDA REAL. Antes terminaba sin 'exit', devolviendo SIEMPRE 0
+# aunque hubiera problemas criticos. Ahora 0 = ISO correcta, 1 = no grabar.
+if ($fatal -eq 0) { exit 0 } else { exit 1 }
 '@
 }
 
@@ -14338,14 +14366,21 @@ function New-IsoBuildKit {
             if (Test-Path $suiteDst) { Remove-Item $suiteDst -Recurse -Force | Out-Null }
             # F6-B2 (VT2): la suite entra al kit SIN residuos de desarrollo (Logs de
             # ejecuciones, build, src, .git): inflaban la ISO y no pintan nada alli.
+            # (v1.3.1) robocopy VERIFICADO: devuelve 0-7 en variantes correctas y >=8
+            # solo cuando falla de verdad. Antes iba a Out-Null sin mirar nada, asi que
+            # una copia fallida generaba un kit SIN la suite y nadie se enteraba.
             robocopy $suiteSrc $suiteDst /e /np /r:1 /w:1 /xd Logs logs build src .git | Out-Null
+            if ($LASTEXITCODE -ge 8) { throw ('robocopy fallo al copiar la suite de reparacion (codigo {0}): {1} -> {2}' -f $LASTEXITCODE, $suiteSrc, $suiteDst) }
         } else {
             Write-Host ('*** AVISO: falta la suite de reparacion o su lanzador principal: ' + $suiteInfo.FolderName + '\' + $suiteInfo.BatName) -ForegroundColor Yellow
         }
         # Verificador de ISO junto a la salida (para comprobar antes de Rufus)
         try { Set-WpiContent -Path (Join-Path $outDir 'Verificar_ISO.ps1') -Value (Get-IsoVerifyScriptText) } catch {}
         $wgSrc = Join-Path $PSScriptRoot 'winget'
-        if (Test-Path $wgSrc) { robocopy $wgSrc (Join-Path $payload 'winget') /e /np /r:1 /w:1 | Out-Null }
+        if (Test-Path $wgSrc) {
+            robocopy $wgSrc (Join-Path $payload 'winget') /e /np /r:1 /w:1 | Out-Null
+            if ($LASTEXITCODE -ge 8) { throw ('robocopy fallo al copiar el winget offline (codigo {0})' -f $LASTEXITCODE) }
+        }
         $script:IsoKitPath = $kit
         return $kit
     } catch {
