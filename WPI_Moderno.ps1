@@ -14092,6 +14092,41 @@ try {
     Log 'Carpeta WPI visible anadida a la raiz de la ISO (acceso facil desde el USB).'
 } catch { Log ('Aviso: no se pudo crear la carpeta WPI visible en la raiz: ' + $_.Exception.Message) }
 
+# --- 9c) (v1.3.1) AVISO VISIBLE si la ISO lleva el modo VM (borra el disco 0) ---
+# El asistente avisa por todos lados al crearla, pero eso desaparece en cuanto la ISO
+# existe: el fichero era indistinguible de uno normal. Ademas de la marca en el nombre,
+# se deja un aviso EN LA RAIZ, que es lo primero que se ve al montar la ISO o abrir el USB.
+if ($cfg.VmMode) {
+    try {
+        $avisoVm = @(
+            '###############################################################',
+            '#                                                             #',
+            '#   ATENCION: ESTA ISO BORRA EL DISCO 0 AL INSTALAR           #',
+            '#                                                             #',
+            '###############################################################',
+            '',
+            'Esta imagen se creo con el MODO VM activado.',
+            '',
+            'Al arrancar desde ella e iniciar la instalacion, BORRA Y PARTICIONA',
+            'AUTOMATICAMENTE EL DISCO 0 SIN PREGUNTAR NADA. No hay confirmacion,',
+            'no hay marcha atras y no se puede recuperar lo que hubiera dentro.',
+            '',
+            'USALA SOLO EN:',
+            '  - una maquina virtual, o',
+            '  - un disco desechable cuyo contenido puedas perder.',
+            '',
+            'NO LA ARRANQUES en un PC con datos que te importen.',
+            '',
+            'Si lo que quieres es instalar Windows eligiendo el disco a mano,',
+            'crea otra ISO con Winzard dejando el Modo VM DESACTIVADO.',
+            '',
+            ('Creada el: ' + (Get-Date -Format 'yyyy-MM-dd HH:mm'))
+        ) -join "`r`n"
+        Set-Content -Path (Join-Path $isoDir 'LEEME-ATENCION-BORRA-DISCO-0.txt') -Value $avisoVm -Encoding UTF8
+        Log '*** ISO en MODO VM: aviso LEEME-ATENCION-BORRA-DISCO-0.txt anadido a la raiz. ***'
+    } catch { Log ('Aviso: no se pudo escribir el aviso del modo VM: ' + $_.Exception.Message) }
+}
+
 # --- 10) Reensamblar la ISO con oscdimg (UEFI + BIOS) ---
 $etfs = Join-Path $isoDir 'boot\etfsboot.com'
 $efisys = Join-Path $isoDir 'efi\microsoft\boot\efisys.bin'
@@ -14325,6 +14360,28 @@ if ($fatal -eq 0) { exit 0 } else { exit 1 }
 '@
 }
 
+# (v1.3.1) Nombre del fichero ISO, con MARCA si lleva el modo VM.
+# El asistente ya avisa por todos lados de que ese modo borra el disco 0 (casilla en
+# rojo, tooltip y dialogo de confirmacion obligatorio), pero todo eso desaparece en
+# cuanto la ISO esta creada: el fichero resultante era indistinguible de uno normal.
+# Si ese USB acaba en un cajon y se arranca meses despues en el PC equivocado, no hay
+# nada que avise. Con la marca en el nombre se ve en el explorador y en Rufus, sin
+# abrir nada. Funcion UNICA para que los tres sitios que construyen el nombre
+# (generar kit, construir y verificar) no se desincronicen nunca.
+function Get-WpiIsoFileName {
+    param($W)
+    $n = [string]$W.IsoName
+    if (-not $n) { $n = 'WPI_Custom.iso' }
+    if ($n -notmatch '\.iso$') { $n = $n + '.iso' }
+    if ($W.VmMode) {
+        $marca = '_BORRA-DISCO0'
+        if ($n -notmatch [regex]::Escape($marca)) {
+            $n = ($n -replace '\.iso$', '') + $marca + '.iso'
+        }
+    }
+    return $n
+}
+
 function New-IsoBuildKit {
     $w = $script:Wiz
     if (-not $w) { Init-IsoWizard; $w = $script:Wiz }
@@ -14334,8 +14391,7 @@ function New-IsoBuildKit {
     if (-not $outDir) { Show-WpiMessage('Falta la carpeta de salida (paso "Origen y salida").', 'Crear ISO') | Out-Null; return $null }
     if (-not (Test-Path $outDir)) { try { New-Item -ItemType Directory -Path $outDir -Force | Out-Null } catch { Show-WpiMessage('No se pudo crear la carpeta de salida.', 'Crear ISO') | Out-Null; return $null } }
 
-    $isoName = [string]$w.IsoName; if (-not $isoName) { $isoName = 'WPI_Custom.iso' }
-    if ($isoName -notmatch '\.iso$') { $isoName = $isoName + '.iso' }
+    $isoName = Get-WpiIsoFileName $w
     $workDir = [string]$w.WorkDir; if (-not $workDir) { $workDir = (Join-Path $outDir '_work') }
     $editionIdx = 0
     if (([string]$w.Idx) -match '^\d+$') { $editionIdx = [int]$w.Idx }
@@ -15263,7 +15319,10 @@ function Build-WizUnattend {
     $c.Children.Add($vmNote) | Out-Null
     $script:WizCtl.Locale = Add-IsoTextRow $c 'Idioma / locale' $script:Wiz.Locale '' '' 'Idioma y region de la instalacion (ej: es-ES para espanol de Espana).'
     $script:WizCtl.Acct   = Add-IsoTextRow $c 'Nombre de cuenta' $script:Wiz.AccountName '' '' 'Nombre del usuario que se creara automaticamente en el primer arranque.'
-    $script:WizCtl.Pass   = Add-IsoTextRow $c 'Contrasena de la cuenta (opcional, recomendada en Win11)' $script:Wiz.AccountPassword '' '' 'Contrasena de esa cuenta. Puedes dejarla vacia, pero en Windows 11 es recomendable ponerla.'
+    # (v1.3.1) La contrasena se guarda EN CLARO en kit-config.json y en autounattend.xml,
+    # y el autounattend viaja DENTRO de la ISO. Mucha gente asume que va protegida; no lo
+    # esta, y en ningun sitio se decia. Se avisa aqui, que es donde se escribe.
+    $script:WizCtl.Pass   = Add-IsoTextRow $c 'Contrasena de la cuenta (opcional, recomendada en Win11)' $script:Wiz.AccountPassword '' '' 'Contrasena de esa cuenta. Puedes dejarla vacia, pero en Windows 11 es recomendable ponerla.  AVISO: se guarda SIN CIFRAR en kit-config.json y en el autounattend.xml que va dentro de la ISO. Cualquiera con acceso al USB o a la carpeta del kit puede leerla: no reutilices una contrasena importante.'
 }
 function Build-WizSummary {
     param($c)
@@ -15448,8 +15507,7 @@ function Test-IsoStep {
                 catch { return (Deny-IsoStep ('No se puede usar/crear la carpeta de salida:' + "`n" + $out + "`n`n" + 'Elige otra carpeta valida.')) }
             }
             if (([string]$w.Idx) -ne '' -and ([string]$w.Idx) -notmatch '^\d+$') { return (Deny-IsoStep 'El "indice de edicion" debe ser un numero entero (0 = la edicion mas completa).') }
-            $isoName = [string]$w.IsoName; if (-not $isoName) { $isoName = 'WPI_Custom.iso' }
-            if ($isoName -notmatch '\.iso$') { $isoName = $isoName + '.iso' }
+            $isoName = Get-WpiIsoFileName $w
             $outIso = (Join-Path $out $isoName)
             try { if ([IO.Path]::GetFullPath($outIso) -eq [IO.Path]::GetFullPath($iso)) { return (Deny-IsoStep 'La ISO de SALIDA no puede ser el mismo archivo que la ISO de ORIGEN. Cambia el nombre o la carpeta de salida.') } } catch {}
             try {
@@ -15595,8 +15653,7 @@ function Invoke-WpiWriteUsbRufus {
     try {
         $w = $script:Wiz
         if ($w) {
-            $isoName = [string]$w.IsoName; if (-not $isoName) { $isoName = 'WPI_Custom.iso' }
-            if ($isoName -notmatch '\.iso$') { $isoName += '.iso' }
+            $isoName = Get-WpiIsoFileName $w
             if ($w.OutDir) { $cand = Join-Path ([string]$w.OutDir) $isoName; if (Test-Path $cand) { $iso = $cand } }
             if ($w.SrcIso -and (Test-Path ([string]$w.SrcIso))) { $srcIso = [string]$w.SrcIso }
         }
