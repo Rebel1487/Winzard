@@ -3931,6 +3931,18 @@ function Test-Winget {
 
 function Invoke-SelfUpdate {
     if (-not $Config.SelfUpdateUrl) { return }
+    # (v1.3.1) DESACTIVADA. Tal y como estaba, esta funcion descargaba un texto por
+    # HTTP(S) y SOBRESCRIBIA el propio WPI_Moderno.ps1 con el, relanzandolo despues:
+    # sin hash conocido, sin firma Authenticode, sin lista de hosts permitidos y sin
+    # proteccion anti-downgrade. Es decir, una via de ejecucion remota de codigo con
+    # los privilegios del usuario. Estaba latente (SelfUpdateUrl viene vacia), pero
+    # bastaba rellenar una cadena de configuracion para activarla.
+    # No se borra el codigo para no romper a quien lo tuviera configurado: se corta
+    # aqui y se avisa. Para reactivarla hay que implementar antes la verificacion
+    # criptografica del artefacto (manifiesto firmado + SHA-256 + host permitido).
+    Write-Host '[!] Autoactualizacion DESACTIVADA por seguridad: no verifica firma ni hash del archivo descargado.' -ForegroundColor Yellow
+    Write-Host '    Descarga las versiones nuevas desde https://github.com/Rebel1487/Winzard/releases' -ForegroundColor DarkGray
+    return
     try {
         Write-Host '[+] Comprobando si hay una version nueva del propio WPI...' -ForegroundColor DarkCyan
         $remote = (Invoke-WebRequest -Uri $Config.SelfUpdateUrl -UseBasicParsing -TimeoutSec 10).Content
@@ -3956,6 +3968,13 @@ function Invoke-SelfUpdate {
 
 function Update-WingetSources {
     if (-not $Config.AutoUpdateSources) { return }
+    # (v1.3.1) Segunda barrera: 'winget source update' usa la RED y cambia el estado de
+    # las fuentes, asi que no puede ejecutarse en un modo que promete no tocar nada.
+    # El punto de llamada del arranque ya lo evita; esto protege cualquier otra ruta.
+    if ($DryRun -or $SelfTestGui -or $ExportCatalog) {
+        Write-Host '[i] Modo sin cambios: no se refrescan las fuentes de winget.' -ForegroundColor DarkGray
+        return
+    }
     Write-Host '[+] Refrescando el catalogo y los enlaces de winget...' -ForegroundColor DarkCyan
     winget source update | Out-Null
     Write-Host '[OK] Fuentes de winget al dia.' -ForegroundColor DarkGreen
@@ -5044,8 +5063,18 @@ Write-Host ('  WINZARD v{0}  -  motor winget asincrono' -f $WpiVersion) -Foregro
 Write-Host '  --------------------------------------------' -ForegroundColor DarkGray
 Update-WpiSplash 'Comprobando el motor winget...' 'Checking the winget engine...'
 $script:WingetOK = Test-Winget
-Invoke-SelfUpdate
-if ($script:WingetOK) { Update-WingetSources }
+# (v1.3.1) MODO SEGURO DE VERDAD. Estas dos llamadas se hacian SIEMPRE, incluso con
+# -DryRun, que se anuncia como "no cambia nada": Invoke-SelfUpdate podia descargar y
+# SOBRESCRIBIR el propio script, y Update-WingetSources ejecuta 'winget source update'
+# (red + cambio de estado de las fuentes). Un modo de solo-plan no puede hacer ni una
+# cosa ni la otra. -SelfTestGui y -ExportCatalog son igualmente headless: tampoco.
+$__modoSoloPlan = ($DryRun -or $SelfTestGui -or $ExportCatalog)
+if ($__modoSoloPlan) {
+    Write-Host '[i] Modo sin cambios: se omiten la autoactualizacion y el refresco de fuentes de winget.' -ForegroundColor DarkGray
+} else {
+    Invoke-SelfUpdate
+    if ($script:WingetOK) { Update-WingetSources }
+}
 if (-not (Test-Path $Config.LogDir)) { New-Item -ItemType Directory -Path $Config.LogDir -Force | Out-Null }
 if ($script:WingetOK -and $Config.AutoUpgradeApps -and -not $DryRun) {
     # P0 (VT2): "-and -not $DryRun" para que ni siquiera el auto-upgrade opcional de
