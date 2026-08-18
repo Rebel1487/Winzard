@@ -389,6 +389,12 @@ param(
     [string]$Preset,
     [string]$Tweaks,
     [string]$Debloat,
+    # (v1.3.1) Lista CERRADA de valores. Antes era un [string] libre y el despacho
+    # hacia "si es recommended -> WU; CUALQUIER OTRA COSA -> winget upgrade --all".
+    # Es decir, una errata como '-Update recomendadoo' actualizaba TODOS los programas
+    # del equipo en vez de avisar del error. Ahora PowerShell rechaza el valor invalido
+    # antes de ejecutar nada, y el mensaje enumera los validos.
+    [ValidateSet('all', 'recommended', 'recomendado', 'todo')]
     [string]$Update,
     [string]$ProfilePath,
     [switch]$FirstBoot,
@@ -3931,6 +3937,18 @@ function Test-Winget {
 
 function Invoke-SelfUpdate {
     if (-not $Config.SelfUpdateUrl) { return }
+    # (v1.3.1) DESACTIVADA. Tal y como estaba, esta funcion descargaba un texto por
+    # HTTP(S) y SOBRESCRIBIA el propio WPI_Moderno.ps1 con el, relanzandolo despues:
+    # sin hash conocido, sin firma Authenticode, sin lista de hosts permitidos y sin
+    # proteccion anti-downgrade. Es decir, una via de ejecucion remota de codigo con
+    # los privilegios del usuario. Estaba latente (SelfUpdateUrl viene vacia), pero
+    # bastaba rellenar una cadena de configuracion para activarla.
+    # No se borra el codigo para no romper a quien lo tuviera configurado: se corta
+    # aqui y se avisa. Para reactivarla hay que implementar antes la verificacion
+    # criptografica del artefacto (manifiesto firmado + SHA-256 + host permitido).
+    Write-Host '[!] Autoactualizacion DESACTIVADA por seguridad: no verifica firma ni hash del archivo descargado.' -ForegroundColor Yellow
+    Write-Host '    Descarga las versiones nuevas desde https://github.com/Rebel1487/Winzard/releases' -ForegroundColor DarkGray
+    return
     try {
         Write-Host '[+] Comprobando si hay una version nueva del propio WPI...' -ForegroundColor DarkCyan
         $remote = (Invoke-WebRequest -Uri $Config.SelfUpdateUrl -UseBasicParsing -TimeoutSec 10).Content
@@ -3956,6 +3974,13 @@ function Invoke-SelfUpdate {
 
 function Update-WingetSources {
     if (-not $Config.AutoUpdateSources) { return }
+    # (v1.3.1) Segunda barrera: 'winget source update' usa la RED y cambia el estado de
+    # las fuentes, asi que no puede ejecutarse en un modo que promete no tocar nada.
+    # El punto de llamada del arranque ya lo evita; esto protege cualquier otra ruta.
+    if ($DryRun -or $SelfTestGui -or $ExportCatalog) {
+        Write-Host '[i] Modo sin cambios: no se refrescan las fuentes de winget.' -ForegroundColor DarkGray
+        return
+    }
     Write-Host '[+] Refrescando el catalogo y los enlaces de winget...' -ForegroundColor DarkCyan
     winget source update | Out-Null
     Write-Host '[OK] Fuentes de winget al dia.' -ForegroundColor DarkGreen
@@ -5044,8 +5069,18 @@ Write-Host ('  WINZARD v{0}  -  motor winget asincrono' -f $WpiVersion) -Foregro
 Write-Host '  --------------------------------------------' -ForegroundColor DarkGray
 Update-WpiSplash 'Comprobando el motor winget...' 'Checking the winget engine...'
 $script:WingetOK = Test-Winget
-Invoke-SelfUpdate
-if ($script:WingetOK) { Update-WingetSources }
+# (v1.3.1) MODO SEGURO DE VERDAD. Estas dos llamadas se hacian SIEMPRE, incluso con
+# -DryRun, que se anuncia como "no cambia nada": Invoke-SelfUpdate podia descargar y
+# SOBRESCRIBIR el propio script, y Update-WingetSources ejecuta 'winget source update'
+# (red + cambio de estado de las fuentes). Un modo de solo-plan no puede hacer ni una
+# cosa ni la otra. -SelfTestGui y -ExportCatalog son igualmente headless: tampoco.
+$__modoSoloPlan = ($DryRun -or $SelfTestGui -or $ExportCatalog)
+if ($__modoSoloPlan) {
+    Write-Host '[i] Modo sin cambios: se omiten la autoactualizacion y el refresco de fuentes de winget.' -ForegroundColor DarkGray
+} else {
+    Invoke-SelfUpdate
+    if ($script:WingetOK) { Update-WingetSources }
+}
 if (-not (Test-Path $Config.LogDir)) { New-Item -ItemType Directory -Path $Config.LogDir -Force | Out-Null }
 if ($script:WingetOK -and $Config.AutoUpgradeApps -and -not $DryRun) {
     # P0 (VT2): "-and -not $DryRun" para que ni siquiera el auto-upgrade opcional de
@@ -13675,6 +13710,20 @@ function Log($m) { $s = ('[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'), $m); Writ
 function Die($m) { Log ('ERROR: ' + $m); Write-Host ''; Write-Host 'La creacion se detuvo. Revisa el log.' -ForegroundColor Red; Read-Host 'Pulsa Enter para salir'; exit 1 }
 function Prog($p, $s) { try { Write-Progress -Activity 'Creando ISO WPI a medida' -Status $s -PercentComplete ([math]::Min(100, [math]::Max(0, [int]$p))) } catch {} }
 
+# (v1.3.1) Copia VERIFICADA. Antes cada robocopy iba a "| Out-Null" sin mirar el
+# resultado: si la copia fallaba, la ISO se seguia construyendo SIN el contenido y
+# nadie se enteraba hasta arrancar el USB. robocopy NO usa 0=exito: devuelve 0-7
+# para variantes correctas (0 nada que copiar, 1 copiado, 2 extras, 4 desajustes...)
+# y >=8 SOLO cuando ha fallado de verdad. Por eso no vale un simple "-ne 0".
+function Copy-Verified($from, $to, $what, [string[]]$extra) {
+    $rcArgs = @($from, $to, '/e', '/np', '/r:1', '/w:1')
+    if ($extra) { $rcArgs += $extra }
+    & robocopy @rcArgs | Out-Null
+    $rc = $LASTEXITCODE
+    if ($rc -ge 8) { Die ('Fallo al copiar ' + $what + ' (robocopy codigo ' + $rc + '). Origen: ' + $from + ' -> Destino: ' + $to) }
+    Log ('Copiado OK: ' + $what + ' (robocopy ' + $rc + ')')
+}
+
 # --- Admin ---
 $pr = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Die 'Hay que ejecutar este script como administrador.' }
@@ -13716,7 +13765,7 @@ foreach ($v in $vols) {
 if (-not $vol -and @($vols).Count -gt 0) { $vol = [string]$vols[0].DriveLetter }
 if (-not $vol) { Die 'No se pudo montar la ISO origen.' }
 $src = ($vol + ':\')
-robocopy $src $isoDir /e /np /r:1 /w:1 | Out-Null
+Copy-Verified $src $isoDir 'el contenido de la ISO origen'
 Dismount-DiskImage -ImagePath $cfg.SourceIso | Out-Null
 attrib -r ($isoDir + '\*.*') /s /d 2>$null
 Log 'Contenido copiado.'
@@ -13955,7 +14004,7 @@ foreach ($ei in $indices) {
     if (Test-Path $payload) {
         $dstWpi = Join-Path $mount 'WPI'
         if (-not (Test-Path $dstWpi)) { New-Item -ItemType Directory -Path $dstWpi -Force | Out-Null }
-        robocopy $payload $dstWpi /e /np /r:1 /w:1 | Out-Null
+        Copy-Verified $payload $dstWpi 'el payload de WPI dentro de la imagen'
         $preset = Join-Path $PSScriptRoot 'preset_apps.txt'
         if (Test-Path $preset) { Copy-Item $preset (Join-Path $dstWpi 'preset_apps.txt') -Force }
         $presetTw = Join-Path $PSScriptRoot 'preset_tweaks.txt'
@@ -14022,7 +14071,7 @@ if (Test-Path $auf) { Copy-Item $auf (Join-Path $isoDir 'autounattend.xml') -For
 try {
     $rootWpi = Join-Path $isoDir 'WPI'
     if (-not (Test-Path $rootWpi)) { New-Item -ItemType Directory -Path $rootWpi -Force | Out-Null }
-    if (Test-Path $payload) { robocopy $payload $rootWpi /e /np /r:1 /w:1 | Out-Null }
+    if (Test-Path $payload) { Copy-Verified $payload $rootWpi 'la carpeta WPI visible en la raiz de la ISO' }
     $rp1 = Join-Path $PSScriptRoot 'preset_apps.txt';   if (Test-Path $rp1) { Copy-Item $rp1 (Join-Path $rootWpi 'preset_apps.txt') -Force }
     $rp2 = Join-Path $PSScriptRoot 'preset_tweaks.txt'; if (Test-Path $rp2) { Copy-Item $rp2 (Join-Path $rootWpi 'preset_tweaks.txt') -Force }
     $leeme = @(
@@ -14042,6 +14091,41 @@ try {
     Set-Content -Path (Join-Path $rootWpi 'LEEME.txt') -Value $leeme -Encoding UTF8
     Log 'Carpeta WPI visible anadida a la raiz de la ISO (acceso facil desde el USB).'
 } catch { Log ('Aviso: no se pudo crear la carpeta WPI visible en la raiz: ' + $_.Exception.Message) }
+
+# --- 9c) (v1.3.1) AVISO VISIBLE si la ISO lleva el modo VM (borra el disco 0) ---
+# El asistente avisa por todos lados al crearla, pero eso desaparece en cuanto la ISO
+# existe: el fichero era indistinguible de uno normal. Ademas de la marca en el nombre,
+# se deja un aviso EN LA RAIZ, que es lo primero que se ve al montar la ISO o abrir el USB.
+if ($cfg.VmMode) {
+    try {
+        $avisoVm = @(
+            '###############################################################',
+            '#                                                             #',
+            '#   ATENCION: ESTA ISO BORRA EL DISCO 0 AL INSTALAR           #',
+            '#                                                             #',
+            '###############################################################',
+            '',
+            'Esta imagen se creo con el MODO VM activado.',
+            '',
+            'Al arrancar desde ella e iniciar la instalacion, BORRA Y PARTICIONA',
+            'AUTOMATICAMENTE EL DISCO 0 SIN PREGUNTAR NADA. No hay confirmacion,',
+            'no hay marcha atras y no se puede recuperar lo que hubiera dentro.',
+            '',
+            'USALA SOLO EN:',
+            '  - una maquina virtual, o',
+            '  - un disco desechable cuyo contenido puedas perder.',
+            '',
+            'NO LA ARRANQUES en un PC con datos que te importen.',
+            '',
+            'Si lo que quieres es instalar Windows eligiendo el disco a mano,',
+            'crea otra ISO con Winzard dejando el Modo VM DESACTIVADO.',
+            '',
+            ('Creada el: ' + (Get-Date -Format 'yyyy-MM-dd HH:mm'))
+        ) -join "`r`n"
+        Set-Content -Path (Join-Path $isoDir 'LEEME-ATENCION-BORRA-DISCO-0.txt') -Value $avisoVm -Encoding UTF8
+        Log '*** ISO en MODO VM: aviso LEEME-ATENCION-BORRA-DISCO-0.txt anadido a la raiz. ***'
+    } catch { Log ('Aviso: no se pudo escribir el aviso del modo VM: ' + $_.Exception.Message) }
+}
 
 # --- 10) Reensamblar la ISO con oscdimg (UEFI + BIOS) ---
 $etfs = Join-Path $isoDir 'boot\etfsboot.com'
@@ -14201,13 +14285,19 @@ if (-not (Test-Path $wim)) { Cleanup; Read-Host '   Enter para salir'; exit 1 }
 
 Hdr 'AUTOUNATTEND  (instalacion desatendida)'
 $au = ($drv + '\autounattend.xml')
+# (v1.3.1) La AUSENCIA de autounattend.xml es un fallo CRITICO, no un aviso.
+# Antes se llamaba a NO directamente, que SOLO IMPRIME: no incrementaba $fatal, asi
+# que el veredicto seguia diciendo "ISO LISTA PARA GRABAR" con la ISO incompleta.
+Chk (Test-Path $au) `
+    'autounattend.xml presente en la raiz de la ISO.' `
+    'NO hay autounattend.xml en la raiz: la ISO esta INCOMPLETA y la instalacion NO seria automatica.' `
+    $false
 if (Test-Path $au) {
-    OK 'autounattend.xml presente en la raiz de la ISO.'
     $xml = Get-Content $au -Raw
     Chk ($xml -match 'WPI_Moderno\.ps1') 'El primer arranque lanza WPI_Moderno.ps1.' 'El autounattend NO llama a WPI_Moderno.ps1.' $false
     Chk ($xml -match '-FirstBoot') 'Marca -FirstBoot (aplica todo y reinicia al final).' 'No aparece -FirstBoot (no reiniciaria solo).' $true
     if ($xml -match 'LabConfig') { IN 'Bypass de requisitos de Windows 11: SI' } else { IN 'Bypass de requisitos de Windows 11: no' }
-} else { NO 'No hay autounattend.xml en la raiz: la instalacion NO seria automatica.' }
+}
 
 Hdr 'EDICIONES EN LA IMAGEN'
 $imgs = @(Get-WindowsImage -ImagePath $wim)
@@ -14258,8 +14348,38 @@ Write-Host ''
 Write-Host '   RUFUS: en el dialogo "Experiencia de usuario de Windows" NO marques' -ForegroundColor Yellow
 Write-Host '   NINGUNA casilla. Esquema GPT, destino UEFI. Asi se respeta el WPI.' -ForegroundColor Yellow
 Write-Host ''
-Read-Host '   Pulsa Enter para salir'
+# (v1.3.1) Pausa SOLO en consola interactiva: con stdin redirigido (guion, tarea
+# programada, CI) Read-Host esperaria para siempre una tecla que nunca llega.
+$__stdinRedir = $false
+try { $__stdinRedir = [Console]::IsInputRedirected } catch {}
+if (-not $__stdinRedir) { Read-Host '   Pulsa Enter para salir' }
+
+# (v1.3.1) CODIGO DE SALIDA REAL. Antes terminaba sin 'exit', devolviendo SIEMPRE 0
+# aunque hubiera problemas criticos. Ahora 0 = ISO correcta, 1 = no grabar.
+if ($fatal -eq 0) { exit 0 } else { exit 1 }
 '@
+}
+
+# (v1.3.1) Nombre del fichero ISO, con MARCA si lleva el modo VM.
+# El asistente ya avisa por todos lados de que ese modo borra el disco 0 (casilla en
+# rojo, tooltip y dialogo de confirmacion obligatorio), pero todo eso desaparece en
+# cuanto la ISO esta creada: el fichero resultante era indistinguible de uno normal.
+# Si ese USB acaba en un cajon y se arranca meses despues en el PC equivocado, no hay
+# nada que avise. Con la marca en el nombre se ve en el explorador y en Rufus, sin
+# abrir nada. Funcion UNICA para que los tres sitios que construyen el nombre
+# (generar kit, construir y verificar) no se desincronicen nunca.
+function Get-WpiIsoFileName {
+    param($W)
+    $n = [string]$W.IsoName
+    if (-not $n) { $n = 'WPI_Custom.iso' }
+    if ($n -notmatch '\.iso$') { $n = $n + '.iso' }
+    if ($W.VmMode) {
+        $marca = '_BORRA-DISCO0'
+        if ($n -notmatch [regex]::Escape($marca)) {
+            $n = ($n -replace '\.iso$', '') + $marca + '.iso'
+        }
+    }
+    return $n
 }
 
 function New-IsoBuildKit {
@@ -14271,8 +14391,7 @@ function New-IsoBuildKit {
     if (-not $outDir) { Show-WpiMessage('Falta la carpeta de salida (paso "Origen y salida").', 'Crear ISO') | Out-Null; return $null }
     if (-not (Test-Path $outDir)) { try { New-Item -ItemType Directory -Path $outDir -Force | Out-Null } catch { Show-WpiMessage('No se pudo crear la carpeta de salida.', 'Crear ISO') | Out-Null; return $null } }
 
-    $isoName = [string]$w.IsoName; if (-not $isoName) { $isoName = 'WPI_Custom.iso' }
-    if ($isoName -notmatch '\.iso$') { $isoName = $isoName + '.iso' }
+    $isoName = Get-WpiIsoFileName $w
     $workDir = [string]$w.WorkDir; if (-not $workDir) { $workDir = (Join-Path $outDir '_work') }
     $editionIdx = 0
     if (([string]$w.Idx) -match '^\d+$') { $editionIdx = [int]$w.Idx }
@@ -14338,14 +14457,21 @@ function New-IsoBuildKit {
             if (Test-Path $suiteDst) { Remove-Item $suiteDst -Recurse -Force | Out-Null }
             # F6-B2 (VT2): la suite entra al kit SIN residuos de desarrollo (Logs de
             # ejecuciones, build, src, .git): inflaban la ISO y no pintan nada alli.
+            # (v1.3.1) robocopy VERIFICADO: devuelve 0-7 en variantes correctas y >=8
+            # solo cuando falla de verdad. Antes iba a Out-Null sin mirar nada, asi que
+            # una copia fallida generaba un kit SIN la suite y nadie se enteraba.
             robocopy $suiteSrc $suiteDst /e /np /r:1 /w:1 /xd Logs logs build src .git | Out-Null
+            if ($LASTEXITCODE -ge 8) { throw ('robocopy fallo al copiar la suite de reparacion (codigo {0}): {1} -> {2}' -f $LASTEXITCODE, $suiteSrc, $suiteDst) }
         } else {
             Write-Host ('*** AVISO: falta la suite de reparacion o su lanzador principal: ' + $suiteInfo.FolderName + '\' + $suiteInfo.BatName) -ForegroundColor Yellow
         }
         # Verificador de ISO junto a la salida (para comprobar antes de Rufus)
         try { Set-WpiContent -Path (Join-Path $outDir 'Verificar_ISO.ps1') -Value (Get-IsoVerifyScriptText) } catch {}
         $wgSrc = Join-Path $PSScriptRoot 'winget'
-        if (Test-Path $wgSrc) { robocopy $wgSrc (Join-Path $payload 'winget') /e /np /r:1 /w:1 | Out-Null }
+        if (Test-Path $wgSrc) {
+            robocopy $wgSrc (Join-Path $payload 'winget') /e /np /r:1 /w:1 | Out-Null
+            if ($LASTEXITCODE -ge 8) { throw ('robocopy fallo al copiar el winget offline (codigo {0})' -f $LASTEXITCODE) }
+        }
         $script:IsoKitPath = $kit
         return $kit
     } catch {
@@ -15193,7 +15319,10 @@ function Build-WizUnattend {
     $c.Children.Add($vmNote) | Out-Null
     $script:WizCtl.Locale = Add-IsoTextRow $c 'Idioma / locale' $script:Wiz.Locale '' '' 'Idioma y region de la instalacion (ej: es-ES para espanol de Espana).'
     $script:WizCtl.Acct   = Add-IsoTextRow $c 'Nombre de cuenta' $script:Wiz.AccountName '' '' 'Nombre del usuario que se creara automaticamente en el primer arranque.'
-    $script:WizCtl.Pass   = Add-IsoTextRow $c 'Contrasena de la cuenta (opcional, recomendada en Win11)' $script:Wiz.AccountPassword '' '' 'Contrasena de esa cuenta. Puedes dejarla vacia, pero en Windows 11 es recomendable ponerla.'
+    # (v1.3.1) La contrasena se guarda EN CLARO en kit-config.json y en autounattend.xml,
+    # y el autounattend viaja DENTRO de la ISO. Mucha gente asume que va protegida; no lo
+    # esta, y en ningun sitio se decia. Se avisa aqui, que es donde se escribe.
+    $script:WizCtl.Pass   = Add-IsoTextRow $c 'Contrasena de la cuenta (opcional, recomendada en Win11)' $script:Wiz.AccountPassword '' '' 'Contrasena de esa cuenta. Puedes dejarla vacia, pero en Windows 11 es recomendable ponerla.  AVISO: se guarda SIN CIFRAR en kit-config.json y en el autounattend.xml que va dentro de la ISO. Cualquiera con acceso al USB o a la carpeta del kit puede leerla: no reutilices una contrasena importante.'
 }
 function Build-WizSummary {
     param($c)
@@ -15378,8 +15507,7 @@ function Test-IsoStep {
                 catch { return (Deny-IsoStep ('No se puede usar/crear la carpeta de salida:' + "`n" + $out + "`n`n" + 'Elige otra carpeta valida.')) }
             }
             if (([string]$w.Idx) -ne '' -and ([string]$w.Idx) -notmatch '^\d+$') { return (Deny-IsoStep 'El "indice de edicion" debe ser un numero entero (0 = la edicion mas completa).') }
-            $isoName = [string]$w.IsoName; if (-not $isoName) { $isoName = 'WPI_Custom.iso' }
-            if ($isoName -notmatch '\.iso$') { $isoName = $isoName + '.iso' }
+            $isoName = Get-WpiIsoFileName $w
             $outIso = (Join-Path $out $isoName)
             try { if ([IO.Path]::GetFullPath($outIso) -eq [IO.Path]::GetFullPath($iso)) { return (Deny-IsoStep 'La ISO de SALIDA no puede ser el mismo archivo que la ISO de ORIGEN. Cambia el nombre o la carpeta de salida.') } } catch {}
             try {
@@ -15525,8 +15653,7 @@ function Invoke-WpiWriteUsbRufus {
     try {
         $w = $script:Wiz
         if ($w) {
-            $isoName = [string]$w.IsoName; if (-not $isoName) { $isoName = 'WPI_Custom.iso' }
-            if ($isoName -notmatch '\.iso$') { $isoName += '.iso' }
+            $isoName = Get-WpiIsoFileName $w
             if ($w.OutDir) { $cand = Join-Path ([string]$w.OutDir) $isoName; if (Test-Path $cand) { $iso = $cand } }
             if ($w.SrcIso -and (Test-Path ([string]$w.SrcIso))) { $srcIso = [string]$w.SrcIso }
         }

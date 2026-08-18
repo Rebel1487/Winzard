@@ -59,13 +59,19 @@ if (-not (Test-Path $wim)) { Cleanup; Read-Host '   Enter para salir'; exit 1 }
 
 Hdr 'AUTOUNATTEND  (instalacion desatendida)'
 $au = ($drv + '\autounattend.xml')
+# (v1.3.1) La AUSENCIA de autounattend.xml es un fallo CRITICO, no un aviso.
+# Antes se llamaba a NO directamente, que SOLO IMPRIME: no incrementaba $fatal, asi
+# que el veredicto final seguia diciendo "ISO LISTA PARA GRABAR" con la ISO incompleta.
+Chk (Test-Path $au) `
+    'autounattend.xml presente en la raiz de la ISO.' `
+    'NO hay autounattend.xml en la raiz: la ISO esta INCOMPLETA y la instalacion NO seria automatica.' `
+    $false
 if (Test-Path $au) {
-    OK 'autounattend.xml presente en la raiz de la ISO.'
     $xml = Get-Content $au -Raw
     Chk ($xml -match 'WPI_Moderno\.ps1') 'El primer arranque lanza WPI_Moderno.ps1.' 'El autounattend NO llama a WPI_Moderno.ps1.' $false
     Chk ($xml -match '-FirstBoot') 'Marca -FirstBoot (aplica todo y reinicia al final).' 'No aparece -FirstBoot (no reiniciaria solo).' $true
     if ($xml -match 'LabConfig') { IN 'Bypass de requisitos de Windows 11: SI' } else { IN 'Bypass de requisitos de Windows 11: no' }
-} else { NO 'No hay autounattend.xml en la raiz: la instalacion NO seria automatica.' }
+}
 
 Hdr 'EDICIONES EN LA IMAGEN'
 $imgs = @(Get-WindowsImage -ImagePath $wim)
@@ -116,4 +122,13 @@ Write-Host ''
 Write-Host '   RUFUS: en el dialogo "Experiencia de usuario de Windows" NO marques' -ForegroundColor Yellow
 Write-Host '   NINGUNA casilla. Esquema GPT, destino UEFI. Asi se respeta el WPI.' -ForegroundColor Yellow
 Write-Host ''
-Read-Host '   Pulsa Enter para salir'
+# (v1.3.1) Pausa SOLO en consola interactiva: con stdin redirigido (guion, tarea
+# programada, CI) Read-Host esperaria para siempre una tecla que nunca llega.
+$__stdinRedir = $false
+try { $__stdinRedir = [Console]::IsInputRedirected } catch {}
+if (-not $__stdinRedir) { Read-Host '   Pulsa Enter para salir' }
+
+# (v1.3.1) CODIGO DE SALIDA REAL. Antes el script terminaba sin 'exit', devolviendo
+# SIEMPRE 0 aunque hubiera problemas criticos: ninguna automatizacion podia detectar
+# una ISO defectuosa. Ahora 0 = correcta, 1 = no grabar.
+if ($fatal -eq 0) { exit 0 } else { exit 1 }

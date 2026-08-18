@@ -7,6 +7,29 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.1] — 2026-08-18  *(app build v7.4)*
+
+The **honest results release**. An external audit of the published v1.3.0 found that Winzard claimed success in several places without having verified it — which is precisely the opposite of what the project says about itself. Every finding below was reproduced in the code before being fixed, and each fix was tested against the specific failure it addresses.
+
+No new features. Nothing was rewritten. Roughly fifty lines, all in the direction of *not saying things that aren't true*.
+
+### Fixed
+
+- 🔴 **An incomplete ISO could be declared ready to burn.** Two separate defects formed one chain. `Verificar_ISO.ps1` reported a missing `autounattend.xml` through a function that only prints, so it never counted as fatal and the verdict still read *"ISO LISTA PARA GRABAR EN RUFUS"* for an image that would never install unattended. Meanwhile all **five** `robocopy` calls piped to `Out-Null` without reading `$LASTEXITCODE`, so a failed copy of the WPI payload passed unnoticed. A copy could fail silently, and the verifier would then green-light the result. Both ends are now checked, and the same two defects were fixed in the verifier copy embedded in every generated kit.
+- 🔴 **The ISO verifier never set an exit code** on its content checks, returning 0 even with critical problems, so no automation could detect a defective image. It now exits 1, and skips its final keypress when stdin is redirected instead of hanging under a scheduler.
+- 🔴 **`-DryRun` was not dry.** Startup ran the self-update path and `winget source update` before any mode guard, so a run advertised as *"nothing changes"* still used the network and mutated the winget source state. Now skipped for `-DryRun`, `-SelfTestGui` and `-ExportCatalog`, guarded both at the call site and inside the function itself.
+- 🔴 **A typo could trigger a real repair.** The suites parsed arguments as bare `if` statements with no validation, so `/auto /drry` silently ignored the typo and ran an actual repair while the user believed they had asked for a simulation. Unknown arguments now stop the suite with exit code 2, listing what is valid, without running anything.
+- 🟠 **A typo could update every program on the machine.** `-Update` was a free string dispatching *"recommended → Windows Update, anything else → `winget upgrade --all`"*. It now has a closed `ValidateSet`, so an invalid value is rejected before anything executes.
+- 🟠 **Self-update disabled.** It downloaded text, overwrote `WPI_Moderno.ps1` with it and relaunched — no hash, no signature, no host allowlist, no downgrade protection. Dormant, since the URL ships empty, but one config string away from being armed. Re-enabling it requires artifact verification first.
+- 🟡 **Temp files accumulated forever.** Each suite run left three files in `WPI_Suite` and never removed them; 96 had piled up in normal use. They are now swept on the next run, deleting only entries older than a day so a run in progress is never disturbed.
+
+### Added
+
+- 🏷️ **A destructive ISO now identifies itself.** The wizard already guarded VM Mode heavily, but all of it vanished once the image existed and the file looked like any other. The filename now carries `_BORRA-DISCO0` and the ISO root gets a `LEEME-ATENCION-BORRA-DISCO-0.txt`. The option itself is deliberately kept: it is what makes the zero-keystroke install possible, and it is off by default.
+- 🔑 **The unattended password is no longer silently stored in clear text.** It always was — in `kit-config.json` and in the `autounattend.xml` that travels inside the ISO — and nothing said so. The wizard now spells it out.
+
+---
+
 ## [1.3.0] — 2026-08-16  *(app build v7.4)*
 
 The **minimum-privilege release**. Winzard no longer asks for administrator rights just to open, and the integrity manifests of both Repair Suites are correct again. This is a **security and trust release**: no new features, everything you already had, asked for more honestly.

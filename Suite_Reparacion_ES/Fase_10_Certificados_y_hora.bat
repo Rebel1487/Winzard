@@ -50,6 +50,31 @@ if /i "!ARG:~0,8!"=="/phases:" (
     set "SEL_FASES=!ARG:~8!"
     set "SEL_FASES=!SEL_FASES:+=,!"
 )
+:: (v3.3) VALIDACION ESTRICTA: cualquier argumento que no exista PARA la suite.
+:: Antes el bucle eran 'if' sueltos sin 'else': un argumento desconocido se ignoraba
+:: en silencio. O sea que "/auto /drry" (errata de /dry) ejecutaba la REPARACION REAL
+:: mientras el usuario creia haber pedido un simulacro. Ahora se rechaza y no corre nada.
+:: OJO: /? va fuera del 'for' porque el '?' se interpretaria como comodin de fichero.
+set "ARGOK=0"
+if /i "!ARG!"=="/?" set "ARGOK=1"
+for %%K in (/auto /noreboot /keepwu /dry /resume /triage /selftest /quiet /help /version /json /support /quick /quickfix /nocolor /manual /cmd /plan /resetbase /fwreset) do if /i "!ARG!"=="%%K" set "ARGOK=1"
+if /i "!ARG:~0,8!"=="/source:" set "ARGOK=1"
+if /i "!ARG:~0,7!"=="/fases:"  set "ARGOK=1"
+if /i "!ARG:~0,8!"=="/phases:" set "ARGOK=1"
+if "!ARGOK!"=="0" (
+    echo(
+    echo  [X] Argumento no reconocido: !ARG!
+    echo(
+    echo      No se ha ejecutado NADA. Revisa si es una errata.
+    echo      Opciones validas: /auto /noreboot /keepwu /dry /resume /triage /selftest
+    echo                        /quiet /help /version /json /support /quick /quickfix
+    echo                        /nocolor /manual /cmd /plan /resetbase /fwreset
+    echo                        /source:RUTA  /fases:NN,NN  /phases:NN,NN
+    echo(
+    echo      Usa /help para ver la ayuda completa.
+    echo(
+    endlocal & exit /b 2
+)
 shift /1
 goto parse_loop
 :parse_done
@@ -241,6 +266,18 @@ exit /b 0
 :: --- decodifica el cerebro PS incrustado a %HELPER% ---
 :wpi_extracthelper
 if not defined RUNID set "RUNID=%RANDOM%%RANDOM%"
+:: (v3.3) LIMPIEZA de temporales de ejecuciones anteriores. Cada pasada dejaba TRES
+:: ficheros en WPI_Suite (el helper .ps1, su .b64 y el _cap_.txt) que no se borraban
+:: nunca: se contaron 96 acumulados en un equipo de uso normal. Se barren solo los de
+:: MAS DE UN DIA, para no pisar jamas los de una ejecucion en curso ni los de otra
+:: instancia abierta a la vez. Los errores se silencian: si no hay nada que borrar,
+:: forfiles devuelve error y aqui eso es lo normal, no un fallo.
+:: OJO: no usar 'for %%P in (patron*)' para recorrer los patrones. El FOR de cmd
+:: expande comodines contra el DIRECTORIO ACTUAL, no contra %WORK%, asi que el bucle
+:: no llegaba a ejecutarse nunca. Van tres llamadas directas.
+forfiles /p "%WORK%" /m suite_helper_*.ps1 /d -1 /c "cmd /c del /q /f @path" >nul 2>&1
+forfiles /p "%WORK%" /m helper_*.b64 /d -1 /c "cmd /c del /q /f @path" >nul 2>&1
+forfiles /p "%WORK%" /m _cap_*.txt /d -1 /c "cmd /c del /q /f @path" >nul 2>&1
 set "HELPER=%WORK%\suite_helper_%RUNID%.ps1"
 set "HELPER_B64=%WORK%\helper_%RUNID%.b64"
 (for /f "usebackq tokens=1,* delims=:" %%a in (`findstr /b /c:"HLP:" "%~f0"`) do @echo %%b) > "%HELPER_B64%"
